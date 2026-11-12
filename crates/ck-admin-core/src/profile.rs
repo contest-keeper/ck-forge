@@ -14,6 +14,21 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// A profile with sensible defaults for the admin to edit.
+    #[must_use]
+    pub fn template() -> Self {
+        Self {
+            name: "My contest".to_owned(),
+            settings: Settings::default(),
+        }
+    }
+
+    /// The problems with this profile, in plain words. Empty when it is fine.
+    #[must_use]
+    pub fn problems(&self) -> Vec<ck_protocol::Problem> {
+        self.settings.validate()
+    }
+
     /// Reads a profile and checks its settings.
     ///
     /// # Errors
