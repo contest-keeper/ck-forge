@@ -9,10 +9,10 @@ fn time() -> LocalDateTime {
 #[test]
 fn a_profile_is_checked_when_saved_and_when_loaded() {
     let dir = TempDir::new().expect("temp dir");
-    let path = dir.path().join("rcpc.json");
+    let path = dir.path().join("profile.json");
 
     let mut profile = Profile {
-        name: "RCPC 2026".to_owned(),
+        name: "Example Contest".to_owned(),
         ..Profile::default()
     };
     profile.save(&path).expect("save");
@@ -60,7 +60,7 @@ fn the_registry_keeps_sticks_and_survives_a_restart() {
         token: config.token.clone(),
         team: config.settings.team.clone(),
         site: config.settings.site.clone(),
-        contest: "RCPC 2026".to_owned(),
+        contest: "Example Contest".to_owned(),
         image: "stick-1.img".to_owned(),
         created_at: config.created_at,
     };
@@ -97,7 +97,7 @@ fn entry(name: &str) -> RegistryEntry {
         token: config.token,
         team: name.to_owned(),
         site: "Lab".to_owned(),
-        contest: "RCPC".to_owned(),
+        contest: "Example Contest".to_owned(),
         image: format!("{name}.img"),
         created_at: config.created_at,
     }
