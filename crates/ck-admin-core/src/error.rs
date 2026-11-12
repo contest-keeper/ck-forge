@@ -24,6 +24,8 @@ pub enum Error {
     DuplicateStick(StickId),
     #[error("{0}")]
     Image(#[from] ck_image::Error),
+    #[error("the wallpaper cannot be used: {0}")]
+    Wallpaper(String),
     #[error("the image has no settings yet (no ck/config.json on its EFI partition)")]
     ImageNotConfigured,
     #[error("the settings on the image are not valid: {0}")]

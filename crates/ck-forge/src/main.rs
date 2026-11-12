@@ -5,7 +5,9 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use ck_admin_core::{Error, Profile, Registry, build_image, configure_image, show_image};
+use ck_admin_core::{
+    Error, Profile, Registry, Wallpaper, build_image, configure_image, show_image,
+};
 use ck_protocol::{LocalDateTime, StickConfig};
 use clap::{Args, Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -94,7 +96,8 @@ enum RegistryCommand {
 
 #[derive(Args)]
 struct RegistryFile {
-    /// The registry file. It holds every stick's secret, so keep it private
+    /// The registry file. It holds every stick's secret, so keep it private. A file with `.lock`
+    /// added to its name stays next to it, which is how two runs at once take turns
     #[arg(long, default_value = DEFAULT_REGISTRY)]
     registry: PathBuf,
 }
@@ -137,7 +140,10 @@ fn run(command: Command, out: &mut impl Write) -> Result<(), Error> {
             profile,
             registry,
         }) => {
-            let config = configure_image(&image, &Profile::load(&profile)?, &registry.registry)?;
+            let loaded = Profile::load(&profile)?;
+            let wallpaper = Wallpaper::read(&loaded.stick_settings(), folder_of(&profile))?;
+            let config = configure_image(&image, &loaded, wallpaper.as_ref(), &registry.registry)?;
+            warn(&loaded);
             say(out, format_args!("Updated {}", image.display()))?;
             show_config(&config, out)
         }
@@ -172,10 +178,27 @@ fn profile_new(file: &std::path::Path, out: &mut impl Write) -> Result<(), Error
 
 fn profile_check(file: &std::path::Path, out: &mut impl Write) -> Result<(), Error> {
     let profile = Profile::load(file)?;
+    // The wallpaper is part of what the profile needs, so a missing picture is found here too.
+    Wallpaper::read(&profile.stick_settings(), folder_of(file))?;
+    warn(&profile);
     say(
         out,
         format_args!("{} is fine: {}", file.display(), profile.name),
     )
+}
+
+/// The folder a profile file is in, where the pictures it names are looked for.
+fn folder_of(file: &std::path::Path) -> &std::path::Path {
+    match file.parent() {
+        Some(folder) if !folder.as_os_str().is_empty() => folder,
+        _ => std::path::Path::new("."),
+    }
+}
+
+fn warn(profile: &Profile) {
+    for warning in profile.warnings() {
+        eprintln!("warning: {warning}");
+    }
 }
 
 fn image_build(
@@ -185,17 +208,28 @@ fn image_build(
     registry: &std::path::Path,
     out: &mut impl Write,
 ) -> Result<(), Error> {
-    let profile = Profile::load(profile)?;
+    let loaded = Profile::load(profile)?;
+    let wallpaper = Wallpaper::read(&loaded.stick_settings(), folder_of(profile))?;
+    warn(&loaded);
+    let profile = loaded;
     let bar = ProgressBar::new(0);
     bar.set_style(
         ProgressStyle::with_template("{bar:40} {bytes}/{total_bytes} ({eta})")
             .unwrap_or_else(|_| ProgressStyle::default_bar()),
     );
     let now = LocalDateTime::from(chrono::Local::now().naive_local());
-    let built = build_image(base, image, &profile, registry, now, |done, total| {
-        bar.set_length(total);
-        bar.set_position(done);
-    });
+    let built = build_image(
+        base,
+        image,
+        &profile,
+        wallpaper.as_ref(),
+        registry,
+        now,
+        |done, total| {
+            bar.set_length(total);
+            bar.set_position(done);
+        },
+    );
     bar.finish_and_clear();
     let built = built?;
     say(out, format_args!("Made {}", image.display()))?;
@@ -219,6 +253,9 @@ fn show_config(config: &StickConfig, out: &mut impl Write) -> Result<(), Error> 
             config.machine_number.unwrap_or(1)
         ),
     )?;
+    if let Some(wallpaper) = &s.branding.wallpaper {
+        say(out, format_args!("Wallpaper: {wallpaper}"))?;
+    }
     say(out, format_args!("Team:     {}", s.team))?;
     say(out, format_args!("Site:     {}", s.site))?;
     say(out, format_args!("Server:   {}", s.api.url))?;
