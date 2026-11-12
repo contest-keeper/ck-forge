@@ -16,6 +16,9 @@ pub struct RegistryEntry {
     pub contest: String,
     pub image: String,
     pub created_at: LocalDateTime,
+    /// The stick's number among the machines of its contest. Older entries have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_number: Option<u32>,
 }
 
 /// Every stick made so far. It holds the sticks' secrets, so the file must be kept private.
@@ -86,6 +89,20 @@ impl Registry {
         contest.clone_into(&mut entry.contest);
         registry.save(path)?;
         Ok(true)
+    }
+
+    /// The number for the next stick of `contest`: one more than any number used so far, and never
+    /// less than the count of sticks already made for it, so older entries without a number are
+    /// not given the same number twice.
+    #[must_use]
+    pub fn next_machine_number(&self, contest: &str) -> u32 {
+        let mut count = 0_u32;
+        let mut highest = 0_u32;
+        for entry in self.sticks.iter().filter(|e| e.contest == contest) {
+            count += 1;
+            highest = highest.max(entry.machine_number.unwrap_or(0));
+        }
+        count.max(highest) + 1
     }
 
     #[must_use]

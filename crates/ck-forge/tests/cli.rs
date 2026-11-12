@@ -145,6 +145,7 @@ fn a_stick_shows_its_contest_name_and_each_problem_is_listed_once() {
     );
     assert!(built.status.success(), "{}", text(&built.stderr));
     assert!(text(&built.stdout).contains("Contest:  My contest"));
+    assert!(text(&built.stdout).contains("Computer: default-team-1 (machine 1)"));
 
     std::fs::write(
         dir.path().join("bad.json"),
