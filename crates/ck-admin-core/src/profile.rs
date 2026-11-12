@@ -23,6 +23,17 @@ impl Profile {
         }
     }
 
+    /// The settings to put on a stick. The profile's name becomes the contest name unless the
+    /// settings already give one, so a stick always shows which contest it is for.
+    #[must_use]
+    pub fn stick_settings(&self) -> Settings {
+        let mut settings = self.settings.clone();
+        if settings.contest.name.is_empty() {
+            settings.contest.name.clone_from(&self.name);
+        }
+        settings
+    }
+
     /// The problems with this profile, in plain words. Empty when it is fine.
     #[must_use]
     pub fn problems(&self) -> Vec<ck_protocol::Problem> {

@@ -120,3 +120,38 @@ fn a_wrong_command_is_a_usage_error() {
     assert_eq!(forge(&["bogus"], dir.path()).status.code(), Some(2));
     assert!(forge(&["--help"], dir.path()).status.success());
 }
+
+#[test]
+fn a_stick_shows_its_contest_name_and_each_problem_is_listed_once() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    assert!(
+        forge(&["profile", "new", "p.json"], dir.path())
+            .status
+            .success()
+    );
+    let built = forge(
+        &[
+            "image",
+            "build",
+            "--base",
+            base.to_str().expect("utf-8 path"),
+            "--out",
+            "stick.img",
+            "--profile",
+            "p.json",
+        ],
+        dir.path(),
+    );
+    assert!(built.status.success(), "{}", text(&built.stderr));
+    assert!(text(&built.stdout).contains("Contest:  My contest"));
+
+    std::fs::write(
+        dir.path().join("bad.json"),
+        r#"{"name":"x","settings":{"api":{"heartbeat_s":0}}}"#,
+    )
+    .expect("write");
+    let result = forge(&["profile", "check", "bad.json"], dir.path());
+    let stderr = text(&result.stderr);
+    assert_eq!(stderr.matches("heartbeat interval").count(), 1, "{stderr}");
+}
