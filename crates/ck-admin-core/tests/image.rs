@@ -234,3 +234,35 @@ fn configure_works_without_a_registry_file_and_does_not_create_one() {
     configure_image(&out, &profile("New"), &elsewhere).expect("configure");
     assert!(!elsewhere.exists());
 }
+
+#[test]
+fn sticks_of_one_contest_get_machine_numbers_one_after_another() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    let registry = dir.path().join("registry.json");
+    let mut numbers = Vec::new();
+    for name in ["1.img", "2.img", "3.img"] {
+        let built = build_image(
+            &base,
+            &dir.path().join(name),
+            &profile("A"),
+            &registry,
+            time(),
+            |_, _| {},
+        )
+        .expect("build");
+        numbers.push(built.config.machine_number);
+    }
+    assert_eq!(numbers, [Some(1), Some(2), Some(3)]);
+    assert_eq!(
+        show_image(&dir.path().join("3.img"))
+            .expect("show")
+            .machine_number,
+        Some(3)
+    );
+
+    // Changing the settings of a stick never changes its number.
+    let changed =
+        configure_image(&dir.path().join("2.img"), &profile("B"), &registry).expect("configure");
+    assert_eq!(changed.machine_number, Some(2));
+}

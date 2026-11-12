@@ -42,7 +42,10 @@ pub fn build_image(
     now: LocalDateTime,
     progress: impl FnMut(u64, u64),
 ) -> Result<Built, Error> {
-    let config = make_stick_config(&profile.stick_settings(), now)?;
+    let settings = profile.stick_settings();
+    // Counted before the copy, so a profile that cannot be used stops before anything is written.
+    let number = Registry::load(registry)?.next_machine_number(&settings.contest.name);
+    let config = make_stick_config(&settings, number, now)?;
     let base_sha256 = copy_image(base, out, progress)?;
     let result = write_file(out, &config_path(), &to_json(&config))
         .map_err(Error::from)
@@ -59,6 +62,7 @@ pub fn build_image(
                         .file_name()
                         .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
                     created_at: config.created_at,
+                    machine_number: config.machine_number,
                 },
             )
         });

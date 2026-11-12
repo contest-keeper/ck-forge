@@ -11,14 +11,14 @@ workspace = true
 
 [dependencies]
 ck-admin-core = { path = "../ck-admin-core", version = "0.1.0" }
-ck-protocol = { git = "https://github.com/contest-keeper/ck-protocol", rev = "e569104d48c803b42dc6148819ece612f8ae88ac", version = "0.1.0" }
+ck-protocol = { git = "https://github.com/contest-keeper/ck-protocol", rev = "abf69fab780bb3d12ab73b18e3c4c99593a9aa5f", version = "0.1.0" }
 chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 clap = { version = "4.5.51", features = ["derive"] }
 indicatif = "0.18.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"
-ck-image = { git = "https://github.com/contest-keeper/ck-protocol", rev = "e569104d48c803b42dc6148819ece612f8ae88ac", version = "0.1.0" }
+ck-image = { git = "https://github.com/contest-keeper/ck-protocol", rev = "abf69fab780bb3d12ab73b18e3c4c99593a9aa5f", version = "0.1.0" }
 crc32fast = "1.5.5"
 fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
 fscommon = "0.1.1"

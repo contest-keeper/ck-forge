@@ -36,8 +36,8 @@ fn a_profile_is_checked_when_saved_and_when_loaded() {
 #[test]
 fn every_stick_gets_its_own_id_and_secret() {
     let profile = Profile::default();
-    let first = make_stick_config(&profile.settings, time()).expect("valid settings");
-    let second = make_stick_config(&profile.settings, time()).expect("valid settings");
+    let first = make_stick_config(&profile.settings, 1, time()).expect("valid settings");
+    let second = make_stick_config(&profile.settings, 1, time()).expect("valid settings");
 
     assert_eq!(first.validate(), []);
     assert_ne!(first.stick_id, second.stick_id);
@@ -54,7 +54,8 @@ fn the_registry_keeps_sticks_and_survives_a_restart() {
         []
     );
 
-    let config = make_stick_config(&Profile::default().settings, time()).expect("valid settings");
+    let config =
+        make_stick_config(&Profile::default().settings, 1, time()).expect("valid settings");
     let entry = RegistryEntry {
         stick_id: config.stick_id.clone(),
         token: config.token.clone(),
@@ -63,6 +64,7 @@ fn the_registry_keeps_sticks_and_survives_a_restart() {
         contest: "Example Contest".to_owned(),
         image: "stick-1.img".to_owned(),
         created_at: config.created_at,
+        machine_number: config.machine_number,
     };
 
     let mut registry = Registry::default();
@@ -91,7 +93,8 @@ fn the_registry_keeps_sticks_and_survives_a_restart() {
 }
 
 fn entry(name: &str) -> RegistryEntry {
-    let config = make_stick_config(&Profile::default().settings, time()).expect("valid settings");
+    let config =
+        make_stick_config(&Profile::default().settings, 1, time()).expect("valid settings");
     RegistryEntry {
         stick_id: config.stick_id,
         token: config.token,
@@ -100,6 +103,7 @@ fn entry(name: &str) -> RegistryEntry {
         contest: "Example Contest".to_owned(),
         image: format!("{name}.img"),
         created_at: config.created_at,
+        machine_number: config.machine_number,
     }
 }
 
@@ -155,7 +159,7 @@ fn no_stick_is_made_from_invalid_settings() {
     let mut settings = Profile::default().settings;
     settings.api.heartbeat_s = 0;
     assert!(matches!(
-        make_stick_config(&settings, time()),
+        make_stick_config(&settings, 1, time()),
         Err(Error::InvalidProfile(_))
     ));
 }
@@ -173,4 +177,38 @@ fn the_registry_is_private_to_its_owner() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o077, 0, "group and others must have no access");
+}
+
+#[test]
+fn machines_of_a_contest_are_numbered_one_after_another() {
+    let mut registry = Registry::default();
+    assert_eq!(registry.next_machine_number("Spring"), 1);
+
+    let mut first = entry("a");
+    first.contest = "Spring".to_owned();
+    first.machine_number = Some(1);
+    registry.add(first).expect("add");
+    let mut second = entry("b");
+    second.contest = "Spring".to_owned();
+    second.machine_number = Some(5);
+    registry.add(second).expect("add");
+    let mut other = entry("c");
+    other.contest = "Autumn".to_owned();
+    registry.add(other).expect("add");
+
+    assert_eq!(
+        registry.next_machine_number("Spring"),
+        6,
+        "after the highest"
+    );
+    assert_eq!(
+        registry.next_machine_number("Autumn"),
+        2,
+        "an older entry has no number"
+    );
+    assert_eq!(
+        registry.next_machine_number("Winter"),
+        1,
+        "every contest counts on its own"
+    );
 }

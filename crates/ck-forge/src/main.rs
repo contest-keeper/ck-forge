@@ -211,6 +211,14 @@ fn show_config(config: &StickConfig, out: &mut impl Write) -> Result<(), Error> 
         out,
         format_args!("Contest:  {} ({:?})", s.contest.name, s.contest.platform),
     )?;
+    say(
+        out,
+        format_args!(
+            "Computer: {} (machine {})",
+            config.computer_name(),
+            config.machine_number.unwrap_or(1)
+        ),
+    )?;
     say(out, format_args!("Team:     {}", s.team))?;
     say(out, format_args!("Site:     {}", s.site))?;
     say(out, format_args!("Server:   {}", s.api.url))?;
@@ -230,9 +238,10 @@ fn registry_list(path: &std::path::Path, out: &mut impl Write) -> Result<(), Err
         say(
             out,
             format_args!(
-                "{}  {}  {} / {}  {}  {}",
+                "{}  {}  #{}  {} / {}  {}  {}",
                 entry.stick_id,
                 entry.created_at,
+                entry.machine_number.unwrap_or(1),
                 entry.team,
                 entry.site,
                 entry.contest,
