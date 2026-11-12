@@ -4,7 +4,7 @@ use ck_protocol::{LocalDateTime, StickId, Token};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::file::{read_json, write_json_atomically};
+use crate::file::{Lock, read_json, write_json_atomically};
 
 /// One stick the admin has made. The Hub checks signatures with its token.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +47,18 @@ impl Registry {
         }
         self.sticks.push(entry);
         Ok(())
+    }
+
+    /// Adds a stick to the registry file and saves it. Safe when other programs do the same at the
+    /// same time: the file is locked, then read again, so nobody's sticks are lost.
+    ///
+    /// # Errors
+    /// Fails when a stick with the same id is already there, or the file cannot be read or written.
+    pub fn register(path: &Path, entry: RegistryEntry) -> Result<(), Error> {
+        let _lock = Lock::acquire(path)?;
+        let mut registry = Self::load(path)?;
+        registry.add(entry)?;
+        registry.save(path)
     }
 
     #[must_use]

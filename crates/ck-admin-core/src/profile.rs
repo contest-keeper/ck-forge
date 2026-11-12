@@ -19,12 +19,8 @@ impl Profile {
     /// # Errors
     /// Fails when the file cannot be read, is not a profile, or has problems.
     pub fn load(path: &Path) -> Result<Self, Error> {
-        let profile: Self = read_json(path)?.ok_or_else(|| {
-            Error::io(
-                format!("reading {}", path.display()),
-                std::io::Error::new(std::io::ErrorKind::NotFound, "the file does not exist"),
-            )
-        })?;
+        let profile: Self =
+            read_json(path)?.ok_or_else(|| Error::ProfileMissing(path.display().to_string()))?;
         profile.check()?;
         Ok(profile)
     }

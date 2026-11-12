@@ -16,6 +16,8 @@ pub enum Error {
         #[source]
         source: serde_json::Error,
     },
+    #[error("there is no profile at {0}")]
+    ProfileMissing(String),
     #[error("the profile has problems: {}", join(.0))]
     InvalidProfile(Vec<Problem>),
     #[error("stick {0} is already in the registry")]
