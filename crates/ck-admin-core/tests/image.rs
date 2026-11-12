@@ -10,7 +10,7 @@ fn time() -> LocalDateTime {
 
 fn profile(team: &str) -> Profile {
     let mut profile = Profile::template();
-    profile.settings.team = team.to_owned();
+    team.clone_into(&mut profile.settings.team);
     profile
 }
 
