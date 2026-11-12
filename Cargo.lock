@@ -188,6 +188,7 @@ dependencies = [
  "fatfs",
  "fscommon",
  "indicatif",
+ "serde_json",
  "tempfile",
 ]
 

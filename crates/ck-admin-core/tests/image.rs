@@ -26,6 +26,7 @@ fn builds_a_stick_image_and_registers_it() {
         &base,
         &out,
         &profile("Team A"),
+        None,
         &registry,
         time(),
         |_, _| {},
@@ -54,6 +55,7 @@ fn every_stick_gets_its_own_identity() {
         &base,
         &dir.path().join("1.img"),
         &profile("A"),
+        None,
         &registry,
         time(),
         |_, _| {},
@@ -63,6 +65,7 @@ fn every_stick_gets_its_own_identity() {
         &base,
         &dir.path().join("2.img"),
         &profile("B"),
+        None,
         &registry,
         time(),
         |_, _| {},
@@ -84,6 +87,7 @@ fn a_bad_profile_stops_before_any_copy() {
         &base,
         &out,
         &bad,
+        None,
         &dir.path().join("r.json"),
         time(),
         |_, _| {},
@@ -101,7 +105,16 @@ fn a_failed_build_leaves_no_image_behind() {
     // The registry path is a folder, so registering fails after the copy and the settings write.
     let registry = dir.path().join("registry-folder");
     std::fs::create_dir(&registry).expect("folder");
-    build_image(&base, &out, &profile("A"), &registry, time(), |_, _| {}).expect_err("fails");
+    build_image(
+        &base,
+        &out,
+        &profile("A"),
+        None,
+        &registry,
+        time(),
+        |_, _| {},
+    )
+    .expect_err("fails");
     assert!(!out.exists(), "the half-made image is removed");
 }
 
@@ -115,6 +128,7 @@ fn never_overwrites_an_existing_image() {
         &base,
         &out,
         &profile("A"),
+        None,
         &dir.path().join("r.json"),
         time(),
         |_, _| {},
@@ -132,13 +146,14 @@ fn configure_changes_the_settings_but_keeps_the_identity() {
         &base,
         &out,
         &profile("Old"),
+        None,
         &dir.path().join("r.json"),
         time(),
         |_, _| {},
     )
     .expect("build");
-    let changed =
-        configure_image(&out, &profile("New"), &dir.path().join("r.json")).expect("configure");
+    let changed = configure_image(&out, &profile("New"), None, &dir.path().join("r.json"))
+        .expect("configure");
     assert_eq!(changed.settings.team, "New");
     assert_eq!(changed.stick_id, built.config.stick_id);
     assert_eq!(changed.token, built.config.token);
@@ -152,7 +167,12 @@ fn a_plain_image_has_no_settings_to_show_or_change() {
     let base = support::make_image(&dir, "base.img");
     assert!(matches!(show_image(&base), Err(Error::ImageNotConfigured)));
     assert!(matches!(
-        configure_image(&base, &Profile::template(), &dir.path().join("r.json")),
+        configure_image(
+            &base,
+            &Profile::template(),
+            None,
+            &dir.path().join("r.json")
+        ),
         Err(Error::ImageNotConfigured)
     ));
 }
@@ -168,6 +188,7 @@ fn the_profile_name_becomes_the_contest_name_on_the_stick() {
         &base,
         &out,
         &named,
+        None,
         &dir.path().join("r.json"),
         time(),
         |_, _| {},
@@ -192,13 +213,21 @@ fn configure_keeps_the_registry_labels_in_step_with_the_image() {
     let base = support::make_image(&dir, "base.img");
     let out = dir.path().join("stick.img");
     let registry = dir.path().join("registry.json");
-    let built =
-        build_image(&base, &out, &profile("Old"), &registry, time(), |_, _| {}).expect("build");
+    let built = build_image(
+        &base,
+        &out,
+        &profile("Old"),
+        None,
+        &registry,
+        time(),
+        |_, _| {},
+    )
+    .expect("build");
 
     let mut changed = profile("New");
     changed.settings.site = "Lab 2".to_owned();
     "Autumn Contest".clone_into(&mut changed.name);
-    configure_image(&out, &changed, &registry).expect("configure");
+    configure_image(&out, &changed, None, &registry).expect("configure");
 
     let registry = Registry::load(&registry).expect("registry");
     let entry = registry.find(&built.config.stick_id).expect("entry");
@@ -225,13 +254,14 @@ fn configure_works_without_a_registry_file_and_does_not_create_one() {
         &base,
         &out,
         &profile("Old"),
+        None,
         &dir.path().join("made.json"),
         time(),
         |_, _| {},
     )
     .expect("build");
     let elsewhere = dir.path().join("other-registry.json");
-    configure_image(&out, &profile("New"), &elsewhere).expect("configure");
+    configure_image(&out, &profile("New"), None, &elsewhere).expect("configure");
     assert!(!elsewhere.exists());
 }
 
@@ -246,6 +276,7 @@ fn sticks_of_one_contest_get_machine_numbers_one_after_another() {
             &base,
             &dir.path().join(name),
             &profile("A"),
+            None,
             &registry,
             time(),
             |_, _| {},
@@ -262,7 +293,7 @@ fn sticks_of_one_contest_get_machine_numbers_one_after_another() {
     );
 
     // Changing the settings of a stick never changes its number.
-    let changed =
-        configure_image(&dir.path().join("2.img"), &profile("B"), &registry).expect("configure");
+    let changed = configure_image(&dir.path().join("2.img"), &profile("B"), None, &registry)
+        .expect("configure");
     assert_eq!(changed.machine_number, Some(2));
 }

@@ -156,3 +156,57 @@ fn a_stick_shows_its_contest_name_and_each_problem_is_listed_once() {
     let stderr = text(&result.stderr);
     assert_eq!(stderr.matches("heartbeat interval").count(), 1, "{stderr}");
 }
+
+#[test]
+fn a_wallpaper_next_to_the_profile_goes_onto_the_stick_and_a_missing_one_is_found_early() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    assert!(
+        forge(&["profile", "new", "p.json"], dir.path())
+            .status
+            .success()
+    );
+    let mut profile: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("p.json")).expect("read"))
+            .expect("json");
+    profile["settings"]["branding"]["wallpaper"] = "wall.png".into();
+    std::fs::write(dir.path().join("p.json"), profile.to_string()).expect("write");
+
+    // The picture is not there yet: the check says so before anything is built.
+    let missing = forge(&["profile", "check", "p.json"], dir.path());
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(
+        text(&missing.stderr).contains("wallpaper"),
+        "{}",
+        text(&missing.stderr)
+    );
+
+    std::fs::write(dir.path().join("wall.png"), b"\x89PNG picture").expect("picture");
+    let checked = forge(&["profile", "check", "p.json"], dir.path());
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+    assert!(
+        text(&checked.stderr).contains("warning: no server address"),
+        "an empty server address is only a warning: {}",
+        text(&checked.stderr)
+    );
+
+    let built = forge(
+        &[
+            "image",
+            "build",
+            "--base",
+            base.to_str().expect("utf-8 path"),
+            "--out",
+            "stick.img",
+            "--profile",
+            "p.json",
+        ],
+        dir.path(),
+    );
+    assert!(built.status.success(), "{}", text(&built.stderr));
+    assert!(text(&built.stdout).contains("Wallpaper: wall.png"));
+    assert_eq!(
+        ck_image::read_file(&dir.path().join("stick.img"), "ck/wall.png").expect("on the stick"),
+        b"\x89PNG picture"
+    );
+}

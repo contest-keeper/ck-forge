@@ -8,9 +8,11 @@ mod image;
 mod profile;
 mod registry;
 mod stick;
+mod wallpaper;
 
 pub use error::Error;
 pub use image::{Built, build_image, configure_image, show_image};
 pub use profile::Profile;
 pub use registry::{Registry, RegistryEntry};
 pub use stick::make_stick_config;
+pub use wallpaper::{MAX_WALLPAPER_BYTES, Wallpaper};

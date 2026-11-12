@@ -34,6 +34,19 @@ impl Profile {
         settings
     }
 
+    /// Things that are allowed but probably not what the admin wants. They do not stop a build.
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.settings.api.url.is_empty() {
+            warnings.push(
+                "no server address (api.url) is set, so sticks made from this profile cannot report to a Hub"
+                    .to_owned(),
+            );
+        }
+        warnings
+    }
+
     /// The problems with this profile, in plain words. Empty when it is fine.
     #[must_use]
     pub fn problems(&self) -> Vec<ck_protocol::Problem> {
