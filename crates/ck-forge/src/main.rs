@@ -73,6 +73,8 @@ enum ImageCommand {
         /// The contest profile
         #[arg(long)]
         profile: PathBuf,
+        #[command(flatten)]
+        registry: RegistryFile,
     },
     /// Print the settings on a stick image (the secret is not shown)
     Show {
@@ -110,11 +112,13 @@ fn main() -> ExitCode {
 
 /// Plain words for the admin: one line per problem with a profile, one line for anything else.
 fn report(error: &Error) {
-    eprintln!("error: {error}");
     if let Error::InvalidProfile(problems) = error {
+        eprintln!("error: the profile has problems:");
         for problem in problems {
             eprintln!("  - {problem}");
         }
+    } else {
+        eprintln!("error: {error}");
     }
 }
 
@@ -128,8 +132,12 @@ fn run(command: Command, out: &mut impl Write) -> Result<(), Error> {
             profile,
             registry,
         }) => image_build(&base, &image, &profile, &registry.registry, out),
-        Command::Image(ImageCommand::Configure { image, profile }) => {
-            let config = configure_image(&image, &Profile::load(&profile)?)?;
+        Command::Image(ImageCommand::Configure {
+            image,
+            profile,
+            registry,
+        }) => {
+            let config = configure_image(&image, &Profile::load(&profile)?, &registry.registry)?;
             say(out, format_args!("Updated {}", image.display()))?;
             show_config(&config, out)
         }

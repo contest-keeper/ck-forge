@@ -137,7 +137,8 @@ fn configure_changes_the_settings_but_keeps_the_identity() {
         |_, _| {},
     )
     .expect("build");
-    let changed = configure_image(&out, &profile("New")).expect("configure");
+    let changed =
+        configure_image(&out, &profile("New"), &dir.path().join("r.json")).expect("configure");
     assert_eq!(changed.settings.team, "New");
     assert_eq!(changed.stick_id, built.config.stick_id);
     assert_eq!(changed.token, built.config.token);
@@ -151,7 +152,85 @@ fn a_plain_image_has_no_settings_to_show_or_change() {
     let base = support::make_image(&dir, "base.img");
     assert!(matches!(show_image(&base), Err(Error::ImageNotConfigured)));
     assert!(matches!(
-        configure_image(&base, &Profile::template()),
+        configure_image(&base, &Profile::template(), &dir.path().join("r.json")),
         Err(Error::ImageNotConfigured)
     ));
+}
+
+#[test]
+fn the_profile_name_becomes_the_contest_name_on_the_stick() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    let out = dir.path().join("stick.img");
+    let mut named = profile("A");
+    "Spring Contest".clone_into(&mut named.name);
+    let built = build_image(
+        &base,
+        &out,
+        &named,
+        &dir.path().join("r.json"),
+        time(),
+        |_, _| {},
+    )
+    .expect("build");
+    assert_eq!(built.config.settings.contest.name, "Spring Contest");
+    assert_eq!(
+        show_image(&out).expect("show").settings.contest.name,
+        "Spring Contest"
+    );
+
+    // A name set in the settings wins over the profile's name.
+    let mut explicit = profile("B");
+    "Profile name".clone_into(&mut explicit.name);
+    "Settings name".clone_into(&mut explicit.settings.contest.name);
+    assert_eq!(explicit.stick_settings().contest.name, "Settings name");
+}
+
+#[test]
+fn configure_keeps_the_registry_labels_in_step_with_the_image() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    let out = dir.path().join("stick.img");
+    let registry = dir.path().join("registry.json");
+    let built =
+        build_image(&base, &out, &profile("Old"), &registry, time(), |_, _| {}).expect("build");
+
+    let mut changed = profile("New");
+    changed.settings.site = "Lab 2".to_owned();
+    "Autumn Contest".clone_into(&mut changed.name);
+    configure_image(&out, &changed, &registry).expect("configure");
+
+    let registry = Registry::load(&registry).expect("registry");
+    let entry = registry.find(&built.config.stick_id).expect("entry");
+    assert_eq!(
+        (
+            entry.team.as_str(),
+            entry.site.as_str(),
+            entry.contest.as_str()
+        ),
+        ("New", "Lab 2", "Autumn Contest")
+    );
+    assert_eq!(
+        entry.token, built.config.token,
+        "the secret is never changed"
+    );
+}
+
+#[test]
+fn configure_works_without_a_registry_file_and_does_not_create_one() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    let out = dir.path().join("stick.img");
+    build_image(
+        &base,
+        &out,
+        &profile("Old"),
+        &dir.path().join("made.json"),
+        time(),
+        |_, _| {},
+    )
+    .expect("build");
+    let elsewhere = dir.path().join("other-registry.json");
+    configure_image(&out, &profile("New"), &elsewhere).expect("configure");
+    assert!(!elsewhere.exists());
 }

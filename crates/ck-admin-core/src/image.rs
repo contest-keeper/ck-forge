@@ -42,7 +42,7 @@ pub fn build_image(
     now: LocalDateTime,
     progress: impl FnMut(u64, u64),
 ) -> Result<Built, Error> {
-    let config = make_stick_config(&profile.settings, now)?;
+    let config = make_stick_config(&profile.stick_settings(), now)?;
     let base_sha256 = copy_image(base, out, progress)?;
     let result = write_file(out, &config_path(), &to_json(&config))
         .map_err(Error::from)
@@ -54,7 +54,7 @@ pub fn build_image(
                     token: config.token.clone(),
                     team: config.settings.team.clone(),
                     site: config.settings.site.clone(),
-                    contest: profile.name.clone(),
+                    contest: config.settings.contest.name.clone(),
                     image: out
                         .file_name()
                         .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
@@ -73,18 +73,30 @@ pub fn build_image(
 }
 
 /// Replaces the settings on an image with the profile's, keeping the stick's id, secret and
-/// creation time. Returns the new file.
+/// creation time. Returns the new file. When the stick is in the registry file at `registry`, its
+/// team, site and contest are updated too.
 ///
 /// # Errors
 /// Fails when the profile has problems, the image has no settings yet, or it cannot be written.
-pub fn configure_image(image: &Path, profile: &Profile) -> Result<StickConfig, Error> {
+pub fn configure_image(
+    image: &Path,
+    profile: &Profile,
+    registry: &Path,
+) -> Result<StickConfig, Error> {
     let problems = profile.problems();
     if !problems.is_empty() {
         return Err(Error::InvalidProfile(problems));
     }
     let mut config = show_image(image)?;
-    config.settings = profile.settings.clone();
+    config.settings = profile.stick_settings();
     write_file(image, &config_path(), &to_json(&config))?;
+    Registry::update_labels(
+        registry,
+        &config.stick_id,
+        &config.settings.team,
+        &config.settings.site,
+        &config.settings.contest.name,
+    )?;
     Ok(config)
 }
 
