@@ -4,11 +4,13 @@
 
 mod error;
 mod file;
+mod image;
 mod profile;
 mod registry;
 mod stick;
 
 pub use error::Error;
+pub use image::{Built, build_image, configure_image, show_image};
 pub use profile::Profile;
 pub use registry::{Registry, RegistryEntry};
 pub use stick::make_stick_config;

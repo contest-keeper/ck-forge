@@ -22,6 +22,12 @@ pub enum Error {
     InvalidProfile(Vec<Problem>),
     #[error("stick {0} is already in the registry")]
     DuplicateStick(StickId),
+    #[error("{0}")]
+    Image(#[from] ck_image::Error),
+    #[error("the image has no settings yet (no ck/config.json on its EFI partition)")]
+    ImageNotConfigured,
+    #[error("the settings on the image are not valid: {0}")]
+    ImageSettingsUnreadable(serde_json::Error),
 }
 
 impl Error {
