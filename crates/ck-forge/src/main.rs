@@ -449,8 +449,17 @@ fn stick_write(
     let mut hash = String::new();
     for ((image, target), result) in jobs.iter().zip(results.map_err(admin_hint)?) {
         match result {
-            Ok(sha256) => {
-                let _ = writeln!(text, "Wrote {} to {}", image.display(), target.display());
+            Ok(ck_writer::Written { sha256, unchanged }) => {
+                let _ = write!(text, "Wrote {} to {}", image.display(), target.display());
+                if unchanged > 0 {
+                    let _ = write!(
+                        text,
+                        " ({:.1} of {:.1} GB was already on it and was not written again)",
+                        gigabytes(unchanged),
+                        gigabytes(size),
+                    );
+                }
+                text.push('\n');
                 hash = sha256;
             }
             Err(error) => failures.push(format!("{}: {}", label(target), admin_hint(error))),
@@ -505,6 +514,13 @@ fn images_for(images: &[PathBuf], count: usize) -> Result<Vec<PathBuf>, Error> {
         }
     }
     Ok(images.to_vec())
+}
+
+fn gigabytes(bytes: u64) -> f64 {
+    // Only for showing; a stick image is far below the range where this loses digits.
+    #[allow(clippy::cast_precision_loss)]
+    let gigabytes = bytes as f64 / 1e9;
+    gigabytes
 }
 
 /// A short name for a target: `disk 3` for `\\.\PhysicalDrive3`, else the file name.
