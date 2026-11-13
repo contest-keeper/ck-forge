@@ -12,7 +12,7 @@ use ck_admin_core::{
 };
 use ck_protocol::{LocalDateTime, StickConfig};
 use clap::{Args, Parser, Subcommand};
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde_json::json;
 
 const DEFAULT_REGISTRY: &str = "ck-registry.json";
@@ -48,17 +48,20 @@ enum Command {
 enum StickCommand {
     /// List the disks of this PC and say which ones may be written
     List,
-    /// Write a stick image to a USB stick, then read it back to check it.
-    /// Writing a disk needs an administrator terminal and erases the whole stick
+    /// Write a stick image to USB sticks, then read them back to check them.
+    /// Writing a disk needs an administrator terminal and erases the whole stick. Several sticks
+    /// are written at the same time, so a batch takes about as long as one stick
     Write {
         /// The stick image to write
         image: PathBuf,
-        /// The number of the disk to write (see `stick list`)
+        /// The number of a disk to write (see `stick list`). Repeat the option to write several
+        /// sticks at once
         #[arg(long, conflicts_with = "to", required_unless_present = "to")]
-        disk: Option<u32>,
-        /// Write to this file instead of a disk: tests the writer without a stick
+        disk: Vec<u32>,
+        /// Write to this file instead of a disk: tests the writer without a stick. Repeat the
+        /// option to write several files at once
         #[arg(long)]
-        to: Option<PathBuf>,
+        to: Vec<PathBuf>,
         /// Also allow a virtual disk (a VHD), for testing the writer without a stick
         #[arg(long)]
         allow_virtual: bool,
@@ -218,7 +221,7 @@ fn run(command: Command) -> Result<String, Error> {
             progress_file,
         }) => {
             let progress = progress_file.as_deref();
-            let result = stick_write(&image, disk, to, allow_virtual, yes, progress);
+            let result = stick_write(&image, &disk, to, allow_virtual, yes, progress);
             if let Err(error) = &result {
                 report_progress(
                     progress,
@@ -368,8 +371,8 @@ fn stick_list() -> Result<String, Error> {
 
 fn stick_write(
     image: &Path,
-    disk: Option<u32>,
-    to: Option<PathBuf>,
+    disks: &[u32],
+    to: Vec<PathBuf>,
     allow_virtual: bool,
     yes: bool,
     progress: Option<&Path>,
@@ -377,74 +380,158 @@ fn stick_write(
     let size = std::fs::metadata(image)
         .map_err(|e| Error::io(format!("reading {}", image.display()), e))?
         .len();
-    let target = match (disk, to) {
-        (_, Some(file)) => file,
-        (Some(number), None) => {
-            let chosen = ck_writer::list_disks()?
-                .into_iter()
-                .find(|d| d.number == number)
-                .ok_or(ck_writer::Error::NoSuchDisk(number))?;
-            chosen.check(size, allow_virtual)?;
-            if !yes {
-                confirm(&chosen)?;
-            }
-            ck_writer::prepare_disk(&chosen, size, allow_virtual).map_err(admin_hint)?;
-            ck_writer::disk_path(number)
-        }
-        (None, None) => unreachable!("clap requires --disk or --to"),
+    let targets = if to.is_empty() {
+        prepare_disks(disks, size, allow_virtual, yes)?
+    } else {
+        to
     };
-    let bar = ProgressBar::new(size);
-    bar.set_style(
-        ProgressStyle::with_template("{msg:>10} {bar:40} {bytes}/{total_bytes} ({eta})")
-            .unwrap_or_else(|_| ProgressStyle::default_bar()),
-    );
+
+    let bars = MultiProgress::new();
+    let bars: Vec<ProgressBar> = targets
+        .iter()
+        .map(|target| {
+            let bar = bars.add(ProgressBar::new(size));
+            bar.set_style(
+                ProgressStyle::with_template(
+                    "{prefix:>16} {msg:>9} {bar:30} {bytes}/{total_bytes} ({eta})",
+                )
+                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+            );
+            bar.set_prefix(label(target));
+            bar
+        })
+        .collect();
+    // For each target whether it is checking and how far it is; the slowest one is reported.
+    let mut state = vec![(false, 0_u64); targets.len()];
     let mut last_report = Instant::now();
-    let written = ck_writer::write_image(image, &target, |phase, done, total| {
-        let name = match phase {
-            ck_writer::Phase::Writing => "writing",
-            ck_writer::Phase::Verifying => "checking",
-        };
-        bar.set_length(total);
-        bar.set_position(done);
-        bar.set_message(name);
+    let results = ck_writer::write_image_to_all(image, &targets, |index, phase, done, total| {
+        let checking = phase == ck_writer::Phase::Verifying;
+        let name = if checking { "checking" } else { "writing" };
+        bars[index].set_length(total);
+        bars[index].set_position(done);
+        bars[index].set_message(name);
+        state[index] = (checking, done);
         // A file rewritten for every 4 MiB block would be needless work.
         if done == total || last_report.elapsed() >= Duration::from_millis(500) {
             last_report = Instant::now();
+            let (checking, done) = state.iter().copied().min().unwrap_or_default();
+            let name = if checking { "checking" } else { "writing" };
             report_progress(
                 progress,
                 &json!({ "state": name, "done": done, "total": total }),
             );
         }
     });
-    bar.finish_and_clear();
-    let hash = written.map_err(admin_hint)?;
+    for bar in &bars {
+        bar.finish_and_clear();
+    }
+
+    let mut text = String::new();
+    let mut failures = Vec::new();
+    let mut hash = String::new();
+    for (target, result) in targets.iter().zip(results.map_err(admin_hint)?) {
+        match result {
+            Ok(sha256) => {
+                let _ = writeln!(text, "Wrote {} to {}", image.display(), target.display());
+                hash = sha256;
+            }
+            Err(error) => failures.push(format!("{}: {}", label(target), admin_hint(error))),
+        }
+    }
+    if !failures.is_empty() {
+        let message = format!(
+            "{} of {} sticks failed ({}{})",
+            failures.len(),
+            targets.len(),
+            failures.join("; "),
+            if text.is_empty() {
+                String::new()
+            } else {
+                format!("). The others are written and checked, {}", text.trim_end())
+            }
+        );
+        return Err(Error::io("writing the sticks", io::Error::other(message)));
+    }
     report_progress(progress, &json!({ "state": "done", "sha256": hash }));
-    Ok(format!(
-        "Wrote {} to {}\nRead back and checked, SHA-256 {hash}\n",
-        image.display(),
-        target.display()
-    ))
+    let _ = writeln!(text, "Read back and checked, SHA-256 {hash}");
+    Ok(text)
 }
 
-/// Asks the admin to type the disk number, because this erases the whole disk.
-fn confirm(disk: &ck_writer::Disk) -> Result<(), Error> {
+/// A short name for a target: `disk 3` for `\\.\PhysicalDrive3`, else the file name.
+fn label(target: &Path) -> String {
+    let name = target.file_name().map_or_else(
+        || target.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    match name.strip_prefix("PhysicalDrive") {
+        Some(number) => format!("disk {number}"),
+        None => name,
+    }
+}
+
+/// Looks every disk up and checks that it may be written, asks once for all of them, then gets
+/// each ready. Nothing is touched before every disk has passed the checks. Returns the device
+/// paths.
+fn prepare_disks(
+    numbers: &[u32],
+    size: u64,
+    allow_virtual: bool,
+    yes: bool,
+) -> Result<Vec<PathBuf>, Error> {
+    let listed = ck_writer::list_disks()?;
+    let mut chosen: Vec<ck_writer::Disk> = Vec::new();
+    for &number in numbers {
+        if chosen.iter().any(|d| d.number == number) {
+            return Err(Error::io(
+                format!("disk {number} is given twice"),
+                io::Error::from(io::ErrorKind::InvalidInput),
+            ));
+        }
+        let disk = listed
+            .iter()
+            .find(|d| d.number == number)
+            .cloned()
+            .ok_or(ck_writer::Error::NoSuchDisk(number))?;
+        disk.check(size, allow_virtual)?;
+        chosen.push(disk);
+    }
+    if !yes {
+        confirm(&chosen)?;
+    }
+    for disk in &chosen {
+        ck_writer::prepare_disk(disk, size, allow_virtual).map_err(admin_hint)?;
+    }
+    Ok(chosen
+        .iter()
+        .map(|d| ck_writer::disk_path(d.number))
+        .collect())
+}
+
+/// Asks the admin to type the disk numbers, because this erases the whole disks.
+fn confirm(disks: &[ck_writer::Disk]) -> Result<(), Error> {
     let mut out = io::stdout();
-    write!(
-        out,
-        "This ERASES disk {}: {} ({}, serial {}).\nType erase {} to go on: ",
-        disk.number,
-        disk.friendly_name.as_deref().unwrap_or("?"),
-        disk.size_text(),
-        disk.serial_number.as_deref().unwrap_or("?").trim(),
-        disk.number
-    )
-    .and_then(|()| out.flush())
-    .map_err(|e| Error::io("writing the output", e))?;
+    let mut numbers = Vec::new();
+    for disk in disks {
+        writeln!(
+            out,
+            "This ERASES disk {}: {} ({}, serial {}).",
+            disk.number,
+            disk.friendly_name.as_deref().unwrap_or("?"),
+            disk.size_text(),
+            disk.serial_number.as_deref().unwrap_or("?").trim(),
+        )
+        .map_err(|e| Error::io("writing the output", e))?;
+        numbers.push(disk.number.to_string());
+    }
+    let expected = format!("erase {}", numbers.join(" "));
+    write!(out, "Type {expected} to go on: ")
+        .and_then(|()| out.flush())
+        .map_err(|e| Error::io("writing the output", e))?;
     let mut answer = String::new();
     io::stdin()
         .read_line(&mut answer)
         .map_err(|e| Error::io("reading the answer", e))?;
-    if answer.trim() == format!("erase {}", disk.number) {
+    if answer.trim() == expected {
         Ok(())
     } else {
         Err(Error::io(

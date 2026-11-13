@@ -255,7 +255,13 @@ pub async fn write_stick(
 }
 
 fn write_to_file(app: &AppHandle, image: &Path, file: &Path) -> Result<String, String> {
+    let mut last = Instant::now();
     ck_writer::write_image(image, file, |phase, done, total| {
+        // Like the image build: no event for every block, but always one for the end of a phase.
+        if done != total && last.elapsed() < Duration::from_millis(250) {
+            return;
+        }
+        last = Instant::now();
         let phase = match phase {
             ck_writer::Phase::Writing => "writing",
             ck_writer::Phase::Verifying => "checking",
