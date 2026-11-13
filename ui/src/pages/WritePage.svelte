@@ -7,17 +7,19 @@
 
   let image = $state(app.imagePath ?? '');
   let disks = $state<api.DiskView[]>([]);
-  let chosen = $state<number | null>(null);
+  let chosen = $state<number[]>([]);
   let allowVirtual = $state(false);
   let typed = $state('');
   let testFile = $state('');
   let busy = $state(false);
   let progress = $state<api.Progress | null>(null);
   let hash = $state('');
+  let written = $state(0);
   let failure = $state('');
 
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
-  const confirmed = $derived(chosen !== null && typed.trim() === eraseConfirmation(chosen));
+  const confirmed = $derived(chosen.length > 0 && typed.trim() === eraseConfirmation(chosen));
+  const names = $derived([...chosen].sort((a, b) => a - b).join(', '));
 
   onMount(() => {
     const stop = api.onProgress((p) => {
@@ -28,13 +30,13 @@
 
   async function chooseImage() {
     image = (await api.chooseImageToOpen()) ?? image;
-    chosen = null;
+    chosen = [];
     disks = [];
   }
 
   async function refresh() {
     failure = '';
-    chosen = null;
+    chosen = [];
     typed = '';
     try {
       disks = await api.listDisks(image, allowVirtual);
@@ -47,13 +49,14 @@
     testFile = (await api.chooseImageToSave()) ?? testFile;
   }
 
-  async function write(target: { disk: number } | { file: string }) {
+  async function write(target: { disks: number[] } | { file: string }) {
     busy = true;
     failure = '';
     hash = '';
     progress = null;
     try {
       hash = await api.writeStick(image, target, allowVirtual);
+      written = 'disks' in target ? target.disks.length : 1;
       app.written = true;
     } catch (error) {
       failure = describeError(error);
@@ -80,8 +83,11 @@
   </div>
 
   <div class="card">
-    <h2>Choose the stick to erase</h2>
-    <p class="hint">A stick of at least 32 GB is needed. Everything on it is erased.</p>
+    <h2>Choose the sticks to erase</h2>
+    <p class="hint">
+      A stick of at least 32 GB is needed. Everything on it is erased. Tick several sticks to write
+      them all at the same time.
+    </p>
     <div class="row">
       <button type="button" class="btn sm" onclick={refresh} disabled={busy || !image}>
         Find sticks
@@ -94,10 +100,13 @@
     <ul class="disks">
       {#each disks as disk (disk.number)}
         <li>
-          <label class="disk" class:sel={chosen === disk.number} class:off={disk.refused !== null}>
+          <label
+            class="disk"
+            class:sel={chosen.includes(disk.number)}
+            class:off={disk.refused !== null}
+          >
             <input
-              type="radio"
-              name="disk"
+              type="checkbox"
               value={disk.number}
               bind:group={chosen}
               disabled={busy || disk.refused !== null}
@@ -120,10 +129,13 @@
     </ul>
   </div>
 
-  {#if chosen !== null}
+  {#if chosen.length > 0}
     <div class="danger">
       <div class="grow">
-        <div class="dh">Everything on disk {chosen} will be erased</div>
+        <div class="dh">
+          Everything on {chosen.length === 1 ? 'disk' : 'disks'}
+          {names} will be erased
+        </div>
         <div class="hint">
           This cannot be undone. Type <strong>{eraseConfirmation(chosen)}</strong> to confirm.
         </div>
@@ -137,10 +149,14 @@
       <button
         type="button"
         class="btn dng"
-        onclick={() => write({ disk: chosen as number })}
+        onclick={() => write({ disks: [...chosen] })}
         disabled={busy || !confirmed}
       >
-        {busy ? 'Writing…' : 'Erase and write'}
+        {busy
+          ? 'Writing…'
+          : chosen.length > 1
+            ? `Erase and write ${chosen.length} sticks`
+            : 'Erase and write'}
       </button>
     </div>
   {/if}
@@ -148,7 +164,10 @@
   <ProgressBar {progress} />
   {#if failure}<p class="note error" role="alert">{failure}</p>{/if}
   {#if hash}
-    <p class="note ok">Written and read back. The check value (SHA-256) is {hash}.</p>
+    <p class="note ok">
+      Written and read back on {written === 1 ? 'the stick' : `${written} sticks`}. The check value
+      (SHA-256) is {hash}.
+    </p>
   {/if}
 
   <div class="card">
