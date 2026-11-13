@@ -8,6 +8,7 @@ use std::thread::{self, ScopedJoinHandle};
 use sha2::{Digest, Sha256};
 
 use crate::Error;
+use crate::thin::Source;
 
 /// Disks only take whole sectors, so the last block is padded with zeros to this size.
 const SECTOR: usize = 512;
@@ -66,12 +67,10 @@ pub fn write_image_to_all(
     targets: &[PathBuf],
     mut progress: impl FnMut(usize, Phase, u64, u64),
 ) -> Result<Vec<Result<String, Error>>, Error> {
-    let source =
-        File::open(image).map_err(|e| Error::io(format!("opening {}", image.display()), e))?;
-    let total = source
-        .metadata()
-        .map_err(|e| Error::io(format!("reading the size of {}", image.display()), e))?
-        .len();
+    let Source {
+        reader: source,
+        len: total,
+    } = crate::thin::open(image)?;
     if total == 0 {
         return Err(Error::EmptyImage);
     }
@@ -121,7 +120,7 @@ type Written = Vec<(usize, Result<(), Error>)>;
 /// The write pass: one thread reads and hashes the image and hands every block to one writer thread
 /// per target. Returns the SHA-256 of the image and how each writer fared.
 fn write_all_targets(
-    source: File,
+    source: Box<dyn Read + Send>,
     outs: Vec<(usize, File)>,
     targets: &[PathBuf],
     total: u64,
@@ -297,7 +296,7 @@ fn block_len(left: u64) -> usize {
     usize::try_from(left).map_or(BLOCK, |left| left.min(BLOCK))
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::new(), |mut text, byte| {
         let _ = write!(text, "{byte:02x}");

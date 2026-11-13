@@ -20,6 +20,8 @@ pub enum Error {
     Prepare { number: u32, detail: String },
     #[error("the image is empty")]
     EmptyImage,
+    #[error("{0}")]
+    Thin(String),
     #[error(
         "what was read back from the target is not what was written (written {written}, read back {read_back})"
     )]

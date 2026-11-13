@@ -32,5 +32,13 @@ ck-forge stick write stick.img --disk 3      # in an administrator terminal; era
 ck-forge registry push --hub https://hub.example.org --user ana
 ```
 
+`image build` takes about a second. The settings of a stick sit in the EFI partition at the start of
+the image, so `stick.img` holds only that start (about 130 MB) and a manifest, `stick.img.thin.json`,
+that names the base image. `stick write` reads the start from `stick.img` and the rest from the base,
+and refuses to write when the base is not the image `stick.img` was made from. Keep the base where
+it was. `--full-copy` makes a whole 30 GB image instead, which runs without the base. Writing one
+image to several sticks at once is for a plain base image only: an image made for a stick holds that
+stick's identity.
+
 A stick is written, read back and compared by SHA-256. Only USB disks are written, never the disk
 Windows runs from. To try the writer without a stick, see [docs/testing-the-writer.md](docs/testing-the-writer.md).

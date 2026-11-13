@@ -19,7 +19,7 @@
       title: 'Make image',
       hint: 'Copy base, apply profile',
       blurb:
-        'Copies the base image and gives the copy its own identity and the settings of the saved profile. The base image is only read, never changed.',
+        'Makes the image of one stick: the base image with its own identity and the settings of the saved profile. Only the start of the image is copied, so this takes a second, and the base image must stay where it is. The base image is only read, never changed.',
       page: BuildPage,
     },
     {

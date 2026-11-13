@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use ck_admin_core::{Profile, Wallpaper, build_image as build, folder_of};
+use ck_admin_core::{Profile, Wallpaper, build_thin_image as build, folder_of};
 use ck_protocol::LocalDateTime;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -88,9 +88,7 @@ pub struct DiskView {
 #[tauri::command]
 pub async fn list_disks(image: PathBuf, allow_virtual: bool) -> Result<Vec<DiskView>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let size = std::fs::metadata(&image)
-            .map_err(|e| format!("cannot read {}: {e}", image.display()))?
-            .len();
+        let size = ck_writer::thin::image_len(&image).map_err(|e| e.to_string())?;
         let disks = ck_writer::list_disks().map_err(|e| e.to_string())?;
         Ok(disks
             .iter()

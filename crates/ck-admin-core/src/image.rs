@@ -13,8 +13,19 @@ use crate::wallpaper::Wallpaper;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Built {
     pub config: StickConfig,
-    /// SHA-256 of the copy of the base image, before the settings were written.
-    pub base_sha256: String,
+    /// SHA-256 of the copy of the base image, before the settings were written. Only a full copy has
+    /// one: a thin image does not read the whole base.
+    pub base_sha256: Option<String>,
+}
+
+/// How much of the base image a new stick image holds.
+#[derive(Clone, Copy)]
+enum Copy {
+    /// All of it: a file of the size of the base that runs on its own.
+    Full,
+    /// Only its start, up to the end of the EFI partition, and a manifest that names the base for
+    /// the rest. See `ck_writer::thin`.
+    Thin,
 }
 
 fn config_path() -> String {
@@ -70,12 +81,68 @@ pub fn build_image(
     now: LocalDateTime,
     progress: impl FnMut(u64, u64),
 ) -> Result<Built, Error> {
+    build(
+        base,
+        out,
+        profile,
+        wallpaper,
+        registry,
+        now,
+        Copy::Full,
+        progress,
+    )
+}
+
+/// Like [`build_image`], but `out` holds only the start of the base image, through its EFI
+/// partition, and a manifest `out` + `.thin.json` names `base` for the rest. That is a copy of a
+/// few hundred megabytes and not of 30 GB, and a stick written from it is the same stick. The
+/// result is not an image that runs by itself: `ck-forge stick write` reads the rest from `base`,
+/// and refuses it when `base` is not the image it was made from. Needs the EFI partition to be
+/// the last part of the image that the settings touch, which is the case for every stick image.
+pub fn build_thin_image(
+    base: &Path,
+    out: &Path,
+    profile: &Profile,
+    wallpaper: Option<&Wallpaper>,
+    registry: &Path,
+    now: LocalDateTime,
+    progress: impl FnMut(u64, u64),
+) -> Result<Built, Error> {
+    build(
+        base,
+        out,
+        profile,
+        wallpaper,
+        registry,
+        now,
+        Copy::Thin,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build(
+    base: &Path,
+    out: &Path,
+    profile: &Profile,
+    wallpaper: Option<&Wallpaper>,
+    registry: &Path,
+    now: LocalDateTime,
+    copy: Copy,
+    progress: impl FnMut(u64, u64),
+) -> Result<Built, Error> {
     let settings = profile.stick_settings();
     check_wallpaper(&settings, wallpaper)?;
     // Counted before the copy, so a profile that cannot be used stops before anything is written.
     let number = Registry::load(registry)?.next_machine_number(&settings.contest.name);
     let config = make_stick_config(&settings, number, now)?;
-    let base_sha256 = copy_image(base, out, progress)?;
+    let base_sha256 = match copy {
+        Copy::Full => Some(copy_image(base, out, progress)?),
+        Copy::Thin => {
+            ck_writer::thin::create(base, out, efi_end(base)?, progress)?;
+            None
+        }
+    };
     let result = write_file(out, &config_path(), &to_json(&config))
         .map_err(Error::from)
         .and_then(|()| write_wallpaper(out, wallpaper))
@@ -97,13 +164,21 @@ pub fn build_image(
             )
         });
     if let Err(error) = result {
-        let _ = fs::remove_file(out);
+        ck_writer::thin::remove(out);
         return Err(error);
     }
     Ok(Built {
         config,
         base_sha256,
     })
+}
+
+/// Where the EFI partition of `base` ends: the settings are written inside it.
+fn efi_end(base: &Path) -> Result<u64, Error> {
+    let mut file =
+        fs::File::open(base).map_err(|e| Error::io(format!("opening {}", base.display()), e))?;
+    let partitions = ck_image::read_partitions(&mut file)?;
+    Ok(ck_image::find_efi(&partitions)?.end_byte())
 }
 
 /// Replaces the settings on an image with the profile's, keeping the stick's id, secret and
