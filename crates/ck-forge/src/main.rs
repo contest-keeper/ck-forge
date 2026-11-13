@@ -36,6 +36,33 @@ enum Command {
     /// See the sticks that were made
     #[command(subcommand)]
     Registry(RegistryCommand),
+    /// List USB disks and write an image to a stick
+    #[command(subcommand)]
+    Stick(StickCommand),
+}
+
+#[derive(Subcommand)]
+enum StickCommand {
+    /// List the disks of this PC and say which ones may be written
+    List,
+    /// Write a stick image to a USB stick, then read it back to check it.
+    /// Writing a disk needs an administrator terminal and erases the whole stick
+    Write {
+        /// The stick image to write
+        image: PathBuf,
+        /// The number of the disk to write (see `stick list`)
+        #[arg(long, conflicts_with = "to", required_unless_present = "to")]
+        disk: Option<u32>,
+        /// Write to this file instead of a disk: tests the writer without a stick
+        #[arg(long)]
+        to: Option<PathBuf>,
+        /// Also allow a virtual disk (a VHD), for testing the writer without a stick
+        #[arg(long)]
+        allow_virtual: bool,
+        /// Do not ask for the confirmation (for scripts and tests)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -151,6 +178,14 @@ fn run(command: Command, out: &mut impl Write) -> Result<(), Error> {
         Command::Registry(RegistryCommand::List { registry }) => {
             registry_list(&registry.registry, out)
         }
+        Command::Stick(StickCommand::List) => stick_list(out),
+        Command::Stick(StickCommand::Write {
+            image,
+            disk,
+            to,
+            allow_virtual,
+            yes,
+        }) => stick_write(&image, disk, to, allow_virtual, yes, out),
     }
 }
 
@@ -287,4 +322,117 @@ fn registry_list(path: &std::path::Path, out: &mut impl Write) -> Result<(), Err
         )?;
     }
     Ok(())
+}
+
+fn stick_list(out: &mut impl Write) -> Result<(), Error> {
+    for disk in ck_writer::list_disks()? {
+        let verdict = match disk.check(0, true) {
+            Ok(()) => "can be written".to_owned(),
+            Err(error) => format!("refused: {error}"),
+        };
+        say(
+            out,
+            format_args!(
+                "disk {}  {}  {}  {}  serial {}  [{}]",
+                disk.number,
+                disk.friendly_name.as_deref().unwrap_or("?"),
+                disk.size_text(),
+                disk.bus_type,
+                disk.serial_number.as_deref().unwrap_or("?").trim(),
+                verdict
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn stick_write(
+    image: &std::path::Path,
+    disk: Option<u32>,
+    to: Option<PathBuf>,
+    allow_virtual: bool,
+    yes: bool,
+    out: &mut impl Write,
+) -> Result<(), Error> {
+    let size = std::fs::metadata(image)
+        .map_err(|e| Error::io(format!("reading {}", image.display()), e))?
+        .len();
+    let target = match (disk, to) {
+        (_, Some(file)) => file,
+        (Some(number), None) => {
+            let chosen = ck_writer::list_disks()?
+                .into_iter()
+                .find(|d| d.number == number)
+                .ok_or(ck_writer::Error::NoSuchDisk(number))?;
+            chosen.check(size, allow_virtual)?;
+            if !yes {
+                confirm(&chosen, out)?;
+            }
+            ck_writer::prepare_disk(&chosen, size, allow_virtual).map_err(admin_hint)?;
+            ck_writer::disk_path(number)
+        }
+        (None, None) => unreachable!("clap requires --disk or --to"),
+    };
+    let bar = ProgressBar::new(size);
+    bar.set_style(
+        ProgressStyle::with_template("{msg:>10} {bar:40} {bytes}/{total_bytes} ({eta})")
+            .unwrap_or_else(|_| ProgressStyle::default_bar()),
+    );
+    let written = ck_writer::write_image(image, &target, |phase, done, total| {
+        bar.set_length(total);
+        bar.set_position(done);
+        bar.set_message(match phase {
+            ck_writer::Phase::Writing => "writing",
+            ck_writer::Phase::Verifying => "checking",
+        });
+    });
+    bar.finish_and_clear();
+    let hash = written.map_err(admin_hint)?;
+    say(
+        out,
+        format_args!("Wrote {} to {}", image.display(), target.display()),
+    )?;
+    say(out, format_args!("Read back and checked, SHA-256 {hash}"))
+}
+
+/// Asks the admin to type the disk number, because this erases the whole disk.
+fn confirm(disk: &ck_writer::Disk, out: &mut impl Write) -> Result<(), Error> {
+    say(
+        out,
+        format_args!(
+            "This ERASES disk {}: {} ({}, serial {}).",
+            disk.number,
+            disk.friendly_name.as_deref().unwrap_or("?"),
+            disk.size_text(),
+            disk.serial_number.as_deref().unwrap_or("?").trim()
+        ),
+    )?;
+    write!(out, "Type erase {} to go on: ", disk.number)
+        .and_then(|()| out.flush())
+        .map_err(|e| Error::io("writing the output", e))?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| Error::io("reading the answer", e))?;
+    if answer.trim() == format!("erase {}", disk.number) {
+        Ok(())
+    } else {
+        Err(Error::io(
+            "cancelled, nothing was written",
+            io::Error::from(io::ErrorKind::Interrupted),
+        ))
+    }
+}
+
+/// Writing a disk without administrator rights fails with "access denied"; say what to do.
+fn admin_hint(error: ck_writer::Error) -> Error {
+    if let ck_writer::Error::Io { source, .. } = &error
+        && source.kind() == io::ErrorKind::PermissionDenied
+    {
+        return Error::io(
+            "access denied: open a terminal as administrator and run the command again",
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        );
+    }
+    error.into()
 }
