@@ -16,6 +16,7 @@
   let hash = $state('');
   let failure = $state('');
 
+  const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
   const confirmed = $derived(chosen !== null && typed.trim() === eraseConfirmation(chosen));
 
   onMount(() => {
@@ -53,6 +54,7 @@
     progress = null;
     try {
       hash = await api.writeStick(image, target, allowVirtual);
+      app.written = true;
     } catch (error) {
       failure = describeError(error);
     } finally {
@@ -64,57 +66,77 @@
 </script>
 
 <div class="page">
-  <h2>Write a stick</h2>
-  <div class="row">
-    <button type="button" onclick={chooseImage} disabled={busy}>Stick image…</button>
-    <span class="path">{image || 'none chosen'}</span>
+  <div class="card">
+    <h2>Image</h2>
+    <div class="path">
+      <div class="grow">
+        <div class="n">{image ? fileName(image) : 'none chosen'}</div>
+        {#if image}<div class="p">{image}</div>{/if}
+      </div>
+      <button type="button" class="btn sm" onclick={chooseImage} disabled={busy}>
+        {image ? 'Change…' : 'Choose…'}
+      </button>
+    </div>
   </div>
 
-  <h3>USB stick</h3>
-  <p>
-    Everything on the chosen stick is erased. Windows asks for administrator permission when the
-    write starts. A stick of at least 32 GB is needed.
-  </p>
-  <div class="row">
-    <button type="button" onclick={refresh} disabled={busy || !image}>Find sticks</button>
-    <label class="check">
-      <input type="checkbox" bind:checked={allowVirtual} disabled={busy} />
-      <span>Also show virtual disks (for testing)</span>
-    </label>
+  <div class="card">
+    <h2>Choose the stick to erase</h2>
+    <p class="hint">A stick of at least 32 GB is needed. Everything on it is erased.</p>
+    <div class="row">
+      <button type="button" class="btn sm" onclick={refresh} disabled={busy || !image}>
+        Find sticks
+      </button>
+      <label class="check">
+        <input type="checkbox" bind:checked={allowVirtual} disabled={busy} />
+        <span>Also show virtual disks (for testing)</span>
+      </label>
+    </div>
+    <ul class="disks">
+      {#each disks as disk (disk.number)}
+        <li>
+          <label class="disk" class:sel={chosen === disk.number} class:off={disk.refused !== null}>
+            <input
+              type="radio"
+              name="disk"
+              value={disk.number}
+              bind:group={chosen}
+              disabled={busy || disk.refused !== null}
+            />
+            <span class="grow">
+              <span class="dn">Disk {disk.number} · {disk.name || 'unnamed'}</span>
+              <span class="dm" style="display: block">
+                {disk.size} · {disk.bus}{disk.serial ? ` · serial ${disk.serial}` : ''}
+                {#if disk.refused}· Not offered: {disk.refused}{/if}
+              </span>
+            </span>
+            {#if disk.refused !== null}
+              <span class="pill no">Protected</span>
+            {:else}
+              <span class="pill ok">Safe to write</span>
+            {/if}
+          </label>
+        </li>
+      {/each}
+    </ul>
   </div>
-
-  <ul class="disks">
-    {#each disks as disk (disk.number)}
-      <li>
-        <label class:refused={disk.refused !== null}>
-          <input
-            type="radio"
-            name="disk"
-            value={disk.number}
-            bind:group={chosen}
-            disabled={busy || disk.refused !== null}
-          />
-          <span>
-            Disk {disk.number}: {disk.name || 'unnamed'}, {disk.size}, {disk.bus}
-            {#if disk.serial}(serial {disk.serial}){/if}
-          </span>
-        </label>
-        {#if disk.refused}<small>{disk.refused}</small>{/if}
-      </li>
-    {/each}
-  </ul>
 
   {#if chosen !== null}
-    <label class="confirm">
-      <span
-        >Type <strong>{eraseConfirmation(chosen)}</strong> to erase this disk and write the image:</span
-      >
-      <input bind:value={typed} autocomplete="off" disabled={busy} />
-    </label>
-    <div>
+    <div class="danger">
+      <div class="grow">
+        <div class="dh">Everything on disk {chosen} will be erased</div>
+        <div class="hint">
+          This cannot be undone. Type <strong>{eraseConfirmation(chosen)}</strong> to confirm.
+        </div>
+      </div>
+      <input
+        aria-label="Type {eraseConfirmation(chosen)} to confirm"
+        bind:value={typed}
+        autocomplete="off"
+        disabled={busy}
+      />
       <button
         type="button"
-        class="primary"
+        class="btn dng"
         onclick={() => write({ disk: chosen as number })}
         disabled={busy || !confirmed}
       >
@@ -123,25 +145,35 @@
     </div>
   {/if}
 
-  <h3>Test without a stick</h3>
-  <p>Writes to a file instead, the same way and with the same check, and needs no permission.</p>
-  <div class="row">
-    <button type="button" onclick={chooseTestFile} disabled={busy}>Target file…</button>
-    <span class="path">{testFile || 'none chosen'}</span>
-    <button
-      type="button"
-      onclick={() => write({ file: testFile })}
-      disabled={busy || !image || !testFile}
-    >
-      Write the file
-    </button>
-  </div>
-
   <ProgressBar {progress} />
-  {#if failure}<p class="error" role="alert">{failure}</p>{/if}
+  {#if failure}<p class="note error" role="alert">{failure}</p>{/if}
   {#if hash}
-    <p class="ok">Written and read back. The check value (SHA-256) is {hash}.</p>
+    <p class="note ok">Written and read back. The check value (SHA-256) is {hash}.</p>
   {/if}
+
+  <div class="card">
+    <h2>No stick at hand?</h2>
+    <p class="hint">
+      Do a dry run into a file instead. Same write, same check, and no permission prompt.
+    </p>
+    <div class="path">
+      <div class="grow">
+        <div class="n">{testFile ? fileName(testFile) : 'none chosen'}</div>
+        {#if testFile}<div class="p">{testFile}</div>{/if}
+      </div>
+      <button type="button" class="btn sm" onclick={chooseTestFile} disabled={busy}>
+        Target file…
+      </button>
+      <button
+        type="button"
+        class="btn sm"
+        onclick={() => write({ file: testFile })}
+        disabled={busy || !image || !testFile}
+      >
+        Write the file
+      </button>
+    </div>
+  </div>
 </div>
 
 <style>
@@ -150,66 +182,10 @@
     flex-direction: column;
     gap: var(--gap);
   }
-  h2,
-  h3 {
-    margin: 0;
-    font-size: 1.05rem;
-  }
-  h3 {
-    margin-top: 12px;
-    font-size: 0.95rem;
-  }
-  p {
-    margin: 0;
-  }
   .row {
     display: flex;
     gap: var(--gap);
     align-items: center;
     flex-wrap: wrap;
-  }
-  .check {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-  }
-  .path {
-    color: var(--muted);
-    overflow-wrap: anywhere;
-  }
-  .disks {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .disks label {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-  .refused {
-    color: var(--muted);
-  }
-  small {
-    display: block;
-    margin-left: 26px;
-    color: var(--muted);
-  }
-  .confirm {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    max-width: 420px;
-  }
-  .ok {
-    color: var(--ok);
-    overflow-wrap: anywhere;
-  }
-  .error {
-    color: var(--danger);
-    white-space: pre-wrap;
   }
 </style>

@@ -1,0 +1,232 @@
+/* The classic theme: the Windows 9x look of the Contest Keeper browser extension (contest-keeper-extension app.css). */
+
+:root[data-theme='classic'] {
+  color-scheme: light;
+  --font: Tahoma, 'MS Sans Serif', Verdana, sans-serif;
+  --mono: 'Courier New', ui-monospace, monospace;
+  --bg: #c0c0c0;
+  --side-bg: #c0c0c0;
+  --panel: #c0c0c0;
+  --soft: #dfdfdf;
+  --text: #000;
+  --muted: #404040;
+  --line: #808080;
+  --line-strong: #808080;
+  --accent: #0a6f6c;
+  --accent-soft: #d4d0c8;
+  --accent-text: #fff;
+  --ok: #064643;
+  --ok-bg: #fff;
+  --warn: #7a4200;
+  --warn-bg: #ffd84a;
+  --danger: #a00000;
+  --danger-text: #a00000;
+  --danger-bg: #ffffe1;
+  --danger-line: #a00000;
+  --danger-solid: #a00000;
+  --input-bg: #fff;
+  --logo-bg: #0b2545;
+  --radius: 0;
+  --radius-lg: 0;
+  --gap: 10px;
+  --bevel-raised:
+    inset -1px -1px #0a0a0a, inset 1px 1px #fff, inset -2px -2px #808080, inset 2px 2px #dfdfdf;
+  --bevel-pressed:
+    inset 1px 1px #0a0a0a, inset -1px -1px #fff, inset 2px 2px #808080, inset -2px -2px #dfdfdf;
+  --bevel-sunken:
+    inset 1px 1px #808080, inset -1px -1px #fff, inset 2px 2px #0a0a0a, inset -2px -2px #dfdfdf;
+  --bevel-thin: inset 1px 1px #808080, inset -1px -1px #fff;
+  font-size: 13px;
+}
+
+[data-theme='classic'] .win {
+  box-shadow:
+    inset -1px -1px #0a0a0a,
+    inset 1px 1px #dfdfdf,
+    inset -2px -2px #808080,
+    inset 2px 2px #fff;
+}
+[data-theme='classic'] .side {
+  box-shadow: 1px 0 #fff;
+}
+[data-theme='classic'] .brand {
+  font-size: 15px;
+}
+[data-theme='classic'] .step {
+  color: #000;
+  box-shadow: var(--bevel-raised);
+  min-height: 46px;
+}
+[data-theme='classic'] .step.on {
+  background: #d4d0c8;
+  box-shadow: var(--bevel-pressed);
+  font-weight: 700;
+}
+[data-theme='classic'] .step.on .ss {
+  font-weight: 400;
+}
+[data-theme='classic'] .dot {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  color: #000;
+  box-shadow: var(--bevel-thin);
+}
+[data-theme='classic'] .step.on .dot {
+  background: #0a6f6c;
+  color: #fff;
+}
+[data-theme='classic'] .step.done .dot {
+  background: #fff;
+  color: #0a6f6c;
+}
+[data-theme='classic'] .st {
+  font-size: 13px;
+}
+[data-theme='classic'] .ss,
+[data-theme='classic'] .hint,
+[data-theme='classic'] .dm,
+[data-theme='classic'] .path .p {
+  font-size: 12px;
+}
+[data-theme='classic'] .side-foot {
+  background: #fff;
+  box-shadow: var(--bevel-sunken);
+  font-size: 12px;
+}
+[data-theme='classic'] .seg {
+  gap: 4px;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+}
+[data-theme='classic'] .seg button {
+  border-radius: 0;
+  background: #c0c0c0;
+  color: #000;
+  box-shadow: var(--bevel-raised);
+}
+[data-theme='classic'] .seg button[aria-pressed='true'] {
+  background: #d4d0c8;
+  box-shadow: var(--bevel-pressed);
+}
+[data-theme='classic'] .head {
+  padding: 14px 18px 10px;
+}
+[data-theme='classic'] .head h1 {
+  font-size: 18px;
+}
+[data-theme='classic'] .body {
+  padding: 0 18px 14px;
+  gap: 10px;
+}
+[data-theme='classic'] .foot {
+  padding: 8px 18px;
+  box-shadow: inset 0 1px #fff;
+}
+[data-theme='classic'] .btn {
+  min-height: 30px;
+  border: 0;
+  background: #c0c0c0;
+  box-shadow: var(--bevel-raised);
+  font-weight: 400;
+}
+[data-theme='classic'] .btn:active:not(:disabled) {
+  box-shadow: var(--bevel-pressed);
+}
+[data-theme='classic'] .btn.pri {
+  background: #c0c0c0;
+  color: #000;
+  font-weight: 700;
+  outline: 2px solid #000;
+  outline-offset: -2px;
+}
+[data-theme='classic'] .btn.dng {
+  background: #a00000;
+  color: #fff;
+  font-weight: 700;
+}
+[data-theme='classic'] .btn:disabled {
+  opacity: 1;
+  color: #808080;
+  text-shadow: 1px 1px #fff;
+}
+[data-theme='classic'] .card {
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid #808080;
+  background: transparent;
+  box-shadow:
+    1px 1px #fff,
+    inset 1px 1px #fff;
+}
+[data-theme='classic'] .card h2 {
+  font-size: 13px;
+}
+[data-theme='classic'] .field input:not([type='checkbox']),
+[data-theme='classic'] .field select,
+[data-theme='classic'] .field textarea,
+[data-theme='classic'] input.in,
+[data-theme='classic'] .danger input {
+  min-height: 30px;
+  border: 0;
+  box-shadow: var(--bevel-sunken);
+}
+[data-theme='classic'] .field textarea {
+  padding: 6px 8px;
+}
+[data-theme='classic'] .pill {
+  border-radius: 0;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 700;
+}
+[data-theme='classic'] .pill.ok {
+  background: #0a6f6c;
+  color: #fff;
+}
+[data-theme='classic'] .pill.no {
+  box-shadow: var(--bevel-thin);
+  color: #000;
+}
+[data-theme='classic'] .path {
+  min-height: 46px;
+  border: 0;
+  background: #fff;
+  box-shadow: var(--bevel-sunken);
+}
+[data-theme='classic'] .disk {
+  min-height: 50px;
+  padding: 8px 12px;
+  border: 0;
+  background: #fff;
+  box-shadow: var(--bevel-thin);
+}
+[data-theme='classic'] .disk.sel {
+  background: #0b2545;
+  color: #fff;
+}
+[data-theme='classic'] .disk.sel .dm {
+  color: #dfdfdf;
+}
+[data-theme='classic'] .disk.off {
+  background: #c0c0c0;
+  color: #404040;
+}
+[data-theme='classic'] .danger {
+  padding: 10px 14px;
+  border-width: 1px;
+}
+[data-theme='classic'] .lock {
+  background: #ffffe1;
+  border: 1px solid #808080;
+}
+[data-theme='classic'] .note.ok {
+  background: #fff;
+  box-shadow: var(--bevel-sunken);
+}
+[data-theme='classic'] .note.error {
+  background: #ffffe1;
+}

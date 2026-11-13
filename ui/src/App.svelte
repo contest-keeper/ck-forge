@@ -3,67 +3,147 @@
   import ContestPage from './pages/ContestPage.svelte';
   import HubPage from './pages/HubPage.svelte';
   import WritePage from './pages/WritePage.svelte';
+  import { app } from './state.svelte';
+  import { look, setTheme } from './theme/theme.svelte';
 
   const tabs = [
-    { id: 'contest', title: '1. Contest', page: ContestPage },
-    { id: 'build', title: '2. Image', page: BuildPage },
-    { id: 'write', title: '3. Write', page: WritePage },
-    { id: 'hub', title: '4. Hub', page: HubPage },
+    {
+      id: 'contest',
+      title: 'Contest profile',
+      hint: 'Name, platform, branding',
+      blurb: 'Everything a stick needs to know about this contest. Mistakes are shown as you type.',
+      page: ContestPage,
+    },
+    {
+      id: 'build',
+      title: 'Make image',
+      hint: 'Copy base, apply profile',
+      blurb:
+        'Copies the base image and gives the copy its own identity and the settings of the saved profile. The base image is only read, never changed.',
+      page: BuildPage,
+    },
+    {
+      id: 'write',
+      title: 'Write sticks',
+      hint: 'Erase and write USB',
+      blurb:
+        'Choose the stick to write. Windows asks for administrator permission when the write starts.',
+      page: WritePage,
+    },
+    {
+      id: 'hub',
+      title: 'Register with Hub',
+      hint: 'So sticks are recognised',
+      blurb:
+        'The Hub only accepts heartbeats from sticks it knows. This sends it the registry that sits next to the profile.',
+      page: HubPage,
+    },
   ] as const;
 
-  let current = $state<(typeof tabs)[number]['id']>('contest');
-  const Page = $derived(tabs.find((tab) => tab.id === current)?.page ?? ContestPage);
+  let index = $state(0);
+  const tab = $derived(tabs[index] ?? tabs[0]);
+  const Page = $derived(tab.page);
+  const done = $derived([
+    app.profilePath !== null,
+    app.imagePath !== null,
+    app.written,
+    app.registered,
+  ]);
 </script>
 
-<header>
-  <h1>Keeper Forge</h1>
-  <nav aria-label="Steps">
-    {#each tabs as tab (tab.id)}
-      <button
-        type="button"
-        class:active={tab.id === current}
-        aria-current={tab.id === current ? 'page' : undefined}
-        onclick={() => (current = tab.id)}
-      >
-        {tab.title}
-      </button>
-    {/each}
-  </nav>
-</header>
+<div class="win">
+  <aside class="side">
+    <div class="brand">
+      <span class="logo">
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#fff"
+          stroke-width="2.2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z" /></svg
+        >
+      </span>
+      Keeper Forge
+    </div>
+    <nav class="steps" aria-label="Steps">
+      {#each tabs as step, i (step.id)}
+        <button
+          type="button"
+          class="step"
+          class:on={i === index}
+          class:done={done[i]}
+          aria-current={i === index ? 'step' : undefined}
+          onclick={() => (index = i)}
+        >
+          <span class="dot">
+            {#if done[i]}
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"><path d="m5 12 5 5 9-10" /></svg
+              >
+              <span class="sr-only">done</span>
+            {:else}
+              {i + 1}
+            {/if}
+          </span>
+          <span>
+            <span class="st">{step.title}</span>
+            <span class="ss">{step.hint}</span>
+          </span>
+        </button>
+      {/each}
+    </nav>
+    <div class="side-foot">
+      <b>{app.profile?.name || 'No profile yet'}</b>
+      <div class="seg" role="group" aria-label="Look">
+        <button
+          type="button"
+          aria-pressed={look.theme === 'classic'}
+          onclick={() => setTheme('classic')}>Classic</button
+        >
+        <button
+          type="button"
+          aria-pressed={look.theme === 'modern'}
+          onclick={() => setTheme('modern')}>Modern</button
+        >
+      </div>
+    </div>
+  </aside>
 
-<main>
-  <Page />
-</main>
+  <section class="main">
+    <header class="head">
+      <h1>{tab.title}</h1>
+      <p>{tab.blurb}</p>
+    </header>
+    <main class="body">
+      <Page />
+    </main>
+    <footer class="foot">
+      {#if index > 0}
+        <button type="button" class="btn" onclick={() => index--}>Back</button>
+      {/if}
+      <span class="grow"></span>
+      {#if index < tabs.length - 1}
+        <button type="button" class="btn pri" onclick={() => index++}>Continue</button>
+      {/if}
+    </footer>
+  </section>
+</div>
 
 <style>
-  header {
-    display: flex;
-    align-items: center;
-    gap: 24px;
-    padding: 10px 20px;
-    background: var(--panel);
-    border-bottom: 1px solid var(--line);
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    flex-wrap: wrap;
-  }
-  h1 {
-    margin: 0;
-    font-size: 1.15rem;
-  }
-  nav {
-    display: flex;
-    gap: 6px;
-  }
-  nav button.active {
-    background: var(--accent);
-    color: var(--accent-text);
-    border-color: var(--accent);
-  }
-  main {
-    padding: 20px;
-    max-width: 900px;
-    margin: 0 auto;
+  .sr-only {
+    position: absolute;
+    left: -9999px;
   }
 </style>
