@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ck_writer::{Error, Phase, disk_path, write_image, write_image_to_all};
+use ck_writer::{Error, Phase, disk_path, thin, write_image, write_image_to_all, write_images};
 use tempfile::tempdir;
 
 fn image(dir: &Path, size: usize) -> PathBuf {
@@ -148,4 +148,108 @@ fn an_empty_image_is_refused_for_several_targets_too() {
     let error = write_image_to_all(&source, &targets, |_, _, _, _| {}).unwrap_err();
     assert!(matches!(error, Error::EmptyImage));
     assert!(!targets[0].exists());
+}
+
+/// A thin image of `base` whose start has `mark` written into it, as the settings of a stick would.
+fn stick(dir: &Path, base: &Path, name: &str, head_len: u64, mark: u8) -> PathBuf {
+    let path = dir.join(name);
+    thin::create(base, &path, head_len, |_, _| {}).expect("make the thin image");
+    let mut head = fs::read(&path).expect("read the head");
+    head[700..720].fill(mark);
+    fs::write(&path, head).expect("change the head");
+    path
+}
+
+#[test]
+fn sticks_with_their_own_start_are_written_from_one_base_each_with_its_own_hash() {
+    let dir = tempdir().unwrap();
+    // The start is not a whole number of blocks and the end is not a whole sector.
+    let base = image(dir.path(), 9 * 1024 * 1024 + 700);
+    let head_len: u64 = 1024 * 1024 + 512;
+    let head = usize::try_from(head_len).expect("fits");
+    let jobs: Vec<(PathBuf, PathBuf)> = [0x11_u8, 0x22, 0x33]
+        .iter()
+        .enumerate()
+        .map(|(n, mark)| {
+            (
+                stick(dir.path(), &base, &format!("stick{n}.img"), head_len, *mark),
+                dir.path().join(format!("target{n}.img")),
+            )
+        })
+        .collect();
+
+    let mut done = vec![[0_u64; 2]; jobs.len()];
+    let results = write_images(&jobs, |index, phase, bytes, total| {
+        assert!(bytes <= total);
+        let slot = usize::from(phase == Phase::Verifying);
+        done[index][slot] = done[index][slot].max(bytes);
+    })
+    .unwrap();
+
+    let base_bytes = fs::read(&base).unwrap();
+    let hashes: Vec<&String> = results.iter().map(|r| r.as_ref().unwrap()).collect();
+    assert!(
+        hashes[0] != hashes[1] && hashes[1] != hashes[2],
+        "each stick has its own hash"
+    );
+    for (n, (image, target)) in jobs.iter().enumerate() {
+        let mut expected = base_bytes.clone();
+        expected[..head].copy_from_slice(&fs::read(image).unwrap());
+        let written = fs::read(target).unwrap();
+        assert_eq!(&written[..expected.len()], &expected[..], "target {n}");
+        assert_eq!(written.len(), expected.len().next_multiple_of(512));
+        assert_eq!(
+            done[n],
+            [expected.len() as u64; 2],
+            "progress of target {n}"
+        );
+    }
+    // The single-stick call gives the same hash as the batch for the same image.
+    let alone = dir.path().join("alone.img");
+    let hash = write_image(&jobs[1].0, &alone, |_, _, _| {}).unwrap();
+    assert_eq!(&hash, hashes[1]);
+}
+
+#[test]
+fn images_of_different_bases_are_refused_before_anything_is_written() {
+    let dir = tempdir().unwrap();
+    let base_a = image(dir.path(), 4 * 1024 * 1024);
+    let other = dir.path().join("other");
+    fs::create_dir(&other).unwrap();
+    let base_b = image(&other, 4 * 1024 * 1024);
+    let jobs = vec![
+        (
+            stick(dir.path(), &base_a, "a.img", 1024, 1),
+            dir.path().join("ta.img"),
+        ),
+        (
+            stick(&other, &base_b, "b.img", 1024, 2),
+            dir.path().join("tb.img"),
+        ),
+    ];
+    let error = write_images(&jobs, |_, _, _, _| {}).unwrap_err();
+    assert!(matches!(error, Error::Thin(_)), "{error}");
+    assert!(!jobs[0].1.exists() && !jobs[1].1.exists());
+}
+
+#[test]
+fn a_stick_whose_target_fails_does_not_stop_the_other_sticks() {
+    let dir = tempdir().unwrap();
+    let base = image(dir.path(), 3 * 1024 * 1024);
+    let jobs = vec![
+        (
+            stick(dir.path(), &base, "a.img", 1024, 1),
+            dir.path().join("no-such-folder").join("ta.img"),
+        ),
+        (
+            stick(dir.path(), &base, "b.img", 1024, 2),
+            dir.path().join("tb.img"),
+        ),
+    ];
+    let results = write_images(&jobs, |_, _, _, _| {}).unwrap();
+    assert!(results[0].is_err());
+    assert!(results[1].is_ok());
+    let written = fs::read(&jobs[1].1).unwrap();
+    assert_eq!(written[700..720], [2_u8; 20]);
+    assert_eq!(written[1024..], fs::read(&base).unwrap()[1024..]);
 }

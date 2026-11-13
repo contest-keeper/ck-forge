@@ -471,3 +471,114 @@ fn an_image_is_thin_unless_a_full_copy_is_asked_for() {
     let shown = forge(&["image", "show", "out.img"], dir.path());
     assert!(shown.status.success(), "{}", text(&shown.stderr));
 }
+
+/// Two thin images of one base, made for two sticks, in a folder with the base.
+fn two_sticks(dir: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
+    let base = support::make_image(dir, "base.img");
+    assert!(
+        forge(&["profile", "new", "p.json"], dir.path())
+            .status
+            .success()
+    );
+    for name in ["a.img", "b.img"] {
+        let built = forge(
+            &[
+                "image",
+                "build",
+                "--base",
+                base.to_str().expect("utf-8 path"),
+                "--out",
+                name,
+                "--profile",
+                "p.json",
+            ],
+            dir.path(),
+        );
+        assert!(built.status.success(), "{}", text(&built.stderr));
+    }
+    (dir.path().join("a.img"), base)
+}
+
+fn stick_of(dir: &TempDir, image: &str) -> String {
+    let shown = forge(&["image", "show", image], dir.path());
+    assert!(shown.status.success(), "{}", text(&shown.stderr));
+    text(&shown.stdout)
+        .lines()
+        .find(|line| line.starts_with("Stick:"))
+        .expect("a Stick line")
+        .to_owned()
+}
+
+#[test]
+fn several_sticks_each_with_its_own_image_are_written_together_with_their_own_identity() {
+    let dir = TempDir::new().expect("temp dir");
+    let (_, base) = two_sticks(&dir);
+    let base_len = std::fs::metadata(&base).expect("base").len();
+
+    let done = forge(
+        &[
+            "stick", "write", "a.img", "b.img", "--to", "ta.img", "--to", "tb.img",
+        ],
+        dir.path(),
+    );
+    assert!(done.status.success(), "{}", text(&done.stderr));
+    assert!(
+        text(&done.stdout).contains("against its own image"),
+        "{}",
+        text(&done.stdout)
+    );
+    for name in ["ta.img", "tb.img"] {
+        assert_eq!(
+            std::fs::metadata(dir.path().join(name)).expect(name).len(),
+            base_len
+        );
+    }
+    let (a, b) = (stick_of(&dir, "ta.img"), stick_of(&dir, "tb.img"));
+    assert_ne!(a, b, "two sticks, two identities");
+    assert_eq!(a, stick_of(&dir, "a.img"));
+    assert_eq!(b, stick_of(&dir, "b.img"));
+}
+
+#[test]
+fn images_and_sticks_that_do_not_match_are_refused_before_anything_is_written() {
+    let dir = TempDir::new().expect("temp dir");
+    two_sticks(&dir);
+    let refused = |args: &[&str]| {
+        let result = forge(args, dir.path());
+        assert!(!result.status.success(), "{args:?}");
+        text(&result.stderr)
+    };
+
+    let count = refused(&["stick", "write", "a.img", "b.img", "--to", "t1.img"]);
+    assert!(count.contains("2 images for 1 sticks"), "{count}");
+    let twice = refused(&[
+        "stick", "write", "a.img", "a.img", "--to", "t1.img", "--to", "t2.img",
+    ]);
+    assert!(twice.contains("given twice"), "{twice}");
+
+    // An image of another base.
+    let other = TempDir::new().expect("other dir");
+    let other_base = support::make_image(&other, "base.img");
+    let built = forge(
+        &[
+            "image",
+            "build",
+            "--base",
+            other_base.to_str().expect("utf-8 path"),
+            "--out",
+            dir.path().join("c.img").to_str().expect("utf-8 path"),
+            "--profile",
+            "p.json",
+        ],
+        dir.path(),
+    );
+    assert!(built.status.success(), "{}", text(&built.stderr));
+    let mixed = refused(&[
+        "stick", "write", "a.img", "c.img", "--to", "t1.img", "--to", "t2.img",
+    ]);
+    assert!(mixed.contains("same base"), "{mixed}");
+
+    for name in ["t1.img", "t2.img"] {
+        assert!(!dir.path().join(name).exists(), "{name} was written");
+    }
+}

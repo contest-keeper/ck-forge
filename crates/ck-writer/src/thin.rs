@@ -52,7 +52,7 @@ pub fn manifest_path(image: &Path) -> PathBuf {
 /// the size of the file otherwise. Use this and not the size of the file. Refuses a file that is
 /// the cut-off start of a disk without its manifest.
 pub fn image_len(image: &Path) -> Result<u64, Error> {
-    Ok(open(image)?.len)
+    Ok(open(image)?.len())
 }
 
 /// Makes the thin image `out` from `base`: the first `head_len` bytes of `base`, and a manifest.
@@ -156,15 +156,34 @@ fn copy_head(
     Ok(crate::write::hex(&hash.finalize()))
 }
 
-/// An image opened for writing: what to read and how many bytes it makes.
-pub(crate) struct Source {
-    pub(crate) reader: Box<dyn Read + Send>,
-    pub(crate) len: u64,
+/// An image split for writing: its own start, and the rest, which images of one base share.
+pub(crate) struct Parts {
+    /// The start that belongs to this image alone, from its first byte; none for a plain image.
+    pub(crate) head: Option<File>,
+    pub(crate) head_len: u64,
+    /// The file the rest of the image is read from, and its length: the base of a thin image, or the
+    /// whole of a plain image, which has no head of its own.
+    pub(crate) tail: PathBuf,
+    pub(crate) tail_total: u64,
 }
 
-/// Opens `image` to be read from its first byte to its last. A thin image is checked against its
-/// base first and reads as its head followed by the rest of the base.
-pub(crate) fn open(image: &Path) -> Result<Source, Error> {
+impl Parts {
+    /// How many bytes the image makes.
+    pub(crate) fn len(&self) -> u64 {
+        self.tail_total
+    }
+
+    /// Whether `other` is made of the same shared rest: the same file, with the same length and
+    /// where the shared part starts. Only then can the two be written from one reading of it.
+    pub(crate) fn shares_tail_with(&self, other: &Self) -> bool {
+        self.tail == other.tail
+            && self.tail_total == other.tail_total
+            && self.head_len == other.head_len
+    }
+}
+
+/// Opens `image` to be written. A thin image is checked against its base first.
+pub(crate) fn open(image: &Path) -> Result<Parts, Error> {
     let manifest = manifest_path(image);
     match fs::read(&manifest) {
         Ok(text) => open_thin(image, &manifest, &text),
@@ -173,7 +192,7 @@ pub(crate) fn open(image: &Path) -> Result<Source, Error> {
     }
 }
 
-fn open_plain(image: &Path) -> Result<Source, Error> {
+fn open_plain(image: &Path) -> Result<Parts, Error> {
     let mut file =
         File::open(image).map_err(|e| Error::io(format!("opening {}", image.display()), e))?;
     let len = file
@@ -190,11 +209,12 @@ fn open_plain(image: &Path) -> Result<Source, Error> {
             manifest_path(image).display()
         )));
     }
-    file.rewind()
-        .map_err(|e| Error::io(format!("reading {}", image.display()), e))?;
-    Ok(Source {
-        reader: Box::new(file),
-        len,
+    Ok(Parts {
+        head: None,
+        head_len: 0,
+        tail: fs::canonicalize(image)
+            .map_err(|e| Error::io(format!("finding {}", image.display()), e))?,
+        tail_total: len,
     })
 }
 
@@ -210,7 +230,7 @@ fn is_cut_off(file: &mut File, len: u64) -> io::Result<bool> {
     Ok(backup_lba.saturating_add(1).saturating_mul(SECTOR) > len)
 }
 
-fn open_thin(image: &Path, manifest_file: &Path, text: &[u8]) -> Result<Source, Error> {
+fn open_thin(image: &Path, manifest_file: &Path, text: &[u8]) -> Result<Parts, Error> {
     let bad = |why: String| Error::Thin(format!("{}: {why}", image.display()));
     let manifest: Manifest = serde_json::from_slice(text)
         .map_err(|e| bad(format!("{} is not readable ({e})", manifest_file.display())))?;
@@ -278,10 +298,11 @@ fn open_thin(image: &Path, manifest_file: &Path, text: &[u8]) -> Result<Source, 
             manifest.base.display()
         )));
     }
-    // The base is now at `head_len`, where the rest of the image begins.
-    Ok(Source {
-        reader: Box::new(head.take(manifest.head_len).chain(base)),
-        len: manifest.base_len,
+    Ok(Parts {
+        head: Some(head),
+        head_len: manifest.head_len,
+        tail: manifest.base,
+        tail_total: manifest.base_len,
     })
 }
 
@@ -296,9 +317,15 @@ mod tests {
         path
     }
 
-    fn read_all(source: &mut Source) -> Vec<u8> {
+    /// The bytes of the image as they are written: its head, then the rest of the tail.
+    fn read_all(mut parts: Parts) -> Vec<u8> {
         let mut all = Vec::new();
-        source.reader.read_to_end(&mut all).unwrap();
+        if let Some(head) = parts.head.as_mut() {
+            head.take(parts.head_len).read_to_end(&mut all).unwrap();
+        }
+        let mut tail = File::open(&parts.tail).unwrap();
+        tail.seek(SeekFrom::Start(parts.head_len)).unwrap();
+        tail.read_to_end(&mut all).unwrap();
         all
     }
 
@@ -315,11 +342,11 @@ mod tests {
         head[100..110].fill(0xEE);
         fs::write(&out, &head).unwrap();
 
-        let mut source = open(&out).unwrap();
+        let source = open(&out).unwrap();
         let mut expected = fs::read(&base).unwrap();
         expected[100..110].fill(0xEE);
-        assert_eq!(source.len, 10_000);
-        assert_eq!(read_all(&mut source), expected);
+        assert_eq!(source.len(), 10_000);
+        assert_eq!(read_all(source), expected);
         assert_eq!(image_len(&out).unwrap(), 10_000);
     }
 
@@ -330,12 +357,8 @@ mod tests {
             let base = base_image(dir.path(), len);
             let out = dir.path().join(format!("stick{len}.img"));
             create(&base, &out, head, |_, _| {}).unwrap();
-            let mut source = open(&out).unwrap();
-            assert_eq!(
-                read_all(&mut source),
-                fs::read(&base).unwrap(),
-                "{len} {head}"
-            );
+            let source = open(&out).unwrap();
+            assert_eq!(read_all(source), fs::read(&base).unwrap(), "{len} {head}");
         }
     }
 

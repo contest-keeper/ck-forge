@@ -36,9 +36,16 @@ ck-forge registry push --hub https://hub.example.org --user ana
 the image, so `stick.img` holds only that start (about 130 MB) and a manifest, `stick.img.thin.json`,
 that names the base image. `stick write` reads the start from `stick.img` and the rest from the base,
 and refuses to write when the base is not the image `stick.img` was made from. Keep the base where
-it was. `--full-copy` makes a whole 30 GB image instead, which runs without the base. Writing one
-image to several sticks at once is for a plain base image only: an image made for a stick holds that
-stick's identity.
+it was. `--full-copy` makes a whole 30 GB image instead, which runs without the base. Several sticks
+are written at the same time, which takes about as long as the slowest one: give one image per stick,
+each made with `image build` (so each has its own identity), in the order of the disks:
+
+```sh
+ck-forge stick write a.img b.img c.img --disk 3 --disk 4 --disk 5
+```
+
+The base is read once for all of them. Only a plain base image, with no stick identity, may be written
+to several sticks as one image.
 
 A stick is written, read back and compared by SHA-256. Only USB disks are written, never the disk
 Windows runs from. To try the writer without a stick, see [docs/testing-the-writer.md](docs/testing-the-writer.md).
