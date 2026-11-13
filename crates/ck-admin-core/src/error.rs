@@ -34,6 +34,10 @@ pub enum Error {
     ImageNotConfigured,
     #[error("the settings on the image are not valid: {0}")]
     ImageSettingsUnreadable(serde_json::Error),
+    #[error(
+        "this image is the stick {0}: written to several sticks they would all share its id and          secret and the Hub could not tell them apart. Make one image per stick, or write a plain          base image to several sticks"
+    )]
+    ImageForOneStick(String),
 }
 
 impl Error {

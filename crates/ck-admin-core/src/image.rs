@@ -136,6 +136,17 @@ pub fn configure_image(
     Ok(config)
 }
 
+/// Refuses an image made for one stick when it is about to be written to `sticks` sticks: they
+/// would all get its stick id and secret. A plain image with no settings may go to any number.
+pub fn check_one_stick(image: &Path, sticks: usize) -> Result<(), Error> {
+    if sticks > 1
+        && let Ok(config) = show_image(image)
+    {
+        return Err(Error::ImageForOneStick(config.stick_id.to_string()));
+    }
+    Ok(())
+}
+
 /// The settings on an image, secret included: callers decide what to show.
 pub fn show_image(image: &Path) -> Result<StickConfig, Error> {
     let bytes = match read_file(image, &config_path()) {

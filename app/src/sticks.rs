@@ -178,6 +178,7 @@ pub async fn write_stick(
         if disks.is_empty() {
             return Err("choose a disk or a file to write to".to_owned());
         }
+        ck_admin_core::check_one_stick(&image, disks.len()).map_err(|e| message(&e))?;
         let exe = forge_exe()?;
         let progress_file =
             std::env::temp_dir().join(format!("ck-write-{}.json", std::process::id()));

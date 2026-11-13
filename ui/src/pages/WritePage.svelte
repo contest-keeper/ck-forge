@@ -85,8 +85,8 @@
   <div class="card">
     <h2>Choose the sticks to erase</h2>
     <p class="hint">
-      A stick of at least 32 GB is needed. Everything on it is erased. Tick several sticks to write
-      them all at the same time.
+      A stick of at least 32 GB is needed. Everything on it is erased. An image made for one stick
+      goes to one stick; only a plain image, with no stick identity, can go to several at once.
     </p>
     <div class="row">
       <button type="button" class="btn sm" onclick={refresh} disabled={busy || !image}>

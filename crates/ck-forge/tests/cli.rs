@@ -362,3 +362,51 @@ fn a_disk_cannot_be_given_together_with_a_file() {
     );
     assert_eq!(both.status.code(), Some(2));
 }
+
+#[test]
+fn an_image_made_for_one_stick_is_not_written_to_several() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    let profile = forge(&["profile", "new", "p.json"], dir.path());
+    assert!(profile.status.success(), "{}", text(&profile.stderr));
+    let built = forge(
+        &[
+            "image",
+            "build",
+            "--base",
+            base.to_str().expect("utf-8 path"),
+            "--out",
+            "stick.img",
+            "--profile",
+            "p.json",
+        ],
+        dir.path(),
+    );
+    assert!(built.status.success(), "{}", text(&built.stderr));
+
+    let several = forge(
+        &[
+            "stick",
+            "write",
+            "stick.img",
+            "--to",
+            "a.img",
+            "--to",
+            "b.img",
+        ],
+        dir.path(),
+    );
+    assert!(!several.status.success());
+    assert!(
+        text(&several.stderr).contains("share its id"),
+        "{}",
+        text(&several.stderr)
+    );
+    assert!(!dir.path().join("a.img").exists(), "nothing is written");
+
+    let one = forge(
+        &["stick", "write", "stick.img", "--to", "a.img"],
+        dir.path(),
+    );
+    assert!(one.status.success(), "{}", text(&one.stderr));
+}
