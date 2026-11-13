@@ -8,7 +8,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    Error, Profile, Registry, Wallpaper, build_image, configure_image, folder_of, show_image,
+    Error, Profile, Registry, Wallpaper, build_image, check_one_stick, configure_image, folder_of,
+    show_image,
 };
 use ck_protocol::{LocalDateTime, StickConfig};
 use clap::{Args, Parser, Subcommand};
@@ -380,6 +381,7 @@ fn stick_write(
     let size = std::fs::metadata(image)
         .map_err(|e| Error::io(format!("reading {}", image.display()), e))?
         .len();
+    check_one_stick(image, disks.len().max(to.len()))?;
     let targets = if to.is_empty() {
         prepare_disks(disks, size, allow_virtual, yes)?
     } else {
