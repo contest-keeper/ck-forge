@@ -15,6 +15,38 @@ jobs:
     uses: contest-keeper/.github/.github/workflows/common-ci.yml@main
   rust:
     uses: contest-keeper/.github/.github/workflows/rust-ci.yml@main
+  ui:
+    uses: contest-keeper/.github/.github/workflows/web-ci.yml@main
+    with:
+      working-directory: ui
+  window:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: ui/.nvmrc
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: ui
+      - run: pnpm build
+        working-directory: ui
+      - name: Install the pinned GNU toolchain
+        run: |
+          rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal --component clippy
+          echo "RUSTUP_TOOLCHAIN=1.99.1-x86_64-pc-windows-gnu" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - run: cargo clippy -- -D warnings
+        working-directory: app
+      - run: cargo build --features custom-protocol
+        working-directory: app
   windows:
     runs-on: windows-latest
     steps:

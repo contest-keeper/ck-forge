@@ -19,3 +19,5 @@ dist/
 build/
 .svelte-kit/
 *.tsbuildinfo
+/app/target/
+/app/gen/

@@ -1,0 +1,41 @@
+{
+  "name": "ck-forge-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.34.9",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "format": "prettier --write .",
+    "lint": "prettier --check . && eslint .",
+    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9",
+    "@sveltejs/vite-plugin-svelte": "^6",
+    "@tsconfig/svelte": "^5",
+    "eslint": "^9",
+    "eslint-config-prettier": "^10",
+    "eslint-plugin-svelte": "^3",
+    "globals": "^16",
+    "prettier": "^3",
+    "prettier-plugin-svelte": "^3",
+    "svelte": "^5",
+    "svelte-check": "^4",
+    "typescript": "^5",
+    "typescript-eslint": "^8",
+    "vite": "^7",
+    "vitest": "^3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
