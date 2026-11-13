@@ -54,19 +54,7 @@
 <div class="win">
   <aside class="side">
     <div class="brand">
-      <span class="logo">
-        <svg
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#fff"
-          stroke-width="2.2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z" /></svg
-        >
-      </span>
+      <img class="logo" src="/contest-keeper-icon.svg" alt="" width="32" height="32" />
       Keeper Forge
     </div>
     <nav class="steps" aria-label="Steps">
