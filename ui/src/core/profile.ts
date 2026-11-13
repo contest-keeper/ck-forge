@@ -67,3 +67,10 @@ export function optionalCount(text: string): number | undefined {
   const value = Number.parseInt(text, 10);
   return Number.isInteger(value) && value >= 1 ? value : undefined;
 }
+
+/** A required number field: a whole number of at least `min`, otherwise `min`, so the settings
+ * always deserialize. */
+export function wholeNumber(value: unknown, min: number): number {
+  const number = Math.trunc(Number(value));
+  return Number.isFinite(number) && number >= min ? number : min;
+}
