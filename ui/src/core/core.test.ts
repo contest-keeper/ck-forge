@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeError, formatBytes, percent } from './format';
+import { describeError, eraseConfirmation, formatBytes, percent } from './format';
 import { linesToList, optionalCount, optionalText, wholeNumber } from './profile';
 
 describe('format', () => {
@@ -12,6 +12,11 @@ describe('format', () => {
     expect(percent(0, 0)).toBe(0);
     expect(percent(50, 200)).toBe(25);
     expect(percent(300, 200)).toBe(100);
+  });
+
+  it('asks for the numbers of every disk, in order, before erasing', () => {
+    expect(eraseConfirmation([3])).toBe('erase 3');
+    expect(eraseConfirmation([5, 3, 4])).toBe('erase 3 4 5');
   });
 
   it('describes whatever was thrown', () => {

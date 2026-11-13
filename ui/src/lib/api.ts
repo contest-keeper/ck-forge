@@ -32,15 +32,18 @@ export const buildImage = (base: string, out: string, profilePath: string) =>
 export const listDisks = (image: string, allowVirtual: boolean) =>
   invoke<DiskView[]>('list_disks', { image, allowVirtual });
 
-/** Writes to a disk (with a Windows permission prompt) or, for a test without a stick, to a file. */
+/**
+ * Writes to disks (all at the same time, with one Windows permission prompt) or, for a test
+ * without a stick, to a file.
+ */
 export const writeStick = (
   image: string,
-  target: { disk: number } | { file: string },
+  target: { disks: number[] } | { file: string },
   allowVirtual: boolean,
 ) =>
   invoke<string>('write_stick', {
     image,
-    disk: 'disk' in target ? target.disk : null,
+    disks: 'disks' in target ? target.disks : [],
     toFile: 'file' in target ? target.file : null,
     allowVirtual,
   });
