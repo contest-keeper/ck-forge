@@ -4,6 +4,7 @@
 
 mod error;
 mod file;
+mod hub;
 mod image;
 mod profile;
 mod registry;
@@ -11,6 +12,7 @@ mod stick;
 mod wallpaper;
 
 pub use error::Error;
+pub use hub::{Pushed, push_registry};
 pub use image::{Built, build_image, configure_image, show_image};
 pub use profile::Profile;
 pub use registry::{Registry, RegistryEntry};
