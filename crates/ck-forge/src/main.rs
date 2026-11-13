@@ -53,8 +53,10 @@ enum StickCommand {
     /// Writing a disk needs an administrator terminal and erases the whole stick. Several sticks
     /// are written at the same time, so a batch takes about as long as one stick
     Write {
-        /// The stick image to write
-        image: PathBuf,
+        /// The stick image to write. For several sticks each with its own identity give one image
+        /// per stick, in the order of the disks or files; they must be made from the same base
+        #[arg(required = true)]
+        images: Vec<PathBuf>,
         /// The number of a disk to write (see `stick list`). Repeat the option to write several
         /// sticks at once
         #[arg(long, conflicts_with = "to", required_unless_present = "to")]
@@ -220,7 +222,7 @@ fn run(command: Command) -> Result<String, Error> {
         }) => registry_push(&hub, &user, &registry.registry),
         Command::Stick(StickCommand::List) => stick_list(),
         Command::Stick(StickCommand::Write {
-            image,
+            images,
             disk,
             to,
             allow_virtual,
@@ -228,7 +230,7 @@ fn run(command: Command) -> Result<String, Error> {
             progress_file,
         }) => {
             let progress = progress_file.as_deref();
-            let result = stick_write(&image, &disk, to, allow_virtual, yes, progress);
+            let result = stick_write(&images, &disk, to, allow_virtual, yes, progress);
             if let Err(error) = &result {
                 report_progress(
                     progress,
@@ -383,20 +385,24 @@ fn stick_list() -> Result<String, Error> {
 }
 
 fn stick_write(
-    image: &Path,
+    images: &[PathBuf],
     disks: &[u32],
     to: Vec<PathBuf>,
     allow_virtual: bool,
     yes: bool,
     progress: Option<&Path>,
 ) -> Result<String, Error> {
-    let size = ck_writer::thin::image_len(image)?;
-    check_one_stick(image, disks.len().max(to.len()))?;
+    let count = disks.len().max(to.len());
+    let images = images_for(images, count)?;
+    // Before anything is erased: the images must fit together, and a base that moved is found now.
+    let size = ck_writer::check_images(&images)?;
     let targets = if to.is_empty() {
         prepare_disks(disks, size, allow_virtual, yes)?
     } else {
         to
     };
+    let jobs: Vec<(PathBuf, PathBuf)> = images.into_iter().zip(targets).collect();
+    let targets: Vec<&PathBuf> = jobs.iter().map(|(_, target)| target).collect();
 
     let bars = MultiProgress::new();
     let bars: Vec<ProgressBar> = targets
@@ -416,7 +422,7 @@ fn stick_write(
     // For each target whether it is checking and how far it is; the slowest one is reported.
     let mut state = vec![(false, 0_u64); targets.len()];
     let mut last_report = Instant::now();
-    let results = ck_writer::write_image_to_all(image, &targets, |index, phase, done, total| {
+    let results = ck_writer::write_images(&jobs, |index, phase, done, total| {
         let checking = phase == ck_writer::Phase::Verifying;
         let name = if checking { "checking" } else { "writing" };
         bars[index].set_length(total);
@@ -441,7 +447,7 @@ fn stick_write(
     let mut text = String::new();
     let mut failures = Vec::new();
     let mut hash = String::new();
-    for (target, result) in targets.iter().zip(results.map_err(admin_hint)?) {
+    for ((image, target), result) in jobs.iter().zip(results.map_err(admin_hint)?) {
         match result {
             Ok(sha256) => {
                 let _ = writeln!(text, "Wrote {} to {}", image.display(), target.display());
@@ -465,8 +471,40 @@ fn stick_write(
         return Err(Error::io("writing the sticks", io::Error::other(message)));
     }
     report_progress(progress, &json!({ "state": "done", "sha256": hash }));
-    let _ = writeln!(text, "Read back and checked, SHA-256 {hash}");
+    if jobs.len() == 1 || jobs.windows(2).all(|pair| pair[0].0 == pair[1].0) {
+        let _ = writeln!(text, "Read back and checked, SHA-256 {hash}");
+    } else {
+        let _ = writeln!(
+            text,
+            "Every stick was read back and checked against its own image"
+        );
+    }
     Ok(text)
+}
+
+/// One image for every target, in order: the one image given, or one image per target. Several
+/// sticks written from one image that holds a stick's identity, or from the same image twice,
+/// would share an id and secret, so that is refused.
+fn images_for(images: &[PathBuf], count: usize) -> Result<Vec<PathBuf>, Error> {
+    if images.len() == 1 {
+        check_one_stick(&images[0], count)?;
+        return Ok(vec![images[0].clone(); count]);
+    }
+    if images.len() != count {
+        return Err(Error::io(
+            format!("{} images for {count} sticks", images.len()),
+            io::Error::other("give one image for all the sticks, or one image for each stick"),
+        ));
+    }
+    for (index, image) in images.iter().enumerate() {
+        if images[..index].contains(image) {
+            return Err(Error::io(
+                format!("{} is given twice", image.display()),
+                io::Error::other("two sticks written from one image would share its id and secret"),
+            ));
+        }
+    }
+    Ok(images.to_vec())
 }
 
 /// A short name for a target: `disk 3` for `\\.\PhysicalDrive3`, else the file name.
