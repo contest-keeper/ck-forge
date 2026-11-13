@@ -6,7 +6,7 @@
   let { settings = $bindable() }: Props = $props();
 </script>
 
-<section>
+<section class="card">
   <h2>Contest</h2>
   <div class="grid">
     <Field label="Contest name" hint="Shown on the stick. Empty uses the profile name.">
@@ -45,8 +45,8 @@
   </div>
 </section>
 
-<section>
-  <h2>Team</h2>
+<section class="card">
+  <h2>Team and site</h2>
   <div class="grid">
     <Field label="Team" hint="Becomes {'{team}'} in the computer name.">
       <input bind:value={settings.team} />
@@ -58,15 +58,6 @@
 </section>
 
 <style>
-  section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--gap);
-  }
-  h2 {
-    margin: 0;
-    font-size: 1.05rem;
-  }
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

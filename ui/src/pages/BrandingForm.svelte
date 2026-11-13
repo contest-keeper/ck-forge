@@ -15,7 +15,6 @@
 </script>
 
 <section>
-  <h2>What contestants see</h2>
   <div class="grid">
     <Field label="Display name">
       <input bind:value={settings.branding.display_name} />
@@ -50,12 +49,22 @@
   <h3>Bookmarks</h3>
   {#each settings.branding.bookmarks as bookmark, index (index)}
     <div class="bookmark">
-      <input aria-label="Bookmark title" placeholder="Title" bind:value={bookmark.title} />
-      <input aria-label="Bookmark address" placeholder="https://…" bind:value={bookmark.url} />
-      <button type="button" onclick={() => removeBookmark(index)}>Remove</button>
+      <input
+        class="in"
+        aria-label="Bookmark title"
+        placeholder="Title"
+        bind:value={bookmark.title}
+      />
+      <input
+        class="in"
+        aria-label="Bookmark address"
+        placeholder="https://…"
+        bind:value={bookmark.url}
+      />
+      <button type="button" class="btn sm" onclick={() => removeBookmark(index)}>Remove</button>
     </div>
   {/each}
-  <div><button type="button" onclick={addBookmark}>Add a bookmark</button></div>
+  <div><button type="button" class="btn sm" onclick={addBookmark}>Add a bookmark</button></div>
 </section>
 
 <style>
@@ -63,14 +72,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--gap);
-  }
-  h2,
-  h3 {
-    margin: 0;
-    font-size: 1.05rem;
-  }
-  h3 {
-    font-size: 0.95rem;
   }
   .grid {
     display: grid;

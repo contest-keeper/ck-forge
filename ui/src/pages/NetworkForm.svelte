@@ -13,7 +13,7 @@
 </script>
 
 <section>
-  <h2>Network and Hub</h2>
+  <h3>Network and Hub</h3>
   <Field
     label="Allowed sites"
     hint="One per line, such as kilonova.ro. Empty allows no extra site."
@@ -43,7 +43,7 @@
 </section>
 
 <section>
-  <h2>Screen recording</h2>
+  <h3>Screen recording</h3>
   <div class="grid">
     <Field label="Mode">
       <select bind:value={settings.recording.mode}>
@@ -79,9 +79,9 @@
     flex-direction: column;
     gap: var(--gap);
   }
-  h2 {
+  h3 {
     margin: 0;
-    font-size: 1.05rem;
+    font-size: 0.95rem;
   }
   .grid {
     display: grid;

@@ -65,25 +65,33 @@
 
 <div class="page">
   <div class="toolbar">
-    <button type="button" onclick={create}>New profile</button>
-    <button type="button" onclick={open}>Open…</button>
-    <button type="button" class="primary" onclick={save} disabled={!app.profile}>Save</button>
-    <span class="path">{app.profilePath ?? 'not saved yet'}</span>
+    <button type="button" class="btn" onclick={create}>New profile</button>
+    <button type="button" class="btn" onclick={open}>Open…</button>
+    <button type="button" class="btn pri" onclick={save} disabled={!app.profile}>Save</button>
+    <span class="where">{app.profilePath ?? 'not saved yet'}</span>
   </div>
 
-  {#if status}<p class="ok">{status}</p>{/if}
-  {#if failure}<p class="error" role="alert">{failure}</p>{/if}
+  {#if status}<p class="note ok">{status}</p>{/if}
+  {#if failure}<p class="note error" role="alert">{failure}</p>{/if}
 
   {#if app.profile}
     <Messages {problems} {warnings} />
-    <Field label="Profile name">
-      <input bind:value={app.profile.name} />
-    </Field>
+    <div class="card">
+      <Field label="Profile name" hint="Only for you. Contestants never see it.">
+        <input bind:value={app.profile.name} />
+      </Field>
+    </div>
     <ContestForm bind:settings={app.profile.settings} />
-    <BrandingForm bind:settings={app.profile.settings} />
-    <NetworkForm bind:settings={app.profile.settings} />
+    <details class="card">
+      <summary>What contestants see</summary>
+      <BrandingForm bind:settings={app.profile.settings} />
+    </details>
+    <details class="card">
+      <summary>Network, Hub and screen recording</summary>
+      <NetworkForm bind:settings={app.profile.settings} />
+    </details>
   {:else}
-    <p>Start with a new profile, or open one you saved.</p>
+    <p class="card">Start with a new profile, or open one you saved.</p>
   {/if}
 </div>
 
@@ -91,7 +99,7 @@
   .page {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: var(--gap);
   }
   .toolbar {
     display: flex;
@@ -99,18 +107,9 @@
     align-items: center;
     flex-wrap: wrap;
   }
-  .path {
+  .where {
     color: var(--muted);
     font-size: 0.85rem;
     overflow-wrap: anywhere;
-  }
-  .ok {
-    color: var(--ok);
-    margin: 0;
-  }
-  .error {
-    color: var(--danger);
-    margin: 0;
-    white-space: pre-wrap;
   }
 </style>

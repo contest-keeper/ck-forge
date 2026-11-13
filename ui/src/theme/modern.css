@@ -1,0 +1,176 @@
+/* The modern theme: system font, frosted panels, rounded shapes, the extension's teal as the accent. */
+
+:root[data-theme='modern'] {
+  --font:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable', 'Segoe UI', system-ui,
+    sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --bg: linear-gradient(150deg, #d5efec 0%, #e6ebf8 52%, #f2e7f6 100%);
+  --side-bg: rgba(255, 255, 255, 0.55);
+  --panel: #fff;
+  --glass: rgba(255, 255, 255, 0.8);
+  --soft: rgba(60, 70, 90, 0.07);
+  --text: #1d1d1f;
+  --muted: #636368;
+  --line: rgba(60, 70, 90, 0.12);
+  --line-strong: rgba(60, 70, 90, 0.22);
+  --accent: #0b7a76;
+  --accent-soft: rgba(11, 122, 118, 0.12);
+  --accent-text: #fff;
+  --ok: #14683a;
+  --ok-bg: #e1f5e8;
+  --warn: #85500a;
+  --warn-bg: #fff0cc;
+  --danger: #b0161f;
+  --danger-text: #b0161f;
+  --danger-bg: #ffedec;
+  --danger-line: rgba(215, 0, 21, 0.28);
+  --danger-solid: #d70015;
+  --input-bg: rgba(120, 130, 150, 0.09);
+  --radius: 12px;
+  --radius-lg: 20px;
+  --gap: 14px;
+  --shadow: 0 10px 30px rgba(30, 50, 80, 0.1), inset 0 1px rgba(255, 255, 255, 0.9);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='modern'] {
+    color-scheme: dark;
+    --bg: linear-gradient(150deg, #0e2624 0%, #151a2b 52%, #231a2b 100%);
+    --side-bg: rgba(40, 46, 60, 0.6);
+    --panel: #232a36;
+    --glass: rgba(30, 36, 48, 0.82);
+    --soft: rgba(255, 255, 255, 0.08);
+    --text: #f2f2f4;
+    --muted: #a4a9b3;
+    --line: rgba(255, 255, 255, 0.12);
+    --line-strong: rgba(255, 255, 255, 0.24);
+    --accent: #3cc3bd;
+    --accent-soft: rgba(60, 195, 189, 0.18);
+    --accent-text: #06201f;
+    --ok: #7fdca1;
+    --ok-bg: rgba(60, 180, 100, 0.2);
+    --warn: #f2c56b;
+    --warn-bg: rgba(240, 185, 91, 0.18);
+    --danger: #ff8a80;
+    --danger-text: #ff9a92;
+    --danger-bg: rgba(255, 90, 80, 0.14);
+    --danger-line: rgba(255, 120, 110, 0.4);
+    --input-bg: rgba(255, 255, 255, 0.08);
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.35), inset 0 1px rgba(255, 255, 255, 0.08);
+  }
+}
+
+[data-theme='modern'] body {
+  background-attachment: fixed;
+}
+[data-theme='modern'] .win {
+  padding: 12px;
+  gap: 12px;
+}
+[data-theme='modern'] .side,
+[data-theme='modern'] .main {
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(30px) saturate(1.6);
+  backdrop-filter: blur(30px) saturate(1.6);
+}
+[data-theme='modern'] .side {
+  width: 244px;
+}
+[data-theme='modern'] .main {
+  background: var(--glass);
+  overflow: hidden;
+}
+[data-theme='modern'] .step {
+  border-radius: 14px;
+}
+[data-theme='modern'] .step:hover {
+  background: var(--soft);
+}
+[data-theme='modern'] .step.on {
+  background: var(--panel);
+  box-shadow: 0 1px 3px rgba(30, 50, 80, 0.12);
+}
+[data-theme='modern'] .step.on .st {
+  color: var(--accent);
+}
+[data-theme='modern'] .dot {
+  border: 0;
+  background: var(--soft);
+}
+[data-theme='modern'] .step.done .dot {
+  background: var(--ok-bg);
+}
+[data-theme='modern'] .step.on .dot {
+  background: var(--accent);
+}
+[data-theme='modern'] .head {
+  padding: 26px 32px 14px;
+}
+[data-theme='modern'] .head h1 {
+  font-size: 1.6rem;
+  letter-spacing: -0.02em;
+}
+[data-theme='modern'] .btn {
+  border: 0;
+  border-radius: 999px;
+  background: var(--soft);
+}
+[data-theme='modern'] .btn:hover:not(:disabled) {
+  background: var(--line);
+}
+[data-theme='modern'] .btn.pri {
+  background: var(--accent);
+  box-shadow: 0 2px 8px rgba(11, 122, 118, 0.3);
+}
+[data-theme='modern'] .btn.dng {
+  box-shadow: 0 2px 8px rgba(215, 0, 21, 0.3);
+}
+[data-theme='modern'] .card,
+[data-theme='modern'] .disk {
+  border: 0;
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 2px 8px rgba(30, 50, 80, 0.05);
+}
+[data-theme='modern'] .disk {
+  border-radius: 16px;
+}
+[data-theme='modern'] .disk.sel {
+  background: var(--panel);
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 2px 10px rgba(11, 122, 118, 0.18);
+}
+[data-theme='modern'] .disk.off {
+  background: none;
+  box-shadow: none;
+  border: 1px dashed var(--line-strong);
+}
+[data-theme='modern'] .path {
+  border: 0;
+  background: var(--soft);
+}
+[data-theme='modern'] .field input:not([type='checkbox']),
+[data-theme='modern'] .field select,
+[data-theme='modern'] .field textarea,
+[data-theme='modern'] .danger input {
+  border-color: transparent;
+}
+[data-theme='modern'] .field input:focus,
+[data-theme='modern'] .field select:focus,
+[data-theme='modern'] .field textarea:focus {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+[data-theme='modern'] .danger input:focus {
+  outline: 0;
+  border-color: var(--danger-solid);
+  box-shadow: 0 0 0 4px var(--danger-bg);
+}
+[data-theme='modern'] .foot {
+  background: var(--soft);
+}
