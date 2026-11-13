@@ -1,5 +1,3 @@
-// Small helpers for showing sizes and progress.
-
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
 
 /** Decimal units, like the box of a USB stick: 29884416000 is "29.9 GB". */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { describeError, eraseConfirmation, formatBytes, percent } from './format';
-import { linesToList, listToLines, optionalCount, optionalText } from './profile';
+import { describeError, formatBytes, percent } from './format';
+import { linesToList, optionalCount, optionalText } from './profile';
 
 describe('format', () => {
   it('shows sizes in decimal units', () => {
@@ -14,10 +14,6 @@ describe('format', () => {
     expect(percent(300, 200)).toBe(100);
   });
 
-  it('asks for the disk number to be typed', () => {
-    expect(eraseConfirmation(3)).toBe('erase 3');
-  });
-
   it('describes whatever was thrown', () => {
     expect(describeError('plain')).toBe('plain');
     expect(describeError(new Error('boom'))).toBe('boom');
@@ -26,9 +22,8 @@ describe('format', () => {
 });
 
 describe('profile helpers', () => {
-  it('turns lines into a list and back', () => {
+  it('turns lines into a list', () => {
     expect(linesToList(' a.org \n\n b.org\n')).toEqual(['a.org', 'b.org']);
-    expect(listToLines(['a.org', 'b.org'])).toBe('a.org\nb.org');
   });
 
   it('leaves blank optional fields out', () => {

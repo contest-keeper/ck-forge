@@ -47,16 +47,13 @@ impl Profile {
         warnings
     }
 
-    /// The problems with this profile, in plain words. Empty when it is fine.
+    /// Empty when the profile is fine.
     #[must_use]
     pub fn problems(&self) -> Vec<ck_protocol::Problem> {
         self.settings.validate()
     }
 
-    /// Reads a profile and checks its settings.
-    ///
-    /// # Errors
-    /// Fails when the file cannot be read, is not a profile, or has problems.
+    /// Reads a profile and checks its settings: a profile with problems is an error.
     pub fn load(path: &Path) -> Result<Self, Error> {
         let profile: Self =
             read_json(path)?.ok_or_else(|| Error::ProfileMissing(path.display().to_string()))?;
@@ -65,16 +62,13 @@ impl Profile {
     }
 
     /// Checks the settings and writes the profile. An invalid profile is never saved.
-    ///
-    /// # Errors
-    /// Fails when the settings have problems or the file cannot be written.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
         self.check()?;
         write_json_atomically(path, self)
     }
 
     fn check(&self) -> Result<(), Error> {
-        let problems = self.settings.validate();
+        let problems = self.problems();
         if problems.is_empty() {
             Ok(())
         } else {

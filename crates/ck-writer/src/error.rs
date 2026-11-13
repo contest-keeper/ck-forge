@@ -27,7 +27,7 @@ pub enum Error {
 }
 
 impl Error {
-    pub fn io(context: impl Into<String>, source: io::Error) -> Self {
+    pub(crate) fn io(context: impl Into<String>, source: io::Error) -> Self {
         Self::Io {
             context: context.into(),
             source,

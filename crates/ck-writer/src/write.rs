@@ -17,10 +17,11 @@ pub enum Phase {
     Verifying,
 }
 
-/// The path that opens disk `number` as a raw device.
+/// The path that opens disk `number` as a raw device. The two leading backslashes matter: with one,
+/// Windows takes it for a file named `PhysicalDriveN` on the current drive.
 #[must_use]
 pub fn disk_path(number: u32) -> PathBuf {
-    PathBuf::from(format!(r"\.\PhysicalDrive{number}"))
+    PathBuf::from(format!(r"\\.\PhysicalDrive{number}"))
 }
 
 /// Copies `image` to `target`, then reads `target` back and compares. Returns the image's SHA-256

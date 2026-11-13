@@ -1,12 +1,6 @@
 <script lang="ts">
   import Field from '../components/Field.svelte';
-  import {
-    RECORDING_MODES,
-    linesToList,
-    listToLines,
-    optionalCount,
-    type Settings,
-  } from '../core/profile';
+  import { RECORDING_MODES, linesToList, optionalCount, type Settings } from '../core/profile';
 
   type Props = { settings: Settings };
   let { settings = $bindable() }: Props = $props();
@@ -21,7 +15,7 @@
     <textarea
       rows="4"
       bind:value={
-        () => listToLines(settings.allowed_domains),
+        () => settings.allowed_domains.join('\n'),
         (v) => (settings.allowed_domains = linesToList(v))
       }
     ></textarea>

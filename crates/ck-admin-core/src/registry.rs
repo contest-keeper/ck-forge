@@ -28,22 +28,16 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Reads the registry. A missing file is an empty registry.
-    ///
-    /// # Errors
-    /// Fails when the file exists but cannot be read.
+    /// A missing file is an empty registry.
     pub fn load(path: &Path) -> Result<Self, Error> {
         Ok(read_json(path)?.unwrap_or_default())
     }
 
-    /// # Errors
-    /// Fails when the file cannot be written.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
         write_json_atomically(path, self)
     }
 
-    /// # Errors
-    /// Fails when a stick with the same id is already there.
+    /// Refuses a stick whose id is already there.
     pub fn add(&mut self, entry: RegistryEntry) -> Result<(), Error> {
         if self.find(&entry.stick_id).is_some() {
             return Err(Error::DuplicateStick(entry.stick_id));
@@ -54,9 +48,6 @@ impl Registry {
 
     /// Adds a stick to the registry file and saves it. Safe when other programs do the same at the
     /// same time: the file is locked, then read again, so nobody's sticks are lost.
-    ///
-    /// # Errors
-    /// Fails when a stick with the same id is already there, or the file cannot be read or written.
     pub fn register(path: &Path, entry: RegistryEntry) -> Result<(), Error> {
         let _lock = Lock::acquire(path)?;
         let mut registry = Self::load(path)?;
@@ -66,9 +57,6 @@ impl Registry {
 
     /// Updates the team, site and contest of a stick that is already in the registry file, for
     /// example after its settings were changed. Returns false when the file or the stick is not there.
-    ///
-    /// # Errors
-    /// Fails when the file cannot be read or written.
     pub fn update_labels(
         path: &Path,
         id: &StickId,

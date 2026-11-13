@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ck_admin_core::{Error, Profile};
+use ck_admin_core::{Error, Profile, folder_of};
 use serde::Serialize;
 
 /// Plain words for the window: one line per problem with a profile, one line for anything else.
@@ -16,14 +16,6 @@ pub fn message(error: &Error) -> String {
             format!("the profile has problems:\n{}", lines.join("\n"))
         }
         other => other.to_string(),
-    }
-}
-
-/// The folder a profile file is in, where its pictures and the registry are.
-pub fn folder_of(file: &Path) -> PathBuf {
-    match file.parent() {
-        Some(folder) if !folder.as_os_str().is_empty() => folder.to_path_buf(),
-        _ => PathBuf::from("."),
     }
 }
 
