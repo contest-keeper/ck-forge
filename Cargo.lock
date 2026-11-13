@@ -152,6 +152,7 @@ dependencies = [
  "ck-crypto",
  "ck-image",
  "ck-protocol",
+ "ck-writer",
  "crc32fast",
  "fatfs",
  "fscommon",
@@ -183,6 +184,7 @@ dependencies = [
  "ck-admin-core",
  "ck-image",
  "ck-protocol",
+ "ck-writer",
  "clap",
  "crc32fast",
  "fatfs",
@@ -212,6 +214,17 @@ source = "git+https://github.com/contest-keeper/ck-protocol?rev=abf69fab780bb3d1
 dependencies = [
  "chrono",
  "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "ck-writer"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror",
 ]
 

@@ -210,3 +210,46 @@ fn a_wallpaper_next_to_the_profile_goes_onto_the_stick_and_a_missing_one_is_foun
         b"\x89PNG picture"
     );
 }
+
+#[test]
+fn a_built_stick_can_be_written_to_a_file_and_still_shows_its_settings() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    assert!(
+        forge(&["profile", "new", "p.json"], dir.path())
+            .status
+            .success()
+    );
+    let built = forge(
+        &[
+            "image",
+            "build",
+            "--base",
+            base.to_str().expect("utf-8 path"),
+            "--out",
+            "stick.img",
+            "--profile",
+            "p.json",
+        ],
+        dir.path(),
+    );
+    assert!(built.status.success(), "{}", text(&built.stderr));
+
+    let written = forge(
+        &["stick", "write", "stick.img", "--to", "copy.img"],
+        dir.path(),
+    );
+    assert!(written.status.success(), "{}", text(&written.stderr));
+    assert!(text(&written.stdout).contains("Read back and checked"));
+
+    let original = text(&forge(&["image", "show", "stick.img"], dir.path()).stdout);
+    let copy = text(&forge(&["image", "show", "copy.img"], dir.path()).stdout);
+    assert_eq!(original, copy);
+}
+
+#[test]
+fn a_disk_or_a_file_is_required() {
+    let dir = TempDir::new().expect("temp dir");
+    let none = forge(&["stick", "write", "stick.img"], dir.path());
+    assert_eq!(none.status.code(), Some(2));
+}
