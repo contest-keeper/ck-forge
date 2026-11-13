@@ -40,12 +40,15 @@ export const writeStick = (
   image: string,
   target: { disks: number[] } | { file: string },
   allowVirtual: boolean,
+  more: { base: string; profilePath: string } | null,
 ) =>
   invoke<string>('write_stick', {
     image,
     disks: 'disks' in target ? target.disks : [],
     toFile: 'file' in target ? target.file : null,
     allowVirtual,
+    base: more?.base ?? null,
+    profilePath: more?.profilePath ?? null,
   });
 
 export const pushRegistry = (hub: string, user: string, password: string, profilePath: string) =>

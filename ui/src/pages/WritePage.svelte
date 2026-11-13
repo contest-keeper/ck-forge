@@ -18,6 +18,13 @@
   let failure = $state('');
 
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+  // The first stick gets the image of step 2. Each more stick gets one of its own, made here from
+  // the same base and profile, so every stick has its own identity.
+  const more = $derived(
+    chosen.length > 1 && image === app.imagePath && app.basePath && app.profilePath
+      ? { base: app.basePath, profilePath: app.profilePath }
+      : null,
+  );
   const confirmed = $derived(chosen.length > 0 && typed.trim() === eraseConfirmation(chosen));
   const names = $derived([...chosen].sort((a, b) => a - b).join(', '));
 
@@ -55,7 +62,7 @@
     hash = '';
     progress = null;
     try {
-      hash = await api.writeStick(image, target, allowVirtual);
+      hash = await api.writeStick(image, target, allowVirtual, more);
       written = 'disks' in target ? target.disks.length : 1;
       app.written = true;
     } catch (error) {
@@ -85,8 +92,9 @@
   <div class="card">
     <h2>Choose the sticks to erase</h2>
     <p class="hint">
-      A stick of at least 32 GB is needed. Everything on it is erased. An image made for one stick
-      goes to one stick; only a plain image, with no stick identity, can go to several at once.
+      A stick of at least 32 GB is needed. Everything on it is erased. Tick several sticks to write
+      them at the same time: each gets an image of its own, with its own identity, made in a second
+      from the profile and the base image of step 2.
     </p>
     <div class="row">
       <button type="button" class="btn sm" onclick={refresh} disabled={busy || !image}>
@@ -138,6 +146,8 @@
         </div>
         <div class="hint">
           This cannot be undone. Type <strong>{eraseConfirmation(chosen)}</strong> to confirm.
+          {#if more}{chosen.length - 1} more {chosen.length === 2 ? 'image is' : 'images are'} made, one
+            for each stick after the first.{/if}
         </div>
       </div>
       <input
