@@ -302,3 +302,63 @@ fn the_progress_file_ends_with_the_hash_or_with_the_reason_for_a_failure() {
             .contains("missing.img")
     );
 }
+
+#[test]
+fn several_files_are_written_at_once() {
+    let dir = TempDir::new().expect("temp dir");
+    let image = vec![3_u8; 3 * 1024 * 1024 + 100];
+    std::fs::write(dir.path().join("a.img"), &image).expect("image");
+
+    let done = forge(
+        &["stick", "write", "a.img", "--to", "b.img", "--to", "c.img"],
+        dir.path(),
+    );
+    assert!(done.status.success(), "{}", text(&done.stderr));
+    let out = text(&done.stdout);
+    assert!(
+        out.contains("to b.img") && out.contains("to c.img"),
+        "{out}"
+    );
+    assert!(out.contains("Read back and checked"), "{out}");
+    for name in ["b.img", "c.img"] {
+        let written = std::fs::read(dir.path().join(name)).expect("written");
+        assert_eq!(&written[..image.len()], &image[..]);
+    }
+}
+
+#[test]
+fn a_failing_stick_is_named_and_the_others_are_still_written() {
+    let dir = TempDir::new().expect("temp dir");
+    std::fs::write(dir.path().join("a.img"), vec![5_u8; 4096]).expect("image");
+
+    let result = forge(
+        &[
+            "stick",
+            "write",
+            "a.img",
+            "--to",
+            "good.img",
+            "--to",
+            "no-such-folder/bad.img",
+        ],
+        dir.path(),
+    );
+    assert!(!result.status.success());
+    let message = text(&result.stderr);
+    assert!(message.contains("1 of 2 sticks failed"), "{message}");
+    assert!(message.contains("bad.img"), "{message}");
+    assert_eq!(
+        std::fs::read(dir.path().join("good.img")).expect("good"),
+        vec![5_u8; 4096]
+    );
+}
+
+#[test]
+fn a_disk_cannot_be_given_together_with_a_file() {
+    let dir = TempDir::new().expect("temp dir");
+    let both = forge(
+        &["stick", "write", "a.img", "--disk", "3", "--to", "b.img"],
+        dir.path(),
+    );
+    assert_eq!(both.status.code(), Some(2));
+}

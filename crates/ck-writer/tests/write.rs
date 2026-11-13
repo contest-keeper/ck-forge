@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ck_writer::{Error, Phase, disk_path, write_image};
+use ck_writer::{Error, Phase, disk_path, write_image, write_image_to_all};
 use tempfile::tempdir;
 
 fn image(dir: &Path, size: usize) -> PathBuf {
@@ -82,4 +82,70 @@ fn a_missing_image_is_reported() {
     )
     .unwrap_err();
     assert!(matches!(error, Error::Io { .. }));
+}
+
+#[test]
+fn writes_several_targets_at_once_and_reports_each() {
+    let dir = tempdir().unwrap();
+    // Several blocks and a short last one, so every target gets a padded end.
+    let source = image(dir.path(), 9 * 1024 * 1024 + 1000);
+    let targets: Vec<PathBuf> = (0..3)
+        .map(|n| dir.path().join(format!("stick{n}.img")))
+        .collect();
+
+    let mut seen = vec![[0_u64; 2]; targets.len()];
+    let results = write_image_to_all(&source, &targets, |index, phase, done, total| {
+        assert!(done <= total);
+        let slot = usize::from(phase == Phase::Verifying);
+        seen[index][slot] = seen[index][slot].max(done);
+    })
+    .unwrap();
+
+    let expected = fs::read(&source).unwrap();
+    assert_eq!(results.len(), 3);
+    let hashes: Vec<&String> = results.iter().map(|r| r.as_ref().unwrap()).collect();
+    assert!(hashes.iter().all(|hash| *hash == hashes[0]));
+    for (target, done) in targets.iter().zip(&seen) {
+        let written = fs::read(target).unwrap();
+        assert_eq!(&written[..expected.len()], &expected[..]);
+        assert_eq!(written.len(), expected.len().next_multiple_of(512));
+        // Every target was reported to the end of both phases.
+        assert_eq!(*done, [expected.len() as u64; 2]);
+    }
+}
+
+#[test]
+fn one_target_that_cannot_be_opened_does_not_stop_the_others() {
+    let dir = tempdir().unwrap();
+    let source = image(dir.path(), 3 * 1024 * 1024);
+    let good = dir.path().join("good.img");
+    let bad = dir.path().join("no-such-folder").join("bad.img");
+
+    let results = write_image_to_all(&source, &[bad, good.clone()], |_, _, _, _| {}).unwrap();
+
+    assert!(matches!(&results[0], Err(Error::Io { .. })));
+    assert!(results[1].is_ok());
+    assert_eq!(fs::read(&good).unwrap(), fs::read(&source).unwrap());
+}
+
+#[test]
+fn no_targets_give_no_results() {
+    let dir = tempdir().unwrap();
+    let source = image(dir.path(), 4096);
+    assert!(
+        write_image_to_all(&source, &[], |_, _, _, _| {})
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_empty_image_is_refused_for_several_targets_too() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("empty.img");
+    fs::write(&source, b"").unwrap();
+    let targets = [dir.path().join("a.img"), dir.path().join("b.img")];
+    let error = write_image_to_all(&source, &targets, |_, _, _, _| {}).unwrap_err();
+    assert!(matches!(error, Error::EmptyImage));
+    assert!(!targets[0].exists());
 }
