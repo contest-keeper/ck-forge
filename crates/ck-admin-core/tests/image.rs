@@ -2,7 +2,9 @@ mod support;
 
 use std::path::PathBuf;
 
-use ck_admin_core::{Built, Error, Profile, Registry, build_image, configure_image, show_image};
+use ck_admin_core::{
+    Built, Error, Profile, Registry, build_image, build_thin_image, configure_image, show_image,
+};
 use ck_protocol::LocalDateTime;
 use tempfile::TempDir;
 
@@ -37,6 +39,18 @@ impl Fixture {
 
     fn path(&self, name: &str) -> PathBuf {
         self.dir.path().join(name)
+    }
+
+    fn build_thin(&self, out: &str, profile: &Profile) -> Result<Built, Error> {
+        build_thin_image(
+            &self.base,
+            &self.path(out),
+            profile,
+            None,
+            &self.registry,
+            time(),
+            |_, _| {},
+        )
     }
 
     fn build(&self, out: &str, profile: &Profile) -> Result<Built, Error> {
@@ -238,4 +252,87 @@ fn sticks_of_one_contest_get_machine_numbers_one_after_another() {
     )
     .expect("configure");
     assert_eq!(changed.machine_number, Some(2));
+}
+
+#[test]
+fn a_thin_image_holds_only_the_start_of_the_base_and_writes_as_the_whole_stick() {
+    let fixture = Fixture::new();
+    let base_bytes = std::fs::read(&fixture.base).expect("read base");
+    let built = fixture
+        .build_thin("thin.img", &profile("Team A"))
+        .expect("build");
+    let thin = fixture.path("thin.img");
+
+    // Only the start is copied, and the settings can be read from it.
+    let head = usize::try_from(std::fs::metadata(&thin).expect("thin").len()).expect("fits");
+    assert!(head < base_bytes.len(), "{head}");
+    assert_eq!(show_image(&thin).expect("show"), built.config);
+    assert!(built.base_sha256.is_none());
+    assert_eq!(std::fs::read(&fixture.base).expect("read base"), base_bytes);
+
+    // Written, it is the base with the settings of the stick in its start.
+    assert_eq!(
+        ck_writer::thin::image_len(&thin).expect("length"),
+        u64::try_from(base_bytes.len()).expect("fits")
+    );
+    let target = fixture.path("written.img");
+    ck_writer::write_image(&thin, &target, |_, _, _| {}).expect("write");
+    let written = std::fs::read(&target).expect("read written");
+    assert_eq!(written.len(), base_bytes.len());
+    assert_eq!(written[head..], base_bytes[head..], "the rest is the base");
+    assert_eq!(show_image(&target).expect("show written"), built.config);
+
+    // Nothing outside the start differs from a full copy built the same way.
+    let full = fixture.build("full.img", &profile("Team A")).expect("full");
+    let full_bytes = std::fs::read(fixture.path("full.img")).expect("read full");
+    assert_eq!(full_bytes.len(), written.len());
+    assert_eq!(full_bytes[head..], written[head..]);
+    assert!(full.base_sha256.is_some());
+}
+
+#[test]
+fn a_thin_image_is_registered_and_never_replaces_an_existing_file() {
+    let fixture = Fixture::new();
+    let built = fixture
+        .build_thin("thin.img", &profile("Team A"))
+        .expect("build");
+    let registry = Registry::load(&fixture.registry).expect("registry");
+    assert_eq!(registry.list()[0].stick_id, built.config.stick_id);
+    assert_eq!(registry.list()[0].image, "thin.img");
+
+    let again = fixture.build_thin("thin.img", &profile("Team B"));
+    assert!(again.is_err());
+    assert_eq!(
+        show_image(&fixture.path("thin.img"))
+            .expect("still the first")
+            .stick_id,
+        built.config.stick_id
+    );
+}
+
+#[test]
+fn a_thin_image_is_refused_when_its_base_changed() {
+    let fixture = Fixture::new();
+    fixture
+        .build_thin("thin.img", &profile("Team A"))
+        .expect("build");
+    let thin = fixture.path("thin.img");
+
+    let mut bytes = std::fs::read(&fixture.base).expect("read base");
+    bytes[600] ^= 0xFF;
+    std::fs::write(&fixture.base, bytes).expect("change base");
+    let target = fixture.path("written.img");
+    let error = ck_writer::write_image(&thin, &target, |_, _, _| {}).unwrap_err();
+    assert!(matches!(error, ck_writer::Error::Thin(_)), "{error}");
+    assert!(!target.exists(), "nothing is written for a refused image");
+}
+
+#[test]
+fn a_failed_thin_build_leaves_no_image_or_manifest_behind() {
+    let fixture = Fixture::new();
+    let mut bad = profile("Team A");
+    bad.settings.branding.computer_name_pattern = String::new();
+    assert!(fixture.build_thin("thin.img", &bad).is_err());
+    assert!(!fixture.path("thin.img").exists());
+    assert!(!ck_writer::thin::manifest_path(&fixture.path("thin.img")).exists());
 }

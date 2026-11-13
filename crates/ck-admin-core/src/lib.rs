@@ -14,7 +14,9 @@ mod wallpaper;
 pub use error::Error;
 pub use file::folder_of;
 pub use hub::{Pushed, push_registry};
-pub use image::{Built, build_image, check_one_stick, configure_image, show_image};
+pub use image::{
+    Built, build_image, build_thin_image, check_one_stick, configure_image, show_image,
+};
 pub use profile::Profile;
 pub use registry::{Registry, RegistryEntry};
 pub use stick::make_stick_config;

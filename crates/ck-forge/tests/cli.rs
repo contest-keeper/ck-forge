@@ -410,3 +410,64 @@ fn an_image_made_for_one_stick_is_not_written_to_several() {
     );
     assert!(one.status.success(), "{}", text(&one.stderr));
 }
+
+#[test]
+fn an_image_is_thin_unless_a_full_copy_is_asked_for() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    let base_len = std::fs::metadata(&base).expect("base").len();
+    assert!(
+        forge(&["profile", "new", "p.json"], dir.path())
+            .status
+            .success()
+    );
+    let build = |out: &str, extra: &[&str]| {
+        let mut args = vec![
+            "image",
+            "build",
+            "--base",
+            base.to_str().expect("utf-8 path"),
+            "--out",
+            out,
+            "--profile",
+            "p.json",
+        ];
+        args.extend_from_slice(extra);
+        forge(&args, dir.path())
+    };
+
+    let thin = build("thin.img", &[]);
+    assert!(thin.status.success(), "{}", text(&thin.stderr));
+    assert!(
+        std::fs::metadata(dir.path().join("thin.img"))
+            .expect("thin")
+            .len()
+            < base_len
+    );
+    assert!(dir.path().join("thin.img.thin.json").exists());
+
+    let full = build("full.img", &["--full-copy"]);
+    assert!(full.status.success(), "{}", text(&full.stderr));
+    assert_eq!(
+        std::fs::metadata(dir.path().join("full.img"))
+            .expect("full")
+            .len(),
+        base_len
+    );
+    assert!(!dir.path().join("full.img.thin.json").exists());
+
+    // Written, a thin image is a whole stick image, and shows its settings.
+    let written = forge(
+        &["stick", "write", "thin.img", "--to", "out.img"],
+        dir.path(),
+    );
+    assert!(written.status.success(), "{}", text(&written.stderr));
+    assert_eq!(
+        std::fs::metadata(dir.path().join("out.img"))
+            .expect("out")
+            .len(),
+        base_len
+    );
+    let shown = forge(&["image", "show", "out.img"], dir.path());
+    assert!(shown.status.success(), "{}", text(&shown.stderr));
+}

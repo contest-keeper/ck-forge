@@ -5,6 +5,7 @@
 
 mod disk;
 mod error;
+pub mod thin;
 mod write;
 
 pub use disk::{Disk, list_disks, prepare_disk};

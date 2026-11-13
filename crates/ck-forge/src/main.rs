@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    Error, Profile, Registry, Wallpaper, build_image, check_one_stick, configure_image, folder_of,
-    show_image,
+    Error, Profile, Registry, Wallpaper, build_image, build_thin_image, check_one_stick,
+    configure_image, folder_of, show_image,
 };
 use ck_protocol::{LocalDateTime, StickConfig};
 use clap::{Args, Parser, Subcommand};
@@ -92,7 +92,9 @@ enum ProfileCommand {
 
 #[derive(Subcommand)]
 enum ImageCommand {
-    /// Copy the base image and give the copy its own identity and the profile's settings
+    /// Make the image of a stick: the base image with its own identity and the profile's settings.
+    /// By default the new image holds only the start of the base (through its EFI partition) and
+    /// `stick write` takes the rest from the base, which takes a second instead of minutes
     Build {
         /// The base image (only read, never changed)
         #[arg(long)]
@@ -103,6 +105,9 @@ enum ImageCommand {
         /// The contest profile
         #[arg(long)]
         profile: PathBuf,
+        /// Copy the whole base image (30 GB), so the new image runs without the base
+        #[arg(long)]
+        full_copy: bool,
         #[command(flatten)]
         registry: RegistryFile,
     },
@@ -188,8 +193,9 @@ fn run(command: Command) -> Result<String, Error> {
             base,
             out,
             profile,
+            full_copy,
             registry,
-        }) => image_build(&base, &out, &profile, &registry.registry),
+        }) => image_build(&base, &out, &profile, &registry.registry, full_copy),
         Command::Image(ImageCommand::Configure {
             image,
             profile,
@@ -267,6 +273,7 @@ fn image_build(
     image: &Path,
     profile: &Path,
     registry: &Path,
+    full_copy: bool,
 ) -> Result<String, Error> {
     let profile_file = profile;
     let profile = Profile::load(profile_file)?;
@@ -278,7 +285,12 @@ fn image_build(
             .unwrap_or_else(|_| ProgressStyle::default_bar()),
     );
     let now = LocalDateTime::from(chrono::Local::now().naive_local());
-    let built = build_image(
+    let make = if full_copy {
+        build_image
+    } else {
+        build_thin_image
+    };
+    let result = make(
         base,
         image,
         &profile,
@@ -291,7 +303,7 @@ fn image_build(
         },
     );
     bar.finish_and_clear();
-    let built = built?;
+    let built = result?;
     Ok(format!(
         "Made {}\nRegistered in {}\n{}",
         image.display(),
@@ -378,9 +390,7 @@ fn stick_write(
     yes: bool,
     progress: Option<&Path>,
 ) -> Result<String, Error> {
-    let size = std::fs::metadata(image)
-        .map_err(|e| Error::io(format!("reading {}", image.display()), e))?
-        .len();
+    let size = ck_writer::thin::image_len(image)?;
     check_one_stick(image, disks.len().max(to.len()))?;
     let targets = if to.is_empty() {
         prepare_disks(disks, size, allow_virtual, yes)?
