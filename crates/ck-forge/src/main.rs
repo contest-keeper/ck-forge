@@ -119,6 +119,17 @@ enum RegistryCommand {
         #[command(flatten)]
         registry: RegistryFile,
     },
+    /// Send the registry to the Hub so it knows the sticks. Asks for the password at a prompt
+    Push {
+        /// The Hub's address, like `https://hub.example.org`
+        #[arg(long)]
+        hub: String,
+        /// The admin account to log in with
+        #[arg(long)]
+        user: String,
+        #[command(flatten)]
+        registry: RegistryFile,
+    },
 }
 
 #[derive(Args)]
@@ -178,6 +189,11 @@ fn run(command: Command, out: &mut impl Write) -> Result<(), Error> {
         Command::Registry(RegistryCommand::List { registry }) => {
             registry_list(&registry.registry, out)
         }
+        Command::Registry(RegistryCommand::Push {
+            hub,
+            user,
+            registry,
+        }) => registry_push(&hub, &user, &registry.registry, out),
         Command::Stick(StickCommand::List) => stick_list(out),
         Command::Stick(StickCommand::Write {
             image,
@@ -435,4 +451,30 @@ fn admin_hint(error: ck_writer::Error) -> Error {
         );
     }
     error.into()
+}
+
+fn registry_push(
+    hub: &str,
+    user: &str,
+    registry: &std::path::Path,
+    out: &mut impl Write,
+) -> Result<(), Error> {
+    // Without echo, and never from an argument or the environment, so it is not left in a history.
+    let password = rpassword::prompt_password(format!("Password for {user} on {hub}: "))
+        .map_err(|e| Error::io("reading the password", e))?;
+    let pushed = ck_admin_core::push_registry(hub, user, &password, registry)?;
+    say(
+        out,
+        format_args!(
+            "Hub: {} added, {} already known",
+            pushed.added, pushed.already_known
+        ),
+    )?;
+    if pushed.conflicts.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Hub(format!(
+        "the Hub already has a different secret for: {}; they were left as they were",
+        pushed.conflicts.join(", ")
+    )))
 }
