@@ -34,44 +34,68 @@ pub async fn build_image(
     out: PathBuf,
     profile_path: PathBuf,
 ) -> Result<Built, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let profile = Profile::load(&profile_path).map_err(|e| message(&e))?;
-        let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(&profile_path))
-            .map_err(|e| message(&e))?;
-        let registry = registry_of(&profile_path);
-        let now = LocalDateTime::from(chrono::Local::now().naive_local());
-        let mut last = Instant::now();
-        let built = build(
-            &base,
-            &out,
-            &profile,
-            wallpaper.as_ref(),
-            &registry,
-            now,
-            |done, total| {
-                if done == total || last.elapsed() >= Duration::from_millis(250) {
-                    last = Instant::now();
-                    let _ = app.emit(
-                        "progress",
-                        Progress {
-                            done,
-                            total,
-                            phase: "building",
-                        },
-                    );
-                }
-            },
-        )
+    tauri::async_runtime::spawn_blocking(move || build_stick(&app, &base, &out, &profile_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Makes the image of one stick, from the profile at `profile_path`, and registers the stick.
+fn build_stick(
+    app: &AppHandle,
+    base: &Path,
+    out: &Path,
+    profile_path: &Path,
+) -> Result<Built, String> {
+    let profile = Profile::load(profile_path).map_err(|e| message(&e))?;
+    let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(profile_path))
         .map_err(|e| message(&e))?;
-        Ok(Built {
-            stick_id: built.config.stick_id.to_string(),
-            computer_name: built.config.computer_name(),
-            team: built.config.settings.team.clone(),
-            registry: registry.display().to_string(),
-        })
+    let registry = registry_of(profile_path);
+    let now = LocalDateTime::from(chrono::Local::now().naive_local());
+    let mut last = Instant::now();
+    let built = build(
+        base,
+        out,
+        &profile,
+        wallpaper.as_ref(),
+        &registry,
+        now,
+        |done, total| {
+            if done == total || last.elapsed() >= Duration::from_millis(250) {
+                last = Instant::now();
+                let _ = app.emit(
+                    "progress",
+                    Progress {
+                        done,
+                        total,
+                        phase: "building",
+                    },
+                );
+            }
+        },
+    )
+    .map_err(|e| message(&e))?;
+    Ok(Built {
+        stick_id: built.config.stick_id.to_string(),
+        computer_name: built.config.computer_name(),
+        team: built.config.settings.team.clone(),
+        registry: registry.display().to_string(),
     })
-    .await
-    .map_err(|e| e.to_string())?
+}
+
+/// A new name next to `image` for the image of another stick: `stick.img` gives `stick-2.img`,
+/// the first one of that kind that does not exist yet, with or without its manifest.
+fn next_image_path(image: &Path) -> PathBuf {
+    let stem = image
+        .file_stem()
+        .map_or_else(|| "stick".to_owned(), |s| s.to_string_lossy().into_owned());
+    let mut n = 2_u32;
+    loop {
+        let path = image.with_file_name(format!("{stem}-{n}.img"));
+        if !path.exists() && !ck_writer::thin::manifest_path(&path).exists() {
+            return path;
+        }
+        n += 1;
+    }
 }
 
 #[derive(Serialize)]
@@ -155,7 +179,9 @@ fn quote(path: &Path) -> Result<String, String> {
     Ok(format!("\"{text}\""))
 }
 
-/// Writes `image` to the disks `disks` (all at the same time), or to the file `to_file`. Raw disk access needs administrator
+/// Writes `image` to the disk `disks` or, for several disks, makes one more image for each disk
+/// after the first, from `base` and the profile, so that every stick has its own identity, and
+/// writes them all at the same time. Or writes to the file `to_file`. Raw disk access needs administrator
 /// rights, so the write runs in `ck-forge.exe` started through the Windows permission prompt, and
 /// this window stays unelevated. The helper reports in a file, which is read here to show progress.
 ///
@@ -167,6 +193,8 @@ pub async fn write_stick(
     disks: Vec<u32>,
     to_file: Option<PathBuf>,
     allow_virtual: bool,
+    base: Option<PathBuf>,
+    profile_path: Option<PathBuf>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         // A file needs no administrator rights, so it is written here: a test without a stick.
@@ -176,19 +204,30 @@ pub async fn write_stick(
         if disks.is_empty() {
             return Err("choose a disk or a file to write to".to_owned());
         }
-        ck_admin_core::check_one_stick(&image, disks.len()).map_err(|e| message(&e))?;
+        let mut images = vec![image.clone()];
+        if let (true, Some(base), Some(profile_path)) = (disks.len() > 1, &base, &profile_path) {
+            for _ in 1..disks.len() {
+                let next = next_image_path(images.last().unwrap_or(&image));
+                build_stick(&app, base, &next, profile_path)?;
+                images.push(next);
+            }
+        } else {
+            // One image for every disk: only an image with no stick identity may go to several.
+            ck_admin_core::check_one_stick(&image, disks.len()).map_err(|e| message(&e))?;
+        }
         let exe = forge_exe()?;
         let progress_file =
             std::env::temp_dir().join(format!("ck-write-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&progress_file);
-        let mut arguments = vec![
-            "stick".to_owned(),
-            "write".to_owned(),
-            quote(&image)?,
+        let mut arguments = vec!["stick".to_owned(), "write".to_owned()];
+        for image in &images {
+            arguments.push(quote(image)?);
+        }
+        arguments.extend([
             "--yes".to_owned(),
             "--progress-file".to_owned(),
             quote(&progress_file)?,
-        ];
+        ]);
         for disk in &disks {
             arguments.push("--disk".to_owned());
             arguments.push(disk.to_string());
@@ -316,6 +355,20 @@ mod tests {
         assert!(quote(Path::new(r#"x.img" --to "C:\Windows\win.ini"#)).is_err());
         // A backslash before the closing quote would make the quote part of the argument.
         assert!(quote(Path::new(r"C:\folder\")).is_err());
+    }
+
+    #[test]
+    fn the_image_of_another_stick_gets_the_next_free_name_beside_the_first() {
+        let dir = std::env::temp_dir().join(format!("ck-next-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let first = dir.join("stick.img");
+        assert_eq!(next_image_path(&first), dir.join("stick-2.img"));
+        std::fs::write(dir.join("stick-2.img"), b"x").expect("taken");
+        assert_eq!(next_image_path(&first), dir.join("stick-3.img"));
+        // A manifest alone also takes the name.
+        std::fs::write(dir.join("stick-3.img.thin.json"), b"{}").expect("taken");
+        assert_eq!(next_image_path(&first), dir.join("stick-4.img"));
+        std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
     #[test]

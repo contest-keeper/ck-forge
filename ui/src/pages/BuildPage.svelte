@@ -38,6 +38,7 @@
     try {
       built = await api.buildImage(base, out, app.profilePath);
       app.imagePath = out;
+      app.basePath = base;
     } catch (error) {
       failure = describeError(error);
     } finally {
