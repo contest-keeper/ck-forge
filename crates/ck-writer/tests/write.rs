@@ -103,7 +103,10 @@ fn writes_several_targets_at_once_and_reports_each() {
 
     let expected = fs::read(&source).unwrap();
     assert_eq!(results.len(), 3);
-    let hashes: Vec<&String> = results.iter().map(|r| r.as_ref().unwrap()).collect();
+    let hashes: Vec<&String> = results
+        .iter()
+        .map(|r| &r.as_ref().unwrap().sha256)
+        .collect();
     assert!(hashes.iter().all(|hash| *hash == hashes[0]));
     for (target, done) in targets.iter().zip(&seen) {
         let written = fs::read(target).unwrap();
@@ -187,7 +190,10 @@ fn sticks_with_their_own_start_are_written_from_one_base_each_with_its_own_hash(
     .unwrap();
 
     let base_bytes = fs::read(&base).unwrap();
-    let hashes: Vec<&String> = results.iter().map(|r| r.as_ref().unwrap()).collect();
+    let hashes: Vec<&String> = results
+        .iter()
+        .map(|r| &r.as_ref().unwrap().sha256)
+        .collect();
     assert!(
         hashes[0] != hashes[1] && hashes[1] != hashes[2],
         "each stick has its own hash"
@@ -252,4 +258,106 @@ fn a_stick_whose_target_fails_does_not_stop_the_other_sticks() {
     let written = fs::read(&jobs[1].1).unwrap();
     assert_eq!(written[700..720], [2_u8; 20]);
     assert_eq!(written[1024..], fs::read(&base).unwrap()[1024..]);
+}
+
+/// The bytes a stick made from `image` and the base holds once written: the image's start, then
+/// the rest of the base, padded to a whole sector.
+fn expected_stick(image: &Path, base: &Path) -> Vec<u8> {
+    let head = fs::read(image).expect("read the head");
+    let mut bytes = fs::read(base).expect("read the base");
+    bytes[..head.len()].copy_from_slice(&head);
+    bytes.resize(bytes.len().next_multiple_of(512), 0);
+    bytes
+}
+
+const BLOCK: u64 = 4 * 1024 * 1024;
+
+#[test]
+fn a_stick_that_already_holds_the_image_is_not_written_again() {
+    let dir = tempdir().unwrap();
+    // The start is a block and a half, the rest is two whole blocks and a short one.
+    let base = image(dir.path(), 14 * 1024 * 1024 + 700);
+    let head_len: u64 = 1024 * 1024 + 512;
+    let first = stick(dir.path(), &base, "first.img", head_len, 0x11);
+    let second = stick(dir.path(), &base, "second.img", head_len, 0x22);
+    let target = dir.path().join("target.img");
+
+    // A fresh target: everything is written.
+    let fresh = write_images(&[(first.clone(), target.clone())], |_, _, _, _| {}).unwrap();
+    assert_eq!(fresh[0].as_ref().unwrap().unchanged, 0);
+    assert_eq!(fs::read(&target).unwrap(), expected_stick(&first, &base));
+
+    // Another stick's image of the same base on the same target: only the start changes. (The
+    // counts are of padded bytes: the last block is written to a whole sector.)
+    let on_target = fs::metadata(&target).unwrap().len();
+    let again = write_images(&[(second.clone(), target.clone())], |_, _, _, _| {}).unwrap();
+    let again = again[0].as_ref().unwrap();
+    assert_eq!(
+        again.unchanged,
+        on_target - head_len,
+        "the whole rest was already there"
+    );
+    assert_eq!(fs::read(&target).unwrap(), expected_stick(&second, &base));
+    // The hash is the one of a fresh write of the same image.
+    let fresh_target = dir.path().join("fresh.img");
+    let hash = write_image(&second, &fresh_target, |_, _, _| {}).unwrap();
+    assert_eq!(again.sha256, hash);
+
+    // The same image on the same target again: all of it was there.
+    let same = write_images(&[(second.clone(), target.clone())], |_, _, _, _| {}).unwrap();
+    assert_eq!(same[0].as_ref().unwrap().unchanged, on_target);
+    assert_eq!(fs::read(&target).unwrap(), expected_stick(&second, &base));
+}
+
+#[test]
+fn only_the_blocks_that_differ_are_written_on_a_stick_that_holds_the_image() {
+    let dir = tempdir().unwrap();
+    let base = image(dir.path(), 14 * 1024 * 1024 + 700);
+    let head_len: u64 = 1024 * 1024 + 512;
+    let first = stick(dir.path(), &base, "first.img", head_len, 0x11);
+    let target = dir.path().join("target.img");
+    write_images(&[(first.clone(), target.clone())], |_, _, _, _| {}).unwrap();
+
+    // Damage places the probe does not look at (it asks about the first three of the four blocks
+    // after the start): the start, the first byte of the short last block, and its end.
+    let mut bytes = fs::read(&target).unwrap();
+    let last_block = usize::try_from(head_len + 3 * BLOCK).unwrap();
+    let last = bytes.len() - 100;
+    for at in [10, last_block, last] {
+        bytes[at] ^= 0xFF;
+    }
+    fs::write(&target, &bytes).unwrap();
+
+    let results = write_images(&[(first.clone(), target.clone())], |_, _, _, _| {}).unwrap();
+    let done = results[0].as_ref().unwrap();
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        expected_stick(&first, &base),
+        "repaired"
+    );
+    // Only the start and the last block were written again; the three blocks between were spared.
+    assert_eq!(done.unchanged, 3 * BLOCK, "{done:?}");
+}
+
+#[test]
+fn a_target_that_is_new_short_or_holds_something_else_is_written_in_full() {
+    let dir = tempdir().unwrap();
+    let base = image(dir.path(), 11 * 1024 * 1024 + 300);
+    let stick_image = stick(dir.path(), &base, "first.img", 1024 * 1024, 0x11);
+    let expected = expected_stick(&stick_image, &base);
+
+    // New: does not exist. Short: holds the first part of the image. Other: same size, other bytes.
+    let short = dir.path().join("short.img");
+    fs::write(&short, &expected[..5 * 1024 * 1024]).unwrap();
+    let other = dir.path().join("other.img");
+    fs::write(&other, vec![0xEE_u8; expected.len()]).unwrap();
+    let new = dir.path().join("new.img");
+
+    for target in [new, short, other] {
+        let results =
+            write_images(&[(stick_image.clone(), target.clone())], |_, _, _, _| {}).unwrap();
+        let done = results[0].as_ref().unwrap();
+        assert_eq!(fs::read(&target).unwrap(), expected, "{}", target.display());
+        assert_eq!(done.unchanged, 0, "{}", target.display());
+    }
 }

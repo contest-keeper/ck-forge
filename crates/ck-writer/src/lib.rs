@@ -10,4 +10,6 @@ mod write;
 
 pub use disk::{Disk, list_disks, prepare_disk};
 pub use error::Error;
-pub use write::{Phase, check_images, disk_path, write_image, write_image_to_all, write_images};
+pub use write::{
+    Phase, Written, check_images, disk_path, write_image, write_image_to_all, write_images,
+};

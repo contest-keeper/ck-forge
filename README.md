@@ -44,7 +44,9 @@ each made with `image build` (so each has its own identity), in the order of the
 ck-forge stick write a.img b.img c.img --disk 3 --disk 4 --disk 5
 ```
 
-The base is read once for all of them. Only a plain base image, with no stick identity, may be written
+The base is read once for all of them. A stick that already holds the image, such as one written for
+the last contest from the same base, is written only where it differs; every stick is read back and
+checked completely either way. Only a plain base image, with no stick identity, may be written
 to several sticks as one image.
 
 A stick is written, read back and compared by SHA-256. Only USB disks are written, never the disk

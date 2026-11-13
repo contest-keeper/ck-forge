@@ -18,6 +18,15 @@ const BLOCK: usize = 4 * 1024 * 1024;
 /// Blocks that may wait between the thread that reads and a thread that writes.
 const IN_FLIGHT: usize = 3;
 
+/// What came of writing one stick.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Written {
+    /// SHA-256 of the image, which the stick was read back and checked against.
+    pub sha256: String,
+    /// Bytes of the image that the stick already held, so they were not written again.
+    pub unchanged: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Writing,
@@ -47,7 +56,7 @@ pub fn write_image(
         write_image_to_all(image, &[target.to_path_buf()], |_, phase, done, total| {
             progress(phase, done, total);
         })?;
-    results.remove(0)
+    results.remove(0).map(|written| written.sha256)
 }
 
 /// Writes `image` to every target at once. See [`write_images`]; this is the same image for all.
@@ -55,7 +64,7 @@ pub fn write_image_to_all(
     image: &Path,
     targets: &[PathBuf],
     progress: impl FnMut(usize, Phase, u64, u64),
-) -> Result<Vec<Result<String, Error>>, Error> {
+) -> Result<Vec<Result<Written, Error>>, Error> {
     let jobs: Vec<(PathBuf, PathBuf)> = targets
         .iter()
         .map(|target| (image.to_path_buf(), target.clone()))
@@ -73,6 +82,13 @@ pub fn write_image_to_all(
 /// all of them in a row. The check starts only after every write is flushed, so it reads what a
 /// target holds and not what was just handed to it, and all targets are checked together.
 ///
+/// A target that already holds the image, such as a stick that was written before with another
+/// stick's image of the same base, is written only where it differs: a few blocks are compared
+/// first to tell, and then every block is compared with what is there before it is written. Reading
+/// is faster than writing on a stick, so such a stick takes much less time. The check after the
+/// write is the same either way and reads all of the target, so a block that was left alone is
+/// checked too. This relies on reads of a device coming from the device and not from a cache.
+///
 /// Returns one result per job, in order: the SHA-256 of that target's image as hex, or what went
 /// wrong with that target. One failing target does not stop the others. An image that cannot be
 /// opened, or images that do not belong together, fail the whole call before anything is written.
@@ -81,7 +97,7 @@ pub fn write_image_to_all(
 pub fn write_images(
     jobs: &[(PathBuf, PathBuf)],
     mut progress: impl FnMut(usize, Phase, u64, u64),
-) -> Result<Vec<Result<String, Error>>, Error> {
+) -> Result<Vec<Result<Written, Error>>, Error> {
     let images: Vec<&Path> = jobs.iter().map(|(image, _)| image.as_path()).collect();
     let parts = open_together(&images)?;
     let Some(first) = parts.first() else {
@@ -90,23 +106,35 @@ pub fn write_images(
     let (total, head_len) = (first.len(), first.head_len);
     let tail = first.tail.clone();
 
-    let mut results: Vec<Option<Result<String, Error>>> = jobs.iter().map(|_| None).collect();
+    let mut results: Vec<Option<Result<Written, Error>>> = jobs.iter().map(|_| None).collect();
     let mut writers = Vec::new();
     for (index, parts) in parts.into_iter().enumerate() {
         let (image, target) = (&jobs[index].0, &jobs[index].1);
         match OpenOptions::new()
+            .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(target)
         {
-            Ok(out) => writers.push(Writer {
-                index,
-                out,
-                head: parts.head,
-                image,
-                target,
-            }),
+            Ok(mut out) => {
+                let compare = holds_the_image(&mut out, &tail, head_len, total);
+                // The probe moved the file; writing starts at its beginning.
+                match out.rewind() {
+                    Ok(()) => writers.push(Writer {
+                        index,
+                        out,
+                        head: parts.head,
+                        compare,
+                        image,
+                        target,
+                    }),
+                    Err(e) => {
+                        let context = format!("opening {} for writing", target.display());
+                        results[index] = Some(Err(Error::io(context, e)));
+                    }
+                }
+            }
             Err(e) => {
                 let context = format!("opening {} for writing", target.display());
                 results[index] = Some(Err(Error::io(context, e)));
@@ -123,7 +151,7 @@ pub fn write_images(
     let mut to_check = Vec::new();
     for (index, outcome) in written {
         match outcome {
-            Ok(hash) => to_check.push((index, hash)),
+            Ok(done) => to_check.push((index, done)),
             Err(error) => results[index] = Some(Err(error)),
         }
     }
@@ -131,10 +159,14 @@ pub fn write_images(
     let indexes: Vec<usize> = to_check.iter().map(|(index, _)| *index).collect();
     let targets: Vec<&Path> = jobs.iter().map(|(_, target)| target.as_path()).collect();
     let read_backs = check_all_targets(&indexes, &targets, total, &mut progress);
-    for ((index, written), (_, read_back)) in to_check.into_iter().zip(read_backs) {
+    for ((index, done), (_, read_back)) in to_check.into_iter().zip(read_backs) {
+        let Written { sha256, unchanged } = done;
         results[index] = Some(match read_back {
-            Ok(read_back) if read_back == written => Ok(written),
-            Ok(read_back) => Err(Error::Mismatch { written, read_back }),
+            Ok(read_back) if read_back == sha256 => Ok(Written { sha256, unchanged }),
+            Ok(read_back) => Err(Error::Mismatch {
+                written: sha256,
+                read_back,
+            }),
             Err(error) => Err(error),
         });
     }
@@ -175,6 +207,9 @@ struct Writer<'a> {
     out: File,
     /// The start of this target's own image, if it has one.
     head: Option<File>,
+    /// Whether the target already holds the image, so each block is compared with what is there
+    /// and only written when it differs.
+    compare: bool,
     image: &'a Path,
     target: &'a Path,
 }
@@ -188,7 +223,7 @@ struct Shared<'a> {
     total: u64,
 }
 
-type Written = Vec<(usize, Result<String, Error>)>;
+type Outcomes = Vec<(usize, Result<Written, Error>)>;
 
 /// The write pass: one thread reads the shared rest of the image and hands every block to one
 /// writer thread per target, which first writes its own start. Returns how each writer fared: the
@@ -197,7 +232,7 @@ fn write_all_targets(
     shared: &Shared<'_>,
     writers: Vec<Writer<'_>>,
     progress: &mut impl FnMut(usize, Phase, u64, u64),
-) -> Result<Written, Error> {
+) -> Result<Outcomes, Error> {
     let (head_len, total) = (shared.head_len, shared.total);
     let mut tail = File::open(shared.tail)
         .map_err(|e| Error::io(format!("opening {}", shared.tail.display()), e))?;
@@ -214,6 +249,7 @@ fn write_all_targets(
             index,
             mut out,
             head,
+            compare,
             image,
             target,
         } in writers
@@ -226,6 +262,7 @@ fn write_all_targets(
                 scope.spawn(move || {
                     let write_error = |e| Error::io(format!("writing to {}", target.display()), e);
                     let mut hash = Sha256::new();
+                    let mut put = Put::new(compare);
                     if let Some(mut head) = head {
                         let mut buffer = vec![0_u8; BLOCK];
                         let mut done = 0_u64;
@@ -235,13 +272,17 @@ fn write_all_targets(
                                 Error::io(format!("reading {}", image.display()), e)
                             })?;
                             hash.update(&buffer[..want]);
-                            out.write_all(&buffer[..want]).map_err(write_error)?;
+                            put.block(&mut out, done, &buffer[..want])
+                                .map_err(write_error)?;
                             done += want as u64;
                             let _ = events.send((index, done));
                         }
                     }
+                    let mut before = 0_u64;
                     let (done, hash) = consume_all(receiver, tail_len, hash, |block, done| {
-                        out.write_all(block).map_err(write_error)?;
+                        put.block(&mut out, head_len + before, block)
+                            .map_err(write_error)?;
+                        before = done;
                         let _ = events.send((index, head_len + done));
                         Ok(())
                     })?;
@@ -250,7 +291,10 @@ fn write_all_targets(
                     }
                     out.sync_all()
                         .map_err(|e| Error::io(format!("flushing {}", target.display()), e))?;
-                    Ok(hex(&hash.finalize()))
+                    Ok(Written {
+                        sha256: hex(&hash.finalize()),
+                        unchanged: put.unchanged,
+                    })
                 }),
             ));
         }
@@ -306,6 +350,87 @@ fn check_all_targets(
             .map(|(index, check)| (index, join(check)))
             .collect()
     })
+}
+
+/// How many blocks of the shared rest a target is asked about to tell whether it already holds
+/// the image.
+const PROBES: u64 = 8;
+
+/// Whether `out` already holds the image: a few blocks spread over the rest of the image, which is
+/// what a stick that was written with another stick's image of the same base looks like, are read
+/// from `out` and from the shared rest and found equal. The start is not asked about, as it is the
+/// part that differs. When `out` is new, short or something else, the answer is no and every block
+/// is written. Any error is a no, too.
+fn holds_the_image(out: &mut File, tail: &Path, head_len: u64, total: u64) -> bool {
+    let tail_blocks = (total - head_len).div_ceil(BLOCK as u64);
+    if tail_blocks < 2 {
+        return false;
+    }
+    let asked = PROBES.min(tail_blocks - 1);
+    let Ok(mut tail) = File::open(tail) else {
+        return false;
+    };
+    let mut wanted = vec![0_u8; BLOCK];
+    let mut held = vec![0_u8; BLOCK];
+    (0..asked).all(|n| {
+        // The middle of each of `asked` equal parts of the blocks that are not the last.
+        let block = (2 * n + 1) * (tail_blocks - 1) / (2 * asked);
+        let offset = head_len + block * BLOCK as u64;
+        tail.seek(SeekFrom::Start(offset)).is_ok()
+            && tail.read_exact(&mut wanted).is_ok()
+            && out.seek(SeekFrom::Start(offset)).is_ok()
+            && out.read_exact(&mut held).is_ok()
+            && wanted == held
+    })
+}
+
+/// Puts blocks on a target, sparing the ones it already holds.
+struct Put {
+    /// A buffer to read what the target holds into, when blocks are compared.
+    held: Option<Vec<u8>>,
+    /// Bytes that were already there.
+    unchanged: u64,
+}
+
+impl Put {
+    fn new(compare: bool) -> Self {
+        Self {
+            held: compare.then(Vec::new),
+            unchanged: 0,
+        }
+    }
+
+    /// Writes `data` at `offset` of `out`. When the target is compared with the image and holds
+    /// exactly these bytes there, writes nothing. A target that ends before the block, or holds
+    /// something else, is written.
+    fn block(&mut self, out: &mut File, offset: u64, data: &[u8]) -> io::Result<()> {
+        let Some(held) = self.held.as_mut() else {
+            // Every block follows the one before, so the file is at `offset` already.
+            return out.write_all(data);
+        };
+        held.resize(data.len(), 0);
+        out.seek(SeekFrom::Start(offset))?;
+        if read_up_to(out, held)? == data.len() && held[..] == *data {
+            self.unchanged += data.len() as u64;
+            return Ok(());
+        }
+        out.seek(SeekFrom::Start(offset))?;
+        out.write_all(data)
+    }
+}
+
+/// Reads until `buffer` is full or the file ends; returns how many bytes were read.
+fn read_up_to(file: &mut File, buffer: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match file.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(filled)
 }
 
 fn join<T>(handle: ScopedJoinHandle<'_, T>) -> T {
