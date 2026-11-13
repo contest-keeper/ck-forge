@@ -4,6 +4,7 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use ck_admin_core::{
     Error, Profile, Registry, Wallpaper, build_image, configure_image, show_image,
@@ -11,6 +12,7 @@ use ck_admin_core::{
 use ck_protocol::{LocalDateTime, StickConfig};
 use clap::{Args, Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
+use serde_json::json;
 
 const DEFAULT_REGISTRY: &str = "ck-registry.json";
 
@@ -62,6 +64,10 @@ enum StickCommand {
         /// Do not ask for the confirmation (for scripts and tests)
         #[arg(long)]
         yes: bool,
+        /// Keep a small JSON file up to date with the progress, for the admin window that starts
+        /// this command with administrator rights and cannot read its output
+        #[arg(long)]
+        progress_file: Option<PathBuf>,
     },
 }
 
@@ -201,7 +207,15 @@ fn run(command: Command, out: &mut impl Write) -> Result<(), Error> {
             to,
             allow_virtual,
             yes,
-        }) => stick_write(&image, disk, to, allow_virtual, yes, out),
+            progress_file,
+        }) => {
+            let progress = Progress(progress_file);
+            let result = stick_write(&image, disk, to, allow_virtual, yes, &progress, out);
+            if let Err(error) = &result {
+                progress.report(&json!({ "state": "error", "message": error.to_string() }));
+            }
+            result
+        }
     }
 }
 
@@ -368,6 +382,7 @@ fn stick_write(
     to: Option<PathBuf>,
     allow_virtual: bool,
     yes: bool,
+    progress: &Progress,
     out: &mut impl Write,
 ) -> Result<(), Error> {
     let size = std::fs::metadata(image)
@@ -394,16 +409,24 @@ fn stick_write(
         ProgressStyle::with_template("{msg:>10} {bar:40} {bytes}/{total_bytes} ({eta})")
             .unwrap_or_else(|_| ProgressStyle::default_bar()),
     );
+    let mut last_report = Instant::now();
     let written = ck_writer::write_image(image, &target, |phase, done, total| {
-        bar.set_length(total);
-        bar.set_position(done);
-        bar.set_message(match phase {
+        let name = match phase {
             ck_writer::Phase::Writing => "writing",
             ck_writer::Phase::Verifying => "checking",
-        });
+        };
+        bar.set_length(total);
+        bar.set_position(done);
+        bar.set_message(name);
+        // A file rewritten for every 4 MiB block would be needless work.
+        if done == total || last_report.elapsed() >= Duration::from_millis(500) {
+            last_report = Instant::now();
+            progress.report(&json!({ "state": name, "done": done, "total": total }));
+        }
     });
     bar.finish_and_clear();
     let hash = written.map_err(admin_hint)?;
+    progress.report(&json!({ "state": "done", "sha256": hash }));
     say(
         out,
         format_args!("Wrote {} to {}", image.display(), target.display()),
@@ -477,4 +500,16 @@ fn registry_push(
         "the Hub already has a different secret for: {}; they were left as they were",
         pushed.conflicts.join(", ")
     )))
+}
+
+/// The progress file of `stick write`, when one was asked for. A failure to write it is ignored: the
+/// write itself must not fail because the window stopped listening.
+struct Progress(Option<PathBuf>);
+
+impl Progress {
+    fn report(&self, state: &serde_json::Value) {
+        if let Some(path) = &self.0 {
+            let _ = std::fs::write(path, state.to_string());
+        }
+    }
 }

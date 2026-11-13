@@ -253,3 +253,52 @@ fn a_disk_or_a_file_is_required() {
     let none = forge(&["stick", "write", "stick.img"], dir.path());
     assert_eq!(none.status.code(), Some(2));
 }
+
+#[test]
+fn the_progress_file_ends_with_the_hash_or_with_the_reason_for_a_failure() {
+    let dir = TempDir::new().expect("temp dir");
+    std::fs::write(dir.path().join("a.img"), vec![7_u8; 4096]).expect("image");
+
+    let done = forge(
+        &[
+            "stick",
+            "write",
+            "a.img",
+            "--to",
+            "b.img",
+            "--progress-file",
+            "p.json",
+        ],
+        dir.path(),
+    );
+    assert!(done.status.success(), "{}", text(&done.stderr));
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("p.json")).expect("progress"))
+            .expect("json");
+    assert_eq!(state["state"], "done");
+    assert_eq!(state["sha256"].as_str().map(str::len), Some(64));
+
+    let failed = forge(
+        &[
+            "stick",
+            "write",
+            "missing.img",
+            "--to",
+            "c.img",
+            "--progress-file",
+            "q.json",
+        ],
+        dir.path(),
+    );
+    assert!(!failed.status.success());
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("q.json")).expect("progress"))
+            .expect("json");
+    assert_eq!(state["state"], "error");
+    assert!(
+        state["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("missing.img")
+    );
+}
