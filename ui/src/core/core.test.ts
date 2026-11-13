@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { describeError, formatBytes, percent } from './format';
-import { linesToList, optionalCount, optionalText } from './profile';
+import { linesToList, optionalCount, optionalText, wholeNumber } from './profile';
 
 describe('format', () => {
   it('shows sizes in decimal units', () => {
@@ -32,5 +32,13 @@ describe('profile helpers', () => {
     expect(optionalCount('')).toBeUndefined();
     expect(optionalCount('0')).toBeUndefined();
     expect(optionalCount('10')).toBe(10);
+  });
+
+  it('keeps required numbers whole and at least their minimum', () => {
+    expect(wholeNumber('15', 1)).toBe(15);
+    expect(wholeNumber(-3, 0)).toBe(0);
+    expect(wholeNumber(2.7, 1)).toBe(2);
+    expect(wholeNumber('', 1)).toBe(1);
+    expect(wholeNumber(Number.NaN, 0)).toBe(0);
   });
 });
