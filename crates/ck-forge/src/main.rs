@@ -1,13 +1,14 @@
 //! `ck-forge`: the admin command line. It only parses commands and prints results; the work is
 //! done by `ck-admin-core`.
 
+use std::fmt::Write as _;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    Error, Profile, Registry, Wallpaper, build_image, configure_image, show_image,
+    Error, Profile, Registry, Wallpaper, build_image, configure_image, folder_of, show_image,
 };
 use ck_protocol::{LocalDateTime, StickConfig};
 use clap::{Args, Parser, Subcommand};
@@ -148,7 +149,12 @@ struct RegistryFile {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(cli.command, &mut io::stdout()) {
+    let result = run(cli.command).and_then(|text| {
+        io::stdout()
+            .write_all(text.as_bytes())
+            .map_err(|e| Error::io("writing the output", e))
+    });
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             report(&error);
@@ -169,16 +175,17 @@ fn report(error: &Error) {
     }
 }
 
-fn run(command: Command, out: &mut impl Write) -> Result<(), Error> {
+/// Does the command and returns what to print.
+fn run(command: Command) -> Result<String, Error> {
     match command {
-        Command::Profile(ProfileCommand::New { file }) => profile_new(&file, out),
-        Command::Profile(ProfileCommand::Check { file }) => profile_check(&file, out),
+        Command::Profile(ProfileCommand::New { file }) => profile_new(&file),
+        Command::Profile(ProfileCommand::Check { file }) => profile_check(&file),
         Command::Image(ImageCommand::Build {
             base,
-            out: image,
+            out,
             profile,
             registry,
-        }) => image_build(&base, &image, &profile, &registry.registry, out),
+        }) => image_build(&base, &out, &profile, &registry.registry),
         Command::Image(ImageCommand::Configure {
             image,
             profile,
@@ -188,19 +195,20 @@ fn run(command: Command, out: &mut impl Write) -> Result<(), Error> {
             let wallpaper = Wallpaper::read(&loaded.stick_settings(), folder_of(&profile))?;
             let config = configure_image(&image, &loaded, wallpaper.as_ref(), &registry.registry)?;
             warn(&loaded);
-            say(out, format_args!("Updated {}", image.display()))?;
-            show_config(&config, out)
+            Ok(format!(
+                "Updated {}\n{}",
+                image.display(),
+                config_text(&config)
+            ))
         }
-        Command::Image(ImageCommand::Show { image }) => show_config(&show_image(&image)?, out),
-        Command::Registry(RegistryCommand::List { registry }) => {
-            registry_list(&registry.registry, out)
-        }
+        Command::Image(ImageCommand::Show { image }) => Ok(config_text(&show_image(&image)?)),
+        Command::Registry(RegistryCommand::List { registry }) => registry_list(&registry.registry),
         Command::Registry(RegistryCommand::Push {
             hub,
             user,
             registry,
-        }) => registry_push(&hub, &user, &registry.registry, out),
-        Command::Stick(StickCommand::List) => stick_list(out),
+        }) => registry_push(&hub, &user, &registry.registry),
+        Command::Stick(StickCommand::List) => stick_list(),
         Command::Stick(StickCommand::Write {
             image,
             disk,
@@ -209,21 +217,20 @@ fn run(command: Command, out: &mut impl Write) -> Result<(), Error> {
             yes,
             progress_file,
         }) => {
-            let progress = Progress(progress_file);
-            let result = stick_write(&image, disk, to, allow_virtual, yes, &progress, out);
+            let progress = progress_file.as_deref();
+            let result = stick_write(&image, disk, to, allow_virtual, yes, progress);
             if let Err(error) = &result {
-                progress.report(&json!({ "state": "error", "message": error.to_string() }));
+                report_progress(
+                    progress,
+                    &json!({ "state": "error", "message": error.to_string() }),
+                );
             }
             result
         }
     }
 }
 
-fn say(out: &mut impl Write, text: std::fmt::Arguments) -> Result<(), Error> {
-    writeln!(out, "{text}").map_err(|e| Error::io("writing the output", e))
-}
-
-fn profile_new(file: &std::path::Path, out: &mut impl Write) -> Result<(), Error> {
+fn profile_new(file: &Path) -> Result<String, Error> {
     if file.exists() {
         return Err(Error::io(
             format!("{} already exists; choose another name", file.display()),
@@ -231,33 +238,18 @@ fn profile_new(file: &std::path::Path, out: &mut impl Write) -> Result<(), Error
         ));
     }
     Profile::template().save(file)?;
-    say(out, format_args!("Wrote {}", file.display()))?;
-    say(
-        out,
-        format_args!(
-            "Edit it, then run: ck-forge profile check {}",
-            file.display()
-        ),
-    )
+    Ok(format!(
+        "Wrote {0}\nEdit it, then run: ck-forge profile check {0}\n",
+        file.display()
+    ))
 }
 
-fn profile_check(file: &std::path::Path, out: &mut impl Write) -> Result<(), Error> {
+fn profile_check(file: &Path) -> Result<String, Error> {
     let profile = Profile::load(file)?;
     // The wallpaper is part of what the profile needs, so a missing picture is found here too.
     Wallpaper::read(&profile.stick_settings(), folder_of(file))?;
     warn(&profile);
-    say(
-        out,
-        format_args!("{} is fine: {}", file.display(), profile.name),
-    )
-}
-
-/// The folder a profile file is in, where the pictures it names are looked for.
-fn folder_of(file: &std::path::Path) -> &std::path::Path {
-    match file.parent() {
-        Some(folder) if !folder.as_os_str().is_empty() => folder,
-        _ => std::path::Path::new("."),
-    }
+    Ok(format!("{} is fine: {}\n", file.display(), profile.name))
 }
 
 fn warn(profile: &Profile) {
@@ -267,16 +259,15 @@ fn warn(profile: &Profile) {
 }
 
 fn image_build(
-    base: &std::path::Path,
-    image: &std::path::Path,
-    profile: &std::path::Path,
-    registry: &std::path::Path,
-    out: &mut impl Write,
-) -> Result<(), Error> {
-    let loaded = Profile::load(profile)?;
-    let wallpaper = Wallpaper::read(&loaded.stick_settings(), folder_of(profile))?;
-    warn(&loaded);
-    let profile = loaded;
+    base: &Path,
+    image: &Path,
+    profile: &Path,
+    registry: &Path,
+) -> Result<String, Error> {
+    let profile_file = profile;
+    let profile = Profile::load(profile_file)?;
+    let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(profile_file))?;
+    warn(&profile);
     let bar = ProgressBar::new(0);
     bar.set_style(
         ProgressStyle::with_template("{bar:40} {bytes}/{total_bytes} ({eta})")
@@ -297,94 +288,92 @@ fn image_build(
     );
     bar.finish_and_clear();
     let built = built?;
-    say(out, format_args!("Made {}", image.display()))?;
-    say(out, format_args!("Registered in {}", registry.display()))?;
-    show_config(&built.config, out)
+    Ok(format!(
+        "Made {}\nRegistered in {}\n{}",
+        image.display(),
+        registry.display(),
+        config_text(&built.config)
+    ))
 }
 
-fn show_config(config: &StickConfig, out: &mut impl Write) -> Result<(), Error> {
+/// The settings of a stick for the admin to read. The secret is never part of it.
+fn config_text(config: &StickConfig) -> String {
     let s = &config.settings;
-    say(out, format_args!("Stick:    {}", config.stick_id))?;
-    say(out, format_args!("Created:  {}", config.created_at))?;
-    say(
-        out,
-        format_args!("Contest:  {} ({:?})", s.contest.name, s.contest.platform),
-    )?;
-    say(
-        out,
-        format_args!(
-            "Computer: {} (machine {})",
-            config.computer_name(),
-            config.machine_number.unwrap_or(1)
-        ),
-    )?;
+    let mut text = format!(
+        "Stick:    {}\nCreated:  {}\nContest:  {} ({:?})\nComputer: {} (machine {})\n",
+        config.stick_id,
+        config.created_at,
+        s.contest.name,
+        s.contest.platform,
+        config.computer_name(),
+        config.machine_number.unwrap_or(1)
+    );
     if let Some(wallpaper) = &s.branding.wallpaper {
-        say(out, format_args!("Wallpaper: {wallpaper}"))?;
+        let _ = writeln!(text, "Wallpaper: {wallpaper}");
     }
-    say(out, format_args!("Team:     {}", s.team))?;
-    say(out, format_args!("Site:     {}", s.site))?;
-    say(out, format_args!("Server:   {}", s.api.url))?;
-    say(out, format_args!("Recording: {:?}", s.recording.mode))?;
-    say(
-        out,
-        format_args!("Allowed sites: {}", s.network.allowed_domains.join(", ")),
-    )
+    let _ = writeln!(
+        text,
+        "Team:     {}\nSite:     {}\nServer:   {}\nRecording: {:?}\nAllowed sites: {}",
+        s.team,
+        s.site,
+        s.api.url,
+        s.recording.mode,
+        s.network.allowed_domains.join(", ")
+    );
+    text
 }
 
-fn registry_list(path: &std::path::Path, out: &mut impl Write) -> Result<(), Error> {
+fn registry_list(path: &Path) -> Result<String, Error> {
     let registry = Registry::load(path)?;
     if registry.list().is_empty() {
-        return say(out, format_args!("No sticks in {} yet", path.display()));
+        return Ok(format!("No sticks in {} yet\n", path.display()));
     }
+    let mut text = String::new();
     for entry in registry.list() {
-        say(
-            out,
-            format_args!(
-                "{}  {}  #{}  {} / {}  {}  {}",
-                entry.stick_id,
-                entry.created_at,
-                entry.machine_number.unwrap_or(1),
-                entry.team,
-                entry.site,
-                entry.contest,
-                entry.image
-            ),
-        )?;
+        let _ = writeln!(
+            text,
+            "{}  {}  #{}  {} / {}  {}  {}",
+            entry.stick_id,
+            entry.created_at,
+            entry.machine_number.unwrap_or(1),
+            entry.team,
+            entry.site,
+            entry.contest,
+            entry.image
+        );
     }
-    Ok(())
+    Ok(text)
 }
 
-fn stick_list(out: &mut impl Write) -> Result<(), Error> {
+fn stick_list() -> Result<String, Error> {
+    let mut text = String::new();
     for disk in ck_writer::list_disks()? {
         let verdict = match disk.check(0, true) {
             Ok(()) => "can be written".to_owned(),
             Err(error) => format!("refused: {error}"),
         };
-        say(
-            out,
-            format_args!(
-                "disk {}  {}  {}  {}  serial {}  [{}]",
-                disk.number,
-                disk.friendly_name.as_deref().unwrap_or("?"),
-                disk.size_text(),
-                disk.bus_type,
-                disk.serial_number.as_deref().unwrap_or("?").trim(),
-                verdict
-            ),
-        )?;
+        let _ = writeln!(
+            text,
+            "disk {}  {}  {}  {}  serial {}  [{}]",
+            disk.number,
+            disk.friendly_name.as_deref().unwrap_or("?"),
+            disk.size_text(),
+            disk.bus_type,
+            disk.serial_number.as_deref().unwrap_or("?").trim(),
+            verdict
+        );
     }
-    Ok(())
+    Ok(text)
 }
 
 fn stick_write(
-    image: &std::path::Path,
+    image: &Path,
     disk: Option<u32>,
     to: Option<PathBuf>,
     allow_virtual: bool,
     yes: bool,
-    progress: &Progress,
-    out: &mut impl Write,
-) -> Result<(), Error> {
+    progress: Option<&Path>,
+) -> Result<String, Error> {
     let size = std::fs::metadata(image)
         .map_err(|e| Error::io(format!("reading {}", image.display()), e))?
         .len();
@@ -397,7 +386,7 @@ fn stick_write(
                 .ok_or(ck_writer::Error::NoSuchDisk(number))?;
             chosen.check(size, allow_virtual)?;
             if !yes {
-                confirm(&chosen, out)?;
+                confirm(&chosen)?;
             }
             ck_writer::prepare_disk(&chosen, size, allow_virtual).map_err(admin_hint)?;
             ck_writer::disk_path(number)
@@ -421,34 +410,36 @@ fn stick_write(
         // A file rewritten for every 4 MiB block would be needless work.
         if done == total || last_report.elapsed() >= Duration::from_millis(500) {
             last_report = Instant::now();
-            progress.report(&json!({ "state": name, "done": done, "total": total }));
+            report_progress(
+                progress,
+                &json!({ "state": name, "done": done, "total": total }),
+            );
         }
     });
     bar.finish_and_clear();
     let hash = written.map_err(admin_hint)?;
-    progress.report(&json!({ "state": "done", "sha256": hash }));
-    say(
-        out,
-        format_args!("Wrote {} to {}", image.display(), target.display()),
-    )?;
-    say(out, format_args!("Read back and checked, SHA-256 {hash}"))
+    report_progress(progress, &json!({ "state": "done", "sha256": hash }));
+    Ok(format!(
+        "Wrote {} to {}\nRead back and checked, SHA-256 {hash}\n",
+        image.display(),
+        target.display()
+    ))
 }
 
 /// Asks the admin to type the disk number, because this erases the whole disk.
-fn confirm(disk: &ck_writer::Disk, out: &mut impl Write) -> Result<(), Error> {
-    say(
+fn confirm(disk: &ck_writer::Disk) -> Result<(), Error> {
+    let mut out = io::stdout();
+    write!(
         out,
-        format_args!(
-            "This ERASES disk {}: {} ({}, serial {}).",
-            disk.number,
-            disk.friendly_name.as_deref().unwrap_or("?"),
-            disk.size_text(),
-            disk.serial_number.as_deref().unwrap_or("?").trim()
-        ),
-    )?;
-    write!(out, "Type erase {} to go on: ", disk.number)
-        .and_then(|()| out.flush())
-        .map_err(|e| Error::io("writing the output", e))?;
+        "This ERASES disk {}: {} ({}, serial {}).\nType erase {} to go on: ",
+        disk.number,
+        disk.friendly_name.as_deref().unwrap_or("?"),
+        disk.size_text(),
+        disk.serial_number.as_deref().unwrap_or("?").trim(),
+        disk.number
+    )
+    .and_then(|()| out.flush())
+    .map_err(|e| Error::io("writing the output", e))?;
     let mut answer = String::new();
     io::stdin()
         .read_line(&mut answer)
@@ -476,40 +467,31 @@ fn admin_hint(error: ck_writer::Error) -> Error {
     error.into()
 }
 
-fn registry_push(
-    hub: &str,
-    user: &str,
-    registry: &std::path::Path,
-    out: &mut impl Write,
-) -> Result<(), Error> {
+fn registry_push(hub: &str, user: &str, registry: &Path) -> Result<String, Error> {
     // Without echo, and never from an argument or the environment, so it is not left in a history.
     let password = rpassword::prompt_password(format!("Password for {user} on {hub}: "))
         .map_err(|e| Error::io("reading the password", e))?;
     let pushed = ck_admin_core::push_registry(hub, user, &password, registry)?;
-    say(
-        out,
-        format_args!(
-            "Hub: {} added, {} already known",
-            pushed.added, pushed.already_known
-        ),
-    )?;
+    let text = format!(
+        "Hub: {} added, {} already known\n",
+        pushed.added, pushed.already_known
+    );
     if pushed.conflicts.is_empty() {
-        return Ok(());
+        return Ok(text);
     }
+    io::stdout()
+        .write_all(text.as_bytes())
+        .map_err(|e| Error::io("writing the output", e))?;
     Err(Error::Hub(format!(
         "the Hub already has a different secret for: {}; they were left as they were",
         pushed.conflicts.join(", ")
     )))
 }
 
-/// The progress file of `stick write`, when one was asked for. A failure to write it is ignored: the
-/// write itself must not fail because the window stopped listening.
-struct Progress(Option<PathBuf>);
-
-impl Progress {
-    fn report(&self, state: &serde_json::Value) {
-        if let Some(path) = &self.0 {
-            let _ = std::fs::write(path, state.to_string());
-        }
+/// Keeps the progress file of `stick write` up to date, when one was asked for. A failure to write it
+/// is ignored: the write itself must not fail because the window stopped listening.
+fn report_progress(file: Option<&Path>, state: &serde_json::Value) {
+    if let Some(path) = file {
+        let _ = std::fs::write(path, state.to_string());
     }
 }

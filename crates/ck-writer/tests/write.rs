@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ck_writer::{Error, Phase, write_image};
+use ck_writer::{Error, Phase, disk_path, write_image};
 use tempfile::tempdir;
 
 fn image(dir: &Path, size: usize) -> PathBuf {
@@ -55,6 +55,12 @@ fn keeps_the_size_of_a_larger_target() {
     let after = fs::read(&target).unwrap();
     assert_eq!(after.len(), 8192);
     assert_eq!(&after[..2048], &fs::read(&source).unwrap()[..]);
+}
+
+#[test]
+fn a_disk_is_opened_by_its_device_path_not_as_a_file_on_the_current_drive() {
+    // With one backslash less, Windows reads this as `C:\PhysicalDrive3`, an ordinary file.
+    assert_eq!(disk_path(3).to_str(), Some(r"\\.\PhysicalDrive3"));
 }
 
 #[test]

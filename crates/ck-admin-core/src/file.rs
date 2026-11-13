@@ -8,6 +8,15 @@ use tempfile::NamedTempFile;
 
 use crate::error::Error;
 
+/// The folder a file is in: where a profile's pictures and its registry are looked for.
+#[must_use]
+pub fn folder_of(file: &Path) -> &Path {
+    match file.parent() {
+        Some(folder) if !folder.as_os_str().is_empty() => folder,
+        _ => Path::new("."),
+    }
+}
+
 /// `None` when the file does not exist.
 pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, Error> {
     let bytes = match fs::read(path) {
@@ -36,10 +45,7 @@ pub(crate) fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Res
     })?;
     text.push('\n');
 
-    let folder = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
+    let folder = folder_of(path);
     let mut temporary = NamedTempFile::new_in(folder).map_err(|e| {
         Error::io(
             format!("creating a temporary file in {}", folder.display()),

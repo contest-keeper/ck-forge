@@ -17,10 +17,8 @@ pub struct Wallpaper {
 
 impl Wallpaper {
     /// Reads the picture the settings name from `folder`, which is where the profile file is.
-    /// Returns `None` when the settings name no wallpaper.
-    ///
-    /// # Errors
-    /// Fails when the file is missing, is not a file, or is larger than [`MAX_WALLPAPER_BYTES`].
+    /// `None` when the settings name no wallpaper. A missing, oversized or non-file picture is an
+    /// error.
     pub fn read(settings: &Settings, folder: &Path) -> Result<Option<Self>, Error> {
         let Some(name) = &settings.branding.wallpaper else {
             return Ok(None);

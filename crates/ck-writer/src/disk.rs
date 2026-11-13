@@ -141,34 +141,29 @@ mod tests {
     }
 
     #[test]
-    fn a_usb_disk_big_enough_is_allowed() {
-        assert!(disk("USB").check(29_884_416_000, false).is_ok());
-    }
-
-    #[test]
-    fn the_system_disk_is_never_allowed() {
+    fn only_a_usb_disk_that_is_big_enough_and_not_the_system_disk_may_be_written() {
         let mut system = disk("USB");
         system.is_system = true;
-        assert!(system.check(1, true).is_err());
         let mut boot = disk("USB");
         boot.is_boot = true;
-        assert!(boot.check(1, true).is_err());
-    }
+        // (disk, image size, virtual disks allowed, may be written)
+        let cases = [
+            (disk("USB"), 29_884_416_000, false, true),
+            (system, 1, true, false),
+            (boot, 1, true, false),
+            (disk("NVMe"), 1, true, false),
+            (disk("SATA"), 1, true, false),
+            (disk("File Backed Virtual"), 1, false, false),
+            (disk("File Backed Virtual"), 1, true, true),
+        ];
+        for (disk, image_size, allow_virtual, allowed) in cases {
+            assert_eq!(
+                disk.check(image_size, allow_virtual).is_ok(),
+                allowed,
+                "{disk:?} with virtual disks allowed: {allow_virtual}"
+            );
+        }
 
-    #[test]
-    fn internal_disks_are_refused_even_when_virtual_is_allowed() {
-        assert!(disk("NVMe").check(1, true).is_err());
-        assert!(disk("SATA").check(1, true).is_err());
-    }
-
-    #[test]
-    fn a_virtual_disk_needs_the_flag() {
-        assert!(disk("File Backed Virtual").check(1, false).is_err());
-        assert!(disk("File Backed Virtual").check(1, true).is_ok());
-    }
-
-    #[test]
-    fn a_disk_too_small_is_refused() {
         let error = disk("USB").check(64_000_000_000, false).unwrap_err();
         assert!(matches!(error, Error::TooSmall { number: 3, .. }));
     }

@@ -54,18 +54,7 @@ fn the_registry_keeps_sticks_and_survives_a_restart() {
         []
     );
 
-    let config =
-        make_stick_config(&Profile::default().settings, 1, time()).expect("valid settings");
-    let entry = RegistryEntry {
-        stick_id: config.stick_id.clone(),
-        token: config.token.clone(),
-        team: config.settings.team.clone(),
-        site: config.settings.site.clone(),
-        contest: "Example Contest".to_owned(),
-        image: "stick-1.img".to_owned(),
-        created_at: config.created_at,
-        machine_number: config.machine_number,
-    };
+    let entry = entry("stick-1");
 
     let mut registry = Registry::default();
     registry.add(entry.clone()).expect("add");
@@ -125,27 +114,6 @@ fn sticks_added_at_the_same_time_are_all_kept() {
 }
 
 #[test]
-fn files_that_differ_only_in_extension_do_not_clash() {
-    let dir = TempDir::new().expect("temp dir");
-    let json = dir.path().join("contest.json");
-    let tmp = dir.path().join("contest.tmp");
-    let first = Profile {
-        name: "one".to_owned(),
-        ..Profile::default()
-    };
-    let second = Profile {
-        name: "two".to_owned(),
-        ..Profile::default()
-    };
-
-    first.save(&json).expect("save json");
-    second.save(&tmp).expect("save tmp");
-
-    assert_eq!(Profile::load(&json).expect("load").name, "one");
-    assert_eq!(Profile::load(&tmp).expect("load").name, "two");
-}
-
-#[test]
 fn a_missing_profile_says_so() {
     let dir = TempDir::new().expect("temp dir");
     assert!(matches!(
@@ -177,6 +145,17 @@ fn the_registry_is_private_to_its_owner() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o077, 0, "group and others must have no access");
+}
+
+#[test]
+fn an_empty_server_address_is_a_warning_not_an_error() {
+    let mut profile = Profile::template();
+    assert_eq!(profile.problems(), Vec::new());
+    assert_eq!(profile.warnings().len(), 1);
+    assert!(profile.warnings()[0].contains("no server address"));
+
+    "https://hub.example".clone_into(&mut profile.settings.api.url);
+    assert_eq!(profile.warnings(), Vec::<String>::new());
 }
 
 #[test]

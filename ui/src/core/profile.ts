@@ -1,4 +1,4 @@
-// The profile as the Rust side saves it. Pure data and helpers: no browser, no Tauri.
+// The profile as the Rust side saves it (ck-protocol `Settings`); keep the two in step by hand.
 
 export type Platform = 'kilonova' | 'codeforces' | 'vjudge' | 'other';
 export type RecordingMode = 'off' | 'snapshots' | 'low' | 'standard';
@@ -54,10 +54,6 @@ export function linesToList(text: string): string[] {
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '');
-}
-
-export function listToLines(list: string[]): string {
-  return list.join('\n');
 }
 
 /** An optional text field is left out of the profile when it is blank, as the Rust side expects. */

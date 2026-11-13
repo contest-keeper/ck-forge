@@ -11,7 +11,6 @@ use serde_json::json;
 
 use crate::error::Error;
 
-/// What the Hub did with the registry.
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 pub struct Pushed {
     pub added: usize,
@@ -23,10 +22,6 @@ pub struct Pushed {
 ///
 /// Sending the same registry twice is safe. A stick the Hub already has with a different secret is
 /// listed in `conflicts` and left as it was.
-///
-/// # Errors
-/// Fails when the address is not safe for a password, the file cannot be read, the Hub cannot be
-/// reached, or it refuses the login or the registry.
 pub fn push_registry(
     hub: &str,
     user: &str,
@@ -43,6 +38,8 @@ pub fn push_registry(
         .map_err(|e| Error::io(format!("reading {}", registry.display()), e))?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
+        // A redirect would resend the password body to wherever it points.
+        .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(30)))
         .build()
         .into();
@@ -100,8 +97,13 @@ fn safe_for_password(base: &str) -> bool {
     let Some(rest) = base.strip_prefix("http://") else {
         return false;
     };
-    let host = rest.split(['/', ':']).next().unwrap_or("");
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+    let authority = rest.split('/').next().unwrap_or("");
+    // Text before an `@` is a user name, and the real host comes after it.
+    if authority.contains('@') {
+        return false;
+    }
+    let host = authority.split(':').next().unwrap_or("");
+    matches!(host, "localhost" | "127.0.0.1")
 }
 
 #[cfg(test)]
@@ -115,6 +117,8 @@ mod tests {
         assert!(safe_for_password("http://localhost:8088"));
         assert!(!safe_for_password("http://hub.example.org"));
         assert!(!safe_for_password("http://127.0.0.1.evil.org"));
+        assert!(!safe_for_password("http://localhost:80@evil.org"));
+        assert!(!safe_for_password("http://localhost@evil.org/"));
         assert!(!safe_for_password("hub.example.org"));
     }
 }

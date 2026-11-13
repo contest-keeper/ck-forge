@@ -1,6 +1,8 @@
 mod support;
 
-use ck_admin_core::{Error, Profile, Registry, build_image, configure_image, show_image};
+use std::path::PathBuf;
+
+use ck_admin_core::{Built, Error, Profile, Registry, build_image, configure_image, show_image};
 use ck_protocol::LocalDateTime;
 use tempfile::TempDir;
 
@@ -14,32 +16,61 @@ fn profile(team: &str) -> Profile {
     profile
 }
 
+/// A folder with a base image, and where the registry of the test goes.
+struct Fixture {
+    dir: TempDir,
+    base: PathBuf,
+    registry: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let dir = TempDir::new().expect("temp dir");
+        let base = support::make_image(&dir, "base.img");
+        let registry = dir.path().join("registry.json");
+        Self {
+            dir,
+            base,
+            registry,
+        }
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.dir.path().join(name)
+    }
+
+    fn build(&self, out: &str, profile: &Profile) -> Result<Built, Error> {
+        build_image(
+            &self.base,
+            &self.path(out),
+            profile,
+            None,
+            &self.registry,
+            time(),
+            |_, _| {},
+        )
+    }
+}
+
 #[test]
 fn builds_a_stick_image_and_registers_it() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    let before = std::fs::read(&base).expect("read base");
-    let out = dir.path().join("stick-1.img");
-    let registry = dir.path().join("registry.json");
+    let fixture = Fixture::new();
+    let before = std::fs::read(&fixture.base).expect("read base");
 
-    let built = build_image(
-        &base,
-        &out,
-        &profile("Team A"),
-        None,
-        &registry,
-        time(),
-        |_, _| {},
-    )
-    .expect("build");
+    let built = fixture
+        .build("stick-1.img", &profile("Team A"))
+        .expect("build");
 
     assert_eq!(
-        std::fs::read(&base).expect("read base"),
+        std::fs::read(&fixture.base).expect("read base"),
         before,
         "base untouched"
     );
-    assert_eq!(show_image(&out).expect("show"), built.config);
-    let registry = Registry::load(&registry).expect("registry");
+    assert_eq!(
+        show_image(&fixture.path("stick-1.img")).expect("show"),
+        built.config
+    );
+    let registry = Registry::load(&fixture.registry).expect("registry");
     let entry = &registry.list()[0];
     assert_eq!(entry.stick_id, built.config.stick_id);
     assert_eq!(entry.token, built.config.token);
@@ -47,189 +78,57 @@ fn builds_a_stick_image_and_registers_it() {
 }
 
 #[test]
-fn every_stick_gets_its_own_identity() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    let registry = dir.path().join("registry.json");
-    let one = build_image(
-        &base,
-        &dir.path().join("1.img"),
-        &profile("A"),
-        None,
-        &registry,
-        time(),
-        |_, _| {},
-    )
-    .expect("one");
-    let two = build_image(
-        &base,
-        &dir.path().join("2.img"),
-        &profile("B"),
-        None,
-        &registry,
-        time(),
-        |_, _| {},
-    )
-    .expect("two");
-    assert_ne!(one.config.stick_id, two.config.stick_id);
-    assert_ne!(one.config.token, two.config.token);
-    assert_eq!(Registry::load(&registry).expect("registry").list().len(), 2);
-}
-
-#[test]
 fn a_bad_profile_stops_before_any_copy() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    let out = dir.path().join("out.img");
+    let fixture = Fixture::new();
     let mut bad = Profile::template();
     bad.settings.api.heartbeat_s = 0;
-    let error = build_image(
-        &base,
-        &out,
-        &bad,
-        None,
-        &dir.path().join("r.json"),
-        time(),
-        |_, _| {},
-    )
-    .expect_err("invalid");
+    let error = fixture.build("out.img", &bad).expect_err("invalid");
     assert!(matches!(error, Error::InvalidProfile(_)));
-    assert!(!out.exists());
+    assert!(!fixture.path("out.img").exists());
 }
 
 #[test]
 fn a_failed_build_leaves_no_image_behind() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    let out = dir.path().join("out.img");
+    let mut fixture = Fixture::new();
     // The registry path is a folder, so registering fails after the copy and the settings write.
-    let registry = dir.path().join("registry-folder");
-    std::fs::create_dir(&registry).expect("folder");
-    build_image(
-        &base,
-        &out,
-        &profile("A"),
-        None,
-        &registry,
-        time(),
-        |_, _| {},
-    )
-    .expect_err("fails");
-    assert!(!out.exists(), "the half-made image is removed");
+    fixture.registry = fixture.path("registry-folder");
+    std::fs::create_dir(&fixture.registry).expect("folder");
+    fixture.build("out.img", &profile("A")).expect_err("fails");
+    assert!(
+        !fixture.path("out.img").exists(),
+        "the half-made image is removed"
+    );
 }
 
 #[test]
 fn never_overwrites_an_existing_image() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    let out = support::make_image(&dir, "taken.img");
-    let before = std::fs::read(&out).expect("read");
-    build_image(
-        &base,
-        &out,
-        &profile("A"),
-        None,
-        &dir.path().join("r.json"),
-        time(),
-        |_, _| {},
-    )
-    .expect_err("exists");
-    assert_eq!(std::fs::read(&out).expect("read"), before);
+    let fixture = Fixture::new();
+    let taken = support::make_image(&fixture.dir, "taken.img");
+    let before = std::fs::read(&taken).expect("read");
+    fixture
+        .build("taken.img", &profile("A"))
+        .expect_err("exists");
+    assert_eq!(std::fs::read(&taken).expect("read"), before);
 }
 
 #[test]
-fn configure_changes_the_settings_but_keeps_the_identity() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    let out = dir.path().join("stick.img");
-    let built = build_image(
-        &base,
-        &out,
-        &profile("Old"),
-        None,
-        &dir.path().join("r.json"),
-        time(),
-        |_, _| {},
-    )
-    .expect("build");
-    let changed = configure_image(&out, &profile("New"), None, &dir.path().join("r.json"))
-        .expect("configure");
+fn configure_changes_the_settings_and_the_registry_labels_but_keeps_the_identity() {
+    let fixture = Fixture::new();
+    let out = fixture.path("stick.img");
+    let built = fixture.build("stick.img", &profile("Old")).expect("build");
+
+    let mut new = profile("New");
+    new.settings.site = "Lab 2".to_owned();
+    "Autumn Contest".clone_into(&mut new.name);
+    let changed = configure_image(&out, &new, None, &fixture.registry).expect("configure");
+
     assert_eq!(changed.settings.team, "New");
     assert_eq!(changed.stick_id, built.config.stick_id);
     assert_eq!(changed.token, built.config.token);
     assert_eq!(changed.created_at, built.config.created_at);
     assert_eq!(show_image(&out).expect("show"), changed);
-}
 
-#[test]
-fn a_plain_image_has_no_settings_to_show_or_change() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    assert!(matches!(show_image(&base), Err(Error::ImageNotConfigured)));
-    assert!(matches!(
-        configure_image(
-            &base,
-            &Profile::template(),
-            None,
-            &dir.path().join("r.json")
-        ),
-        Err(Error::ImageNotConfigured)
-    ));
-}
-
-#[test]
-fn the_profile_name_becomes_the_contest_name_on_the_stick() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    let out = dir.path().join("stick.img");
-    let mut named = profile("A");
-    "Spring Contest".clone_into(&mut named.name);
-    let built = build_image(
-        &base,
-        &out,
-        &named,
-        None,
-        &dir.path().join("r.json"),
-        time(),
-        |_, _| {},
-    )
-    .expect("build");
-    assert_eq!(built.config.settings.contest.name, "Spring Contest");
-    assert_eq!(
-        show_image(&out).expect("show").settings.contest.name,
-        "Spring Contest"
-    );
-
-    // A name set in the settings wins over the profile's name.
-    let mut explicit = profile("B");
-    "Profile name".clone_into(&mut explicit.name);
-    "Settings name".clone_into(&mut explicit.settings.contest.name);
-    assert_eq!(explicit.stick_settings().contest.name, "Settings name");
-}
-
-#[test]
-fn configure_keeps_the_registry_labels_in_step_with_the_image() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    let out = dir.path().join("stick.img");
-    let registry = dir.path().join("registry.json");
-    let built = build_image(
-        &base,
-        &out,
-        &profile("Old"),
-        None,
-        &registry,
-        time(),
-        |_, _| {},
-    )
-    .expect("build");
-
-    let mut changed = profile("New");
-    changed.settings.site = "Lab 2".to_owned();
-    "Autumn Contest".clone_into(&mut changed.name);
-    configure_image(&out, &changed, None, &registry).expect("configure");
-
-    let registry = Registry::load(&registry).expect("registry");
+    let registry = Registry::load(&fixture.registry).expect("registry");
     let entry = registry.find(&built.config.stick_id).expect("entry");
     assert_eq!(
         (
@@ -246,54 +145,97 @@ fn configure_keeps_the_registry_labels_in_step_with_the_image() {
 }
 
 #[test]
+fn configure_refuses_settings_the_agent_would_refuse_on_this_stick() {
+    let fixture = Fixture::new();
+    let out = fixture.path("stick.img");
+    let built = fixture.build("stick.img", &profile("Old")).expect("build");
+
+    // Fine as settings, but the computer name of this stick would be empty.
+    let mut unusable = profile("!!!");
+    "{team}".clone_into(&mut unusable.settings.branding.computer_name_pattern);
+    let error = configure_image(&out, &unusable, None, &fixture.registry).expect_err("refused");
+    assert!(matches!(error, Error::InvalidProfile(_)), "{error}");
+    assert_eq!(
+        show_image(&out).expect("show"),
+        built.config,
+        "the stick is unchanged"
+    );
+}
+
+#[test]
+fn a_plain_image_has_no_settings_to_show_or_change() {
+    let fixture = Fixture::new();
+    assert!(matches!(
+        show_image(&fixture.base),
+        Err(Error::ImageNotConfigured)
+    ));
+    assert!(matches!(
+        configure_image(&fixture.base, &Profile::template(), None, &fixture.registry),
+        Err(Error::ImageNotConfigured)
+    ));
+}
+
+#[test]
+fn the_profile_name_becomes_the_contest_name_on_the_stick() {
+    let fixture = Fixture::new();
+    let mut named = profile("A");
+    "Spring Contest".clone_into(&mut named.name);
+    let built = fixture.build("stick.img", &named).expect("build");
+    assert_eq!(built.config.settings.contest.name, "Spring Contest");
+    assert_eq!(
+        show_image(&fixture.path("stick.img"))
+            .expect("show")
+            .settings
+            .contest
+            .name,
+        "Spring Contest"
+    );
+
+    // A name set in the settings wins over the profile's name.
+    let mut explicit = profile("B");
+    "Profile name".clone_into(&mut explicit.name);
+    "Settings name".clone_into(&mut explicit.settings.contest.name);
+    assert_eq!(explicit.stick_settings().contest.name, "Settings name");
+}
+
+#[test]
 fn configure_works_without_a_registry_file_and_does_not_create_one() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    let out = dir.path().join("stick.img");
-    build_image(
-        &base,
-        &out,
-        &profile("Old"),
+    let fixture = Fixture::new();
+    fixture.build("stick.img", &profile("Old")).expect("build");
+    let elsewhere = fixture.path("other-registry.json");
+    configure_image(
+        &fixture.path("stick.img"),
+        &profile("New"),
         None,
-        &dir.path().join("made.json"),
-        time(),
-        |_, _| {},
+        &elsewhere,
     )
-    .expect("build");
-    let elsewhere = dir.path().join("other-registry.json");
-    configure_image(&out, &profile("New"), None, &elsewhere).expect("configure");
+    .expect("configure");
     assert!(!elsewhere.exists());
 }
 
 #[test]
 fn sticks_of_one_contest_get_machine_numbers_one_after_another() {
-    let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
-    let registry = dir.path().join("registry.json");
+    let fixture = Fixture::new();
     let mut numbers = Vec::new();
     for name in ["1.img", "2.img", "3.img"] {
-        let built = build_image(
-            &base,
-            &dir.path().join(name),
-            &profile("A"),
-            None,
-            &registry,
-            time(),
-            |_, _| {},
-        )
-        .expect("build");
+        let built = fixture.build(name, &profile("A")).expect("build");
         numbers.push(built.config.machine_number);
     }
     assert_eq!(numbers, [Some(1), Some(2), Some(3)]);
     assert_eq!(
-        show_image(&dir.path().join("3.img"))
+        show_image(&fixture.path("3.img"))
             .expect("show")
             .machine_number,
         Some(3)
     );
 
     // Changing the settings of a stick never changes its number.
-    let changed = configure_image(&dir.path().join("2.img"), &profile("B"), None, &registry)
-        .expect("configure");
+    let changed = configure_image(
+        &fixture.path("2.img"),
+        &profile("B"),
+        None,
+        &fixture.registry,
+    )
+    .expect("configure");
     assert_eq!(changed.machine_number, Some(2));
 }

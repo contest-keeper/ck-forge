@@ -92,6 +92,29 @@ fn the_picture_is_put_on_the_stick_next_to_the_settings() {
 }
 
 #[test]
+fn a_picture_named_like_the_settings_file_is_refused_before_it_can_replace_it() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    let out = dir.path().join("stick.img");
+    let picture = Wallpaper {
+        name: "Config.json".to_owned(),
+        bytes: vec![7; 100],
+    };
+    let error = build_image(
+        &base,
+        &out,
+        &profile_with_wallpaper("Config.json"),
+        Some(&picture),
+        &dir.path().join("r.json"),
+        time(),
+        |_, _| {},
+    )
+    .expect_err("refused");
+    assert!(matches!(error, Error::Wallpaper(_)), "{error}");
+    assert!(!out.exists());
+}
+
+#[test]
 fn the_picture_must_be_the_one_the_profile_names_and_nothing_is_copied_otherwise() {
     let dir = TempDir::new().expect("temp dir");
     let base = support::make_image(&dir, "base.img");
@@ -132,15 +155,4 @@ fn the_picture_must_be_the_one_the_profile_names_and_nothing_is_copied_otherwise
 
     assert!(!out.exists(), "all three stop before the large copy");
     assert!(!registry.exists());
-}
-
-#[test]
-fn an_empty_server_address_is_a_warning_not_an_error() {
-    let mut profile = Profile::template();
-    assert_eq!(profile.problems(), Vec::new());
-    assert_eq!(profile.warnings().len(), 1);
-    assert!(profile.warnings()[0].contains("no server address"));
-
-    "https://hub.example".clone_into(&mut profile.settings.api.url);
-    assert_eq!(profile.warnings(), Vec::<String>::new());
 }

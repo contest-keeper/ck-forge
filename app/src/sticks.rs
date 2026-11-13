@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use ck_admin_core::{Profile, Wallpaper, build_image as build};
+use ck_admin_core::{Profile, Wallpaper, build_image as build, folder_of};
 use ck_protocol::LocalDateTime;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-use crate::profiles::{folder_of, message, registry_of};
+use crate::profiles::{message, registry_of};
 
 #[derive(Clone, Serialize)]
 struct Progress {
@@ -27,7 +27,6 @@ pub struct Built {
     registry: String,
 }
 
-/// Copies the base image, gives the copy its identity and the profile's settings, and registers it.
 #[tauri::command]
 pub async fn build_image(
     app: AppHandle,
@@ -37,7 +36,7 @@ pub async fn build_image(
 ) -> Result<Built, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let profile = Profile::load(&profile_path).map_err(|e| message(&e))?;
-        let wallpaper = Wallpaper::read(&profile.stick_settings(), &folder_of(&profile_path))
+        let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(&profile_path))
             .map_err(|e| message(&e))?;
         let registry = registry_of(&profile_path);
         let now = LocalDateTime::from(chrono::Local::now().naive_local());
@@ -86,7 +85,6 @@ pub struct DiskView {
     refused: Option<String>,
 }
 
-/// The disks of this PC, each with the reason it is refused, if it is.
 #[tauri::command]
 pub async fn list_disks(image: PathBuf, allow_virtual: bool) -> Result<Vec<DiskView>, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -115,19 +113,25 @@ pub async fn list_disks(image: PathBuf, allow_virtual: bool) -> Result<Vec<DiskV
     .map_err(|e| e.to_string())?
 }
 
-/// Where `ck-forge.exe` is: next to this program once installed, or in the repository's build folder
-/// while developing.
+/// Where `ck-forge.exe` may be: next to this program, and for a development build also the
+/// repository's build folder. That folder is a path of the machine the program was built on, so a
+/// released program must never start something from it with administrator rights.
+fn helper_places(here: &Path, development: bool) -> Vec<PathBuf> {
+    let mut places = vec![here.with_file_name("ck-forge.exe")];
+    if development {
+        places.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/debug/ck-forge.exe"));
+    }
+    places
+}
+
 fn forge_exe() -> Result<PathBuf, String> {
     let here = std::env::current_exe().map_err(|e| e.to_string())?;
-    let beside = here.with_file_name("ck-forge.exe");
-    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/debug/ck-forge.exe");
-    [beside, dev]
+    helper_places(&here, cfg!(debug_assertions))
         .into_iter()
         .find(|path| path.is_file())
         .ok_or_else(|| "ck-forge.exe was not found next to this program".to_owned())
 }
 
-/// What the helper left in its progress file.
 #[derive(Deserialize)]
 struct HelperState {
     state: String,
@@ -143,14 +147,19 @@ fn read_state(file: &Path) -> Option<HelperState> {
     serde_json::from_slice(&std::fs::read(file).ok()?).ok()
 }
 
-/// Puts a path in quotes for the argument string of `Start-Process`.
-fn quote(path: &Path) -> String {
-    format!("\"{}\"", path.display())
+/// Puts a path in quotes for the argument string of `Start-Process`. The helper runs with
+/// administrator rights, so a path that could break out of its quotes is refused.
+fn quote(path: &Path) -> Result<String, String> {
+    let text = path.display().to_string();
+    if text.contains('"') || text.ends_with('\\') {
+        return Err(format!("{text} cannot be used as a file name here"));
+    }
+    Ok(format!("\"{text}\""))
 }
 
-/// Writes `image` to disk `disk`, or to the file `to_file`. Raw disk access needs administrator rights, so the write runs in
-/// `ck-forge.exe` started through the Windows permission prompt, and this window stays unelevated.
-/// The helper reports in a file, which is read here to show progress.
+/// Writes `image` to disk `disk`, or to the file `to_file`. Raw disk access needs administrator
+/// rights, so the write runs in `ck-forge.exe` started through the Windows permission prompt, and
+/// this window stays unelevated. The helper reports in a file, which is read here to show progress.
 ///
 /// Returns the SHA-256 of what was written and read back.
 #[tauri::command]
@@ -174,12 +183,12 @@ pub async fn write_stick(
         let mut arguments = vec![
             "stick".to_owned(),
             "write".to_owned(),
-            quote(&image),
+            quote(&image)?,
             "--disk".to_owned(),
             disk.to_string(),
             "--yes".to_owned(),
             "--progress-file".to_owned(),
-            quote(&progress_file),
+            quote(&progress_file)?,
         ];
         if allow_virtual {
             arguments.push("--allow-virtual".to_owned());
@@ -282,4 +291,31 @@ pub async fn push_registry(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_cannot_add_arguments_to_the_elevated_helper() {
+        assert_eq!(
+            quote(Path::new(r"C:\My Images\stick.img")).as_deref(),
+            Ok(r#""C:\My Images\stick.img""#)
+        );
+        // A quote would end the argument early and start new ones, such as `--to <any file>`.
+        assert!(quote(Path::new(r#"x.img" --to "C:\Windows\win.ini"#)).is_err());
+        // A backslash before the closing quote would make the quote part of the argument.
+        assert!(quote(Path::new(r"C:\folder\")).is_err());
+    }
+
+    #[test]
+    fn only_a_development_build_looks_for_the_helper_in_the_build_folder() {
+        let here = Path::new(r"C:\Program Files\Keeper Forge\keeper-forge.exe");
+        let beside = PathBuf::from(r"C:\Program Files\Keeper Forge\ck-forge.exe");
+        assert_eq!(helper_places(here, false), std::slice::from_ref(&beside));
+        let development = helper_places(here, true);
+        assert_eq!(development.len(), 2);
+        assert_eq!(development[0], beside);
+    }
 }
