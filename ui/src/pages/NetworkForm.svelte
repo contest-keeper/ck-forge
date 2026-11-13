@@ -1,6 +1,12 @@
 <script lang="ts">
   import Field from '../components/Field.svelte';
-  import { RECORDING_MODES, linesToList, optionalCount, type Settings } from '../core/profile';
+  import {
+    RECORDING_MODES,
+    linesToList,
+    optionalCount,
+    wholeNumber,
+    type Settings,
+  } from '../core/profile';
 
   type Props = { settings: Settings };
   let { settings = $bindable() }: Props = $props();
@@ -28,7 +34,9 @@
       <input
         type="number"
         min="1"
-        bind:value={() => settings.api.heartbeat_s, (v) => (settings.api.heartbeat_s = Number(v))}
+        bind:value={
+          () => settings.api.heartbeat_s, (v) => (settings.api.heartbeat_s = wholeNumber(v, 1))
+        }
       />
     </Field>
   </div>
@@ -48,7 +56,7 @@
         min="0"
         bind:value={
           () => settings.recording.start_delay_s,
-          (v) => (settings.recording.start_delay_s = Number(v))
+          (v) => (settings.recording.start_delay_s = wholeNumber(v, 0))
         }
       />
     </Field>
