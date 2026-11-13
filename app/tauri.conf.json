@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Keeper Forge",
+  "version": "0.1.0",
+  "identifier": "org.contest-keeper.forge",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm --dir ../ui dev",
+    "beforeBuildCommand": "pnpm --dir ../ui build"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "Keeper Forge", "width": 1000, "height": 760, "minWidth": 760, "minHeight": 560 }],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    }
+  },
+  "bundle": { "active": false, "icon": ["icons/icon.ico"] }
+}
