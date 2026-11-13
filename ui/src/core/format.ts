@@ -17,9 +17,9 @@ export function percent(done: number, total: number): number {
   return Math.min(100, Math.floor((done / total) * 100));
 }
 
-/** The text the admin types to confirm erasing a disk. */
-export function eraseConfirmation(diskNumber: number): string {
-  return `erase ${diskNumber}`;
+/** The text the admin types to confirm erasing disks: "erase 3", or "erase 3 4" for two. */
+export function eraseConfirmation(diskNumbers: number[]): string {
+  return `erase ${[...diskNumbers].sort((a, b) => a - b).join(' ')}`;
 }
 
 /** What went wrong, in words, from whatever was thrown. */

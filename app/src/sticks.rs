@@ -157,7 +157,7 @@ fn quote(path: &Path) -> Result<String, String> {
     Ok(format!("\"{text}\""))
 }
 
-/// Writes `image` to disk `disk`, or to the file `to_file`. Raw disk access needs administrator
+/// Writes `image` to the disks `disks` (all at the same time), or to the file `to_file`. Raw disk access needs administrator
 /// rights, so the write runs in `ck-forge.exe` started through the Windows permission prompt, and
 /// this window stays unelevated. The helper reports in a file, which is read here to show progress.
 ///
@@ -166,7 +166,7 @@ fn quote(path: &Path) -> Result<String, String> {
 pub async fn write_stick(
     app: AppHandle,
     image: PathBuf,
-    disk: Option<u32>,
+    disks: Vec<u32>,
     to_file: Option<PathBuf>,
     allow_virtual: bool,
 ) -> Result<String, String> {
@@ -175,7 +175,9 @@ pub async fn write_stick(
         if let Some(file) = to_file {
             return write_to_file(&app, &image, &file);
         }
-        let disk = disk.ok_or("choose a disk or a file to write to")?;
+        if disks.is_empty() {
+            return Err("choose a disk or a file to write to".to_owned());
+        }
         let exe = forge_exe()?;
         let progress_file =
             std::env::temp_dir().join(format!("ck-write-{}.json", std::process::id()));
@@ -184,12 +186,14 @@ pub async fn write_stick(
             "stick".to_owned(),
             "write".to_owned(),
             quote(&image)?,
-            "--disk".to_owned(),
-            disk.to_string(),
             "--yes".to_owned(),
             "--progress-file".to_owned(),
             quote(&progress_file)?,
         ];
+        for disk in &disks {
+            arguments.push("--disk".to_owned());
+            arguments.push(disk.to_string());
+        }
         if allow_virtual {
             arguments.push("--allow-virtual".to_owned());
         }
