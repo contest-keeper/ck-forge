@@ -17,14 +17,16 @@
 <style>
   .messages {
     margin: 0;
-    padding: 8px 12px 8px 28px;
+    padding: 10px 14px 10px 32px;
     border-radius: var(--radius);
-    border: 1px solid currentColor;
   }
   .problems {
-    color: var(--danger);
+    background: var(--danger-bg);
+    color: var(--danger-text);
+    border: 1px solid var(--danger-line);
   }
   .warnings {
+    background: var(--warn-bg);
     color: var(--warn);
   }
 </style>
