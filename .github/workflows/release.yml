@@ -11,6 +11,8 @@ permissions:
 jobs:
   release-please:
     uses: contest-keeper/.github/.github/workflows/release-please.yml@main
+    secrets:
+      token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 
   # The Windows installer (per-machine, so the elevated helper sits in a folder only administrators
   # can write) and the command line tool. Both get stable names: the download links under
