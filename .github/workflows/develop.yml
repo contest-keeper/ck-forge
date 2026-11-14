@@ -1,7 +1,7 @@
 name: Develop
 
 # Every merge to develop builds the Windows installer and the command line tool and publishes them as
-# the "dev" pre-release, and puts them on the develop site's Azure storage for download. The pre-release is replaced on every run,
+# the "dev" pre-release, and puts them on the develop site's Azure storage for download. The pre-release is updated on every run,
 # so its download links never change:
 #   https://github.com/contest-keeper/ck-forge/releases/download/dev/keeper-forge-setup-x64.exe
 
@@ -13,9 +13,11 @@ on:
 permissions:
   contents: read
 
+# Builds queue up instead of cancelling each other, so a run is never stopped half way through
+# publishing and the dev release always matches a finished build.
 concurrency:
   group: develop-build
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   windows:
@@ -39,6 +41,7 @@ jobs:
         shell: bash
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: forge-windows
           workspaces: |
             .
             app
@@ -76,17 +79,23 @@ jobs:
         env:
           SHA: ${{ github.sha }}
         run: echo "version=$(tr -d '[:space:]' < version.txt)-dev.${SHA:0:7}" >> "$GITHUB_OUTPUT"
-      - name: Replace the dev pre-release
+      # The release is updated in place, never deleted, so the download links keep working while a
+      # new build is on its way: the tag moves to this commit and the files are replaced by publish.
+      - name: Update the dev pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          version="$VERSION"
-          gh release delete dev --cleanup-tag --yes || true
-          gh release create dev --prerelease --target "$SHA" \
-            --title "Develop build ${version}" \
-            --notes "Built from develop at ${SHA}. Not a release: it is replaced on every merge to develop."
+          title="Develop build ${VERSION}"
+          notes="Built from develop at ${SHA}. Not a release: it is replaced on every merge to develop."
+          git tag -f dev "$SHA"
+          git push --force origin refs/tags/dev
+          if gh release view dev >/dev/null 2>&1; then
+            gh release edit dev --prerelease --title "$title" --notes "$notes"
+          else
+            gh release create dev --prerelease --verify-tag --title "$title" --notes "$notes"
+          fi
 
   publish:
     needs: release
