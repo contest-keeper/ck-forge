@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "pnpm --dir ../ui dev",
-    "beforeBuildCommand": "pnpm --dir ../ui build"
+    "beforeDevCommand": "pnpm --dir ui dev",
+    "beforeBuildCommand": "pnpm --dir ui build"
   },
   "app": {
     "windows": [{ "label": "main", "title": "Keeper Forge", "width": 1000, "height": 760, "minWidth": 760, "minHeight": 560 }],
@@ -15,5 +15,20 @@
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     }
   },
-  "bundle": { "active": false, "icon": ["icons/icon.ico"] }
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "publisher": "Contest Keeper",
+    "copyright": "Contest Keeper contributors",
+    "licenseFile": "../LICENSE",
+    "shortDescription": "Makes the bootable sticks for a contest",
+    "externalBin": ["binaries/ck-forge"],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "displayLanguageSelector": false
+      }
+    }
+  }
 }

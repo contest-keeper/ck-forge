@@ -21,3 +21,5 @@ build/
 *.tsbuildinfo
 /app/target/
 /app/gen/
+# The helper copied next to the window for the installer (see .github/workflows/release.yml)
+/app/binaries/
