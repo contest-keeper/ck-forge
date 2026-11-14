@@ -1,0 +1,93 @@
+name: Develop
+
+# Every merge to develop builds the Windows installer and the command line tool and publishes them as
+# the "dev" pre-release, so the develop site can offer them. The pre-release is replaced on every run,
+# so its download links never change:
+#   https://github.com/contest-keeper/ck-forge/releases/download/dev/keeper-forge-setup-x64.exe
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: develop-build
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: ui/.nvmrc
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: ui
+      - name: Install the pinned GNU toolchain
+        run: |
+          rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
+          echo "RUSTUP_TOOLCHAIN=1.99.1-x86_64-pc-windows-gnu" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            app
+      - name: Build the command line tool and place it as the installer's helper
+        run: |
+          cargo build --release --locked -p ck-forge
+          mkdir -p app/binaries
+          cp target/release/ck-forge.exe app/binaries/ck-forge-x86_64-pc-windows-gnu.exe
+        shell: bash
+      - name: Build the installer
+        run: node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-gnu
+        working-directory: app
+      - name: Collect the files under stable names
+        run: |
+          mkdir out
+          cp app/target/x86_64-pc-windows-gnu/release/bundle/nsis/*-setup.exe out/keeper-forge-setup-x64.exe
+          cp target/release/ck-forge.exe out/ck-forge-windows-x64.exe
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-windows
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Replace the dev pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          version="$(tr -d '[:space:]' < version.txt)-dev.${SHA:0:7}"
+          gh release delete dev --cleanup-tag --yes || true
+          gh release create dev --prerelease --target "$SHA" \
+            --title "Develop build ${version}" \
+            --notes "Built from develop at ${SHA}. Not a release: it is replaced on every merge to develop."
+
+  publish:
+    needs: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: contest-keeper/.github/.github/workflows/release-assets.yml@develop
+    with:
+      tag_name: dev
+      artifact_name: forge-windows
