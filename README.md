@@ -6,6 +6,30 @@ work through the same code (`crates/ck-admin-core`, `crates/ck-writer`).
 
 Work in progress.
 
+## Download and install
+
+Every release has a Windows installer and the command line tool on the
+[releases page](https://github.com/contest-keeper/ck-forge/releases/latest). The file names never
+change, so these links always give the newest release:
+
+- `.../releases/latest/download/keeper-forge-setup-x64.exe`: the installer (needs Windows 10 or
+  newer; it installs for all users, because the window starts the writer with administrator rights
+  and that program must sit where only administrators can change it)
+- `.../releases/latest/download/ck-forge-windows-x64.exe`: the command line tool alone
+- `.../releases/latest/download/SHA256SUMS.txt`: the checksum of every file
+
+The files are not code-signed yet, so Windows SmartScreen may warn ("More info", then "Run anyway").
+Check what you downloaded before running it:
+
+```powershell
+(Get-FileHash .\keeper-forge-setup-x64.exe -Algorithm SHA256).Hash   # compare with SHA256SUMS.txt
+gh attestation verify .\keeper-forge-setup-x64.exe --repo contest-keeper/ck-forge
+```
+
+The second command proves the file was built by this repository's release workflow.
+
+To build the installer yourself: `tools/build-installer.ps1`.
+
 ## The window
 
 The window has four steps: edit and save a contest **profile**, make a stick **image** from the base

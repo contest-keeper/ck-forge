@@ -43,9 +43,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app
+      - name: Place the command line tool where the installer config expects it
+        run: |
+          cargo build --release --locked -p ck-forge
+          mkdir -p app/binaries
+          cp target/release/ck-forge.exe app/binaries/ck-forge-x86_64-pc-windows-gnu.exe
+        shell: bash
       - run: cargo clippy -- -D warnings
         working-directory: app
       - run: cargo build --features custom-protocol
+        working-directory: app
+      - name: Build the installer
+        run: node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-gnu
         working-directory: app
   windows:
     runs-on: windows-latest

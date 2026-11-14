@@ -12,7 +12,65 @@ jobs:
   release-please:
     uses: contest-keeper/.github/.github/workflows/release-please.yml@main
 
-  # Build and upload release files here, e.g.:
-  # build:
-  #   needs: release-please
-  #   if: needs.release-please.outputs.release_created == 'true'
+  # The Windows installer (per-machine, so the elevated helper sits in a folder only administrators
+  # can write) and the command line tool. Both get stable names: the download links under
+  # /releases/latest/download/ never change.
+  windows:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: ui/.nvmrc
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: ui
+      - name: Install the pinned GNU toolchain
+        run: |
+          rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
+          echo "RUSTUP_TOOLCHAIN=1.99.1-x86_64-pc-windows-gnu" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            app
+      - name: Build the command line tool and place it as the installer's helper
+        run: |
+          cargo build --release --locked -p ck-forge
+          mkdir -p app/binaries
+          cp target/release/ck-forge.exe app/binaries/ck-forge-x86_64-pc-windows-gnu.exe
+        shell: bash
+      - name: Build the installer
+        run: node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-gnu
+        working-directory: app
+      - name: Collect the files under stable names
+        run: |
+          mkdir out
+          cp app/target/x86_64-pc-windows-gnu/release/bundle/nsis/*-setup.exe out/keeper-forge-setup-x64.exe
+          cp target/release/ck-forge.exe out/ck-forge-windows-x64.exe
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-windows
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    needs: [release-please, windows]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: contest-keeper/.github/.github/workflows/release-assets.yml@main
+    with:
+      tag_name: ${{ needs.release-please.outputs.tag_name }}
+      artifact_name: forge-windows
