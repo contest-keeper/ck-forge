@@ -1,7 +1,7 @@
 name: Develop
 
 # Every merge to develop builds the Windows installer and the command line tool and publishes them as
-# the "dev" pre-release, so the develop site can offer them. The pre-release is replaced on every run,
+# the "dev" pre-release, and puts them on the develop site's Azure storage for download. The pre-release is replaced on every run,
 # so its download links never change:
 #   https://github.com/contest-keeper/ck-forge/releases/download/dev/keeper-forge-setup-x64.exe
 
@@ -66,16 +66,23 @@ jobs:
   release:
     needs: windows
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
+      - id: version
+        env:
+          SHA: ${{ github.sha }}
+        run: echo "version=$(tr -d '[:space:]' < version.txt)-dev.${SHA:0:7}" >> "$GITHUB_OUTPUT"
       - name: Replace the dev pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          version="$(tr -d '[:space:]' < version.txt)-dev.${SHA:0:7}"
+          version="$VERSION"
           gh release delete dev --cleanup-tag --yes || true
           gh release create dev --prerelease --target "$SHA" \
             --title "Develop build ${version}" \
@@ -91,3 +98,16 @@ jobs:
     with:
       tag_name: dev
       artifact_name: forge-windows
+
+  # The develop site serves the download from Azure, so the installer there is replaced too.
+  azure:
+    needs: release
+    permissions:
+      contents: read
+      id-token: write
+    uses: contest-keeper/ck-infra/.github/workflows/publish-download.yml@develop
+    with:
+      environment: develop
+      artifact: forge-windows
+      folder: forge
+      version: ${{ needs.release.outputs.version }}
