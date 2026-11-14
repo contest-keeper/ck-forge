@@ -41,6 +41,7 @@ Build and run it on Windows (needs the toolchain in `ck-os/docs/dev-setup.md`, a
 ```powershell
 cd ui;  pnpm install; pnpm build; cd ..
 cargo build -p ck-forge                      # the helper that writes the stick
+mkdir app/binaries -Force; copy target/debug/ck-forge.exe app/binaries/ck-forge-x86_64-pc-windows-gnu.exe   # the build checks the helper is there
 cd app; cargo run --features custom-protocol
 ```
 
