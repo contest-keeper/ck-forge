@@ -17,6 +17,10 @@ export type Built = {
 
 export type SignedIn = { email: string; registry: string | null };
 
+export type HubProfileItem = { id: string; name: string };
+
+export type LoadedProfile = { profile: Profile; path: string };
+
 export type DiskView = {
   number: number;
   name: string;
@@ -77,3 +81,8 @@ export const chooseProfileToSave = () =>
   save({ filters: JSON_FILES, defaultPath: 'contest-profile.json' });
 export const chooseImageToOpen = () => open({ filters: IMAGE_FILES });
 export const chooseImageToSave = () => save({ filters: IMAGE_FILES, defaultPath: 'stick.img' });
+
+export const hubListProfiles = () => invoke<HubProfileItem[]>('hub_list_profiles');
+export const hubLoadProfile = (id: string) => invoke<LoadedProfile>('hub_load_profile', { id });
+export const hubSaveProfile = (path: string, profile: Profile) =>
+  invoke<Profile>('hub_save_profile', { path, profile });

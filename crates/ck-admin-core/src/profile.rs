@@ -23,6 +23,9 @@ fn is_codeforces_id(id: &str) -> bool {
 pub struct Profile {
     pub name: String,
     pub settings: Settings,
+    /// The id of this profile on the Hub, once it was saved there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_id: Option<String>,
 }
 
 impl Profile {
@@ -45,6 +48,7 @@ impl Profile {
         Self {
             name: "My contest".to_owned(),
             settings,
+            hub_id: None,
         }
     }
 

@@ -43,7 +43,7 @@ export type Settings = {
   api: Api;
 };
 
-export type Profile = { name: string; settings: Settings };
+export type Profile = { name: string; settings: Settings; hub_id?: string | undefined };
 
 export const PLATFORMS: Platform[] = ['kilonova', 'codeforces', 'vjudge', 'other'];
 export const RECORDING_MODES: RecordingMode[] = ['off', 'snapshots', 'low', 'standard'];
