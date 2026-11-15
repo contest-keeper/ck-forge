@@ -23,6 +23,8 @@ jobs:
       working-directory: ui
   window:
     runs-on: windows-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -48,7 +50,6 @@ jobs:
           workspaces: |
             .
             app
-      - run: cargo test --workspace
       - name: Place the command line tool where the installer config expects it
         run: |
           cargo build --release --locked -p ck-forge
@@ -57,8 +58,21 @@ jobs:
         shell: bash
       - run: cargo clippy -- -D warnings
         working-directory: app
-      - run: cargo build --features custom-protocol
-        working-directory: app
       - name: Build the installer
         run: node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-gnu
         working-directory: app
+  windows-test:
+    runs-on: windows-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned GNU toolchain
+        run: |
+          rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
+          echo "RUSTUP_TOOLCHAIN=1.99.1-x86_64-pc-windows-gnu" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forge-windows-test
+      - run: cargo test --workspace
