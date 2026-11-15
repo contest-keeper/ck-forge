@@ -191,3 +191,27 @@ fn machines_of_a_contest_are_numbered_one_after_another() {
         "every contest counts on its own"
     );
 }
+
+#[test]
+fn a_new_profile_is_for_codeforces_and_the_contest_is_the_first_bookmark() {
+    let mut profile = Profile::template();
+    assert!(profile.problems().is_empty());
+    assert!(
+        profile
+            .settings
+            .network
+            .allowed_domains
+            .contains(&".codeforces.com".to_owned())
+    );
+    assert_eq!(profile.stick_settings().branding.bookmarks.len(), 2);
+
+    profile.settings.contest.contest_id = "2042".to_owned();
+    let bookmarks = profile.stick_settings().branding.bookmarks;
+    assert_eq!(bookmarks[0].url, "https://codeforces.com/contest/2042");
+    let warnings = profile.warnings().len();
+    assert!(profile.problems().is_empty());
+
+    profile.settings.contest.contest_id = "x y".to_owned();
+    assert_eq!(profile.stick_settings().branding.bookmarks.len(), 2);
+    assert_eq!(profile.warnings().len(), warnings + 1);
+}
