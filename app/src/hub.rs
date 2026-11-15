@@ -18,9 +18,12 @@ use tauri::State;
 use crate::profiles::{message, registry_of};
 
 /// Where sticks report and where admins sign in. Sticks only get this address when the admin who
-/// made them was signed in.
-// A placeholder that cannot resolve (.invalid is reserved), until the real Hub address is chosen.
-pub const HUB_URL: &str = "https://hub.invalid";
+/// made them was signed in. Release builds use the production Hub; the develop build sets
+/// `CK_HUB_URL` to the develop Hub when it compiles.
+pub const HUB_URL: &str = match option_env!("CK_HUB_URL") {
+    Some(url) => url,
+    None => "https://hub.contestkeeper.com",
+};
 
 const SIGN_IN_WAIT: Duration = Duration::from_secs(180);
 
