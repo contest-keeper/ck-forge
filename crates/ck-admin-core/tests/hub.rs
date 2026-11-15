@@ -224,3 +224,72 @@ mod signed_in {
         assert!(matches!(error, Error::Hub(text) if text.contains("sign in again")));
     }
 }
+
+mod profiles {
+    use ck_admin_core::{Profile, fetch_profile, list_profiles, sign_in_with_code, upload_profile};
+
+    use super::{fake_hub, reply};
+
+    fn signed_in_replies() -> Vec<String> {
+        vec![reply("200 OK", "", r#"{"token":"tok123","email":"a@b.c"}"#)]
+    }
+
+    #[test]
+    fn lists_loads_and_saves_profiles_as_the_signed_in_admin() {
+        let settings = serde_json::to_string(&Profile::template().settings).expect("json");
+        let mut replies = signed_in_replies();
+        replies.push(reply(
+            "200 OK",
+            "",
+            r#"[{"id":"p1","name":"Round","updated_at":"now"}]"#,
+        ));
+        replies.push(reply(
+            "200 OK",
+            "",
+            &format!(r#"{{"id":"p1","name":"Round","settings":{settings},"wallpaper":{{"name":"w.png"}}}}"#),
+        ));
+        replies.push(reply("200 OK", "", "PNGBYTES"));
+        replies.push(reply("204 No Content", "", ""));
+        let (hub, handle) = fake_hub(replies);
+
+        let session = sign_in_with_code(&hub, "c").expect("session");
+        let list = list_profiles(&hub, &session).expect("list");
+        assert_eq!(
+            (list[0].id.as_str(), list[0].name.as_str()),
+            ("p1", "Round")
+        );
+
+        let loaded = fetch_profile(&hub, &session, "p1").expect("fetch");
+        assert_eq!(loaded.name, "Round");
+        let wallpaper = loaded.wallpaper.as_ref().expect("wallpaper");
+        assert_eq!(
+            (wallpaper.name.as_str(), wallpaper.bytes.as_slice()),
+            ("w.png", &b"PNGBYTES"[..])
+        );
+
+        upload_profile(&hub, &session, "p1", &loaded).expect("upload");
+        let seen = handle.join().expect("hub");
+        assert!(seen[1].starts_with("GET /api/v1/profiles "));
+        assert!(seen[4].starts_with("PUT /api/v1/profiles/p1"));
+        assert!(
+            seen[4].contains("UE5HQllURVM="),
+            "wallpaper goes as base64: {}",
+            seen[4]
+        );
+        assert!(
+            seen.iter()
+                .skip(1)
+                .all(|r| r.to_lowercase().contains("authorization: bearer tok123"))
+        );
+    }
+
+    #[test]
+    fn a_viewer_or_an_ended_session_gets_a_plain_answer() {
+        let mut replies = signed_in_replies();
+        replies.push(reply("403 Forbidden", "", "{}"));
+        let (hub, _handle) = fake_hub(replies);
+        let session = sign_in_with_code(&hub, "c").expect("session");
+        let error = list_profiles(&hub, &session).unwrap_err();
+        assert!(error.to_string().contains("not an admin"), "{error}");
+    }
+}

@@ -12,10 +12,13 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use ck_protocol::Settings;
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::error::Error;
+use crate::wallpaper::{MAX_WALLPAPER_BYTES, Wallpaper};
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 pub struct Pushed {
@@ -112,6 +115,12 @@ pub struct HubSession {
     pub email: String,
 }
 
+impl HubSession {
+    fn bearer(&self) -> String {
+        format!("Bearer {}", self.token)
+    }
+}
+
 // A derived `Debug` would print the token.
 impl std::fmt::Debug for HubSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -129,6 +138,12 @@ pub fn new_state() -> String {
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     )
+}
+
+/// An id for a profile that is saved to the Hub for the first time.
+#[must_use]
+pub fn new_profile_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 /// The Hub page the browser opens. It asks the admin to sign in, if needed, and to agree.
@@ -273,6 +288,133 @@ pub fn push_registry_signed_in(
         .map_err(|e| Error::io(format!("reading {}", registry.display()), e))?;
     let bearer = format!("Bearer {}", session.token);
     post_registry(&agent(), base, ("authorization", &bearer), body)
+}
+
+#[derive(Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct ProfileSummary {
+    pub id: String,
+    pub name: String,
+}
+
+/// A profile as the Hub keeps it: the settings and the wallpaper picture, if any.
+#[derive(Debug)]
+pub struct HubProfile {
+    pub name: String,
+    pub settings: Settings,
+    pub wallpaper: Option<Wallpaper>,
+}
+
+#[derive(Deserialize)]
+struct ProfileAnswer {
+    name: String,
+    settings: serde_json::Value,
+    wallpaper: Option<WallpaperName>,
+}
+
+#[derive(Deserialize)]
+struct WallpaperName {
+    name: String,
+}
+
+/// The profiles of the signed-in admin's organization.
+pub fn list_profiles(hub: &str, session: &HubSession) -> Result<Vec<ProfileSummary>, Error> {
+    let base = checked_base(hub)?;
+    let mut answer = agent()
+        .get(format!("{base}/api/v1/profiles"))
+        .header("authorization", &session.bearer())
+        .call()
+        .map_err(|e| unreachable_hub(base, &e))?;
+    check_profile_status(&mut answer)?;
+    answer
+        .body_mut()
+        .read_json()
+        .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}")))
+}
+
+/// One profile of the organization, with its wallpaper picture.
+pub fn fetch_profile(hub: &str, session: &HubSession, id: &str) -> Result<HubProfile, Error> {
+    let base = checked_base(hub)?;
+    let bearer = session.bearer();
+    let mut answer = agent()
+        .get(format!("{base}/api/v1/profiles/{id}"))
+        .header("authorization", &bearer)
+        .call()
+        .map_err(|e| unreachable_hub(base, &e))?;
+    check_profile_status(&mut answer)?;
+    let profile: ProfileAnswer = answer
+        .body_mut()
+        .read_json()
+        .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}")))?;
+    let settings = serde_json::from_value(profile.settings).map_err(|e| {
+        Error::Hub(format!(
+            "the Hub has settings this version cannot read: {e}"
+        ))
+    })?;
+    let wallpaper = match profile.wallpaper {
+        Some(WallpaperName { name }) => {
+            let mut picture = agent()
+                .get(format!("{base}/api/v1/profiles/{id}/wallpaper"))
+                .header("authorization", &bearer)
+                .call()
+                .map_err(|e| unreachable_hub(base, &e))?;
+            check_profile_status(&mut picture)?;
+            let bytes = picture
+                .body_mut()
+                .with_config()
+                .limit(MAX_WALLPAPER_BYTES)
+                .read_to_vec()
+                .map_err(|e| Error::Hub(format!("unreadable wallpaper from the Hub: {e}")))?;
+            Some(Wallpaper { name, bytes })
+        }
+        None => None,
+    };
+    Ok(HubProfile {
+        name: profile.name,
+        settings,
+        wallpaper,
+    })
+}
+
+/// Creates the profile `id` on the Hub or replaces it. No wallpaper removes the Hub's picture.
+pub fn upload_profile(
+    hub: &str,
+    session: &HubSession,
+    id: &str,
+    profile: &HubProfile,
+) -> Result<(), Error> {
+    let base = checked_base(hub)?;
+    let wallpaper = profile.wallpaper.as_ref().map(|w| {
+        json!({ "name": w.name, "data_base64": base64::engine::general_purpose::STANDARD.encode(&w.bytes) })
+    });
+    let settings = serde_json::to_value(&profile.settings)
+        .map_err(|e| Error::Hub(format!("settings cannot be sent: {e}")))?;
+    let mut answer = agent()
+        .put(format!("{base}/api/v1/profiles/{id}"))
+        .header("authorization", &session.bearer())
+        .send_json(json!({ "name": profile.name, "settings": settings, "wallpaper": wallpaper }))
+        .map_err(|e| unreachable_hub(base, &e))?;
+    check_profile_status(&mut answer)
+}
+
+fn unreachable_hub(base: &str, error: &ureq::Error) -> Error {
+    Error::Hub(format!("cannot reach the Hub at {base}: {error}"))
+}
+
+/// Plain words for what the Hub answers to a profile request; `Ok` for any success.
+fn check_profile_status(answer: &mut ureq::http::Response<ureq::Body>) -> Result<(), Error> {
+    let status = answer.status().as_u16();
+    if (200..300).contains(&status) {
+        return Ok(());
+    }
+    let text = answer.body_mut().read_to_string().unwrap_or_default();
+    Err(Error::Hub(match status {
+        401 => "the sign-in ended; sign in again".to_owned(),
+        403 => "this account is not an admin".to_owned(),
+        404 => "the Hub has no such profile".to_owned(),
+        409 => "this account is in several organizations; profiles need exactly one".to_owned(),
+        400 | 413 => format!("the Hub refused the profile: {text}"),
+        code => format!("the Hub answered {code}"),
+    }))
 }
 
 /// Ends the session at the Hub. A Hub that cannot be reached is not an error: the session ends by

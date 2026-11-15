@@ -52,6 +52,33 @@
       return `Opened ${path}`;
     });
 
+  let hubProfiles = $state<api.HubProfileItem[] | null>(null);
+
+  const listHub = () =>
+    run(async () => {
+      hubProfiles = await api.hubListProfiles();
+      return hubProfiles.length === 0 ? 'The Hub has no profiles yet. Save one to it.' : '';
+    });
+
+  const loadFromHub = (id: string) =>
+    run(async () => {
+      const loaded = await api.hubLoadProfile(id);
+      app.profile = loaded.profile;
+      app.profilePath = loaded.path;
+      hubProfiles = null;
+      return `Loaded ${loaded.profile.name} from the Hub`;
+    });
+
+  const saveToHub = () =>
+    run(async () => {
+      if (!app.profile) return '';
+      const path = app.profilePath ?? (await api.chooseProfileToSave());
+      if (!path) return '';
+      app.profile = await api.hubSaveProfile(path, $state.snapshot(app.profile));
+      app.profilePath = path;
+      return `Saved ${app.profile.name} to the Hub`;
+    });
+
   const save = () =>
     run(async () => {
       if (!app.profile) return '';
@@ -68,8 +95,28 @@
     <button type="button" class="btn" onclick={create}>New profile</button>
     <button type="button" class="btn" onclick={open}>Open…</button>
     <button type="button" class="btn pri" onclick={save} disabled={!app.profile}>Save</button>
+    {#if app.hubEmail}
+      <button type="button" class="btn" onclick={listHub}>Load from Hub…</button>
+      <button type="button" class="btn" onclick={saveToHub} disabled={!app.profile}>
+        Save to Hub
+      </button>
+    {/if}
     <span class="where">{app.profilePath ?? 'not saved yet'}</span>
   </div>
+
+  {#if hubProfiles && hubProfiles.length > 0}
+    <div class="card">
+      <h2>Profiles on the Hub</h2>
+      <ul class="hubs">
+        {#each hubProfiles as item (item.id)}
+          <li>
+            <span class="grow">{item.name}</span>
+            <button type="button" class="btn sm" onclick={() => loadFromHub(item.id)}>Open</button>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
 
   {#if status}<p class="note ok">{status}</p>{/if}
   {#if failure}<p class="note error" role="alert">{failure}</p>{/if}
@@ -106,6 +153,19 @@
     gap: var(--gap);
     align-items: center;
     flex-wrap: wrap;
+  }
+  .hubs {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .hubs li {
+    display: flex;
+    align-items: center;
+    gap: var(--gap);
   }
   .where {
     color: var(--muted);

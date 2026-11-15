@@ -14,8 +14,9 @@ mod wallpaper;
 pub use error::Error;
 pub use file::folder_of;
 pub use hub::{
-    HubSession, Pushed, new_state, push_registry, push_registry_signed_in, sign_in_url,
-    sign_in_with_code, sign_out, wait_for_code,
+    HubProfile, HubSession, ProfileSummary, Pushed, fetch_profile, list_profiles, new_profile_id,
+    new_state, push_registry, push_registry_signed_in, sign_in_url, sign_in_with_code, sign_out,
+    upload_profile, wait_for_code,
 };
 pub use image::{
     Built, build_image, build_thin_image, check_one_stick, configure_image, show_image,
