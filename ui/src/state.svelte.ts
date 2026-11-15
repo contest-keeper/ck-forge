@@ -12,8 +12,8 @@ export type AppState = {
   basePath: string | null;
   /** A stick was written and read back in this session. */
   written: boolean;
-  /** The registry was sent to the Hub in this session. */
-  registered: boolean;
+  /** The admin signed in to the Hub in this window: sticks made now report to it. */
+  hubEmail: string | null;
 };
 
 export const app: AppState = $state({
@@ -22,5 +22,5 @@ export const app: AppState = $state({
   imagePath: null,
   basePath: null,
   written: false,
-  registered: false,
+  hubEmail: null,
 });

@@ -54,6 +54,9 @@ jobs:
       - name: Build the installer
         run: node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-gnu
         working-directory: app
+        # Only a release signs in to, and reports to, the production Hub.
+        env:
+          CK_HUB_URL: https://hub.contestkeeper.com
       - name: Collect the files under stable names
         run: |
           mkdir out

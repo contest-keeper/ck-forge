@@ -2,9 +2,15 @@
 //!
 //! The password is used for one login and then dropped. It is never stored or printed, and neither
 //! is the session cookie the Hub answers with.
+//!
+//! The window signs in through the browser instead: it opens the Hub's page, listens on a port of
+//! this PC, and the Hub sends the browser back to that port with a code that works once. The code
+//! is traded for a session token that is only kept in memory and never printed.
 
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::json;
@@ -68,9 +74,19 @@ pub fn push_registry(
         .map(|token| format!("ck_session={token}"))
         .ok_or_else(|| Error::Hub("the Hub did not start a session".into()))?;
 
+    post_registry(&agent, base, ("cookie", &cookie), body)
+}
+
+/// Sends the registry text with one request header that says who is sending it.
+fn post_registry(
+    agent: &ureq::Agent,
+    base: &str,
+    auth: (&str, &str),
+    body: String,
+) -> Result<Pushed, Error> {
     let mut answer = agent
         .post(format!("{base}/api/v1/sticks"))
-        .header("cookie", &cookie)
+        .header(auth.0, auth.1)
         .header("content-type", "application/json")
         .send(body)
         .map_err(|e| Error::Hub(format!("cannot reach the Hub at {base}: {e}")))?;
@@ -83,10 +99,201 @@ pub fn push_registry(
     match status {
         200 | 409 => serde_json::from_str(&text)
             .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}"))),
+        401 => Err(Error::Hub("the sign-in ended; sign in again".into())),
         403 => Err(Error::Hub("this account is not an admin".into())),
         400 => Err(Error::Hub(format!("the Hub refused the registry: {text}"))),
         code => Err(Error::Hub(format!("the Hub answered {code}"))),
     }
+}
+
+/// What the Hub gave this window when the admin signed in. It lives in memory only.
+pub struct HubSession {
+    token: String,
+    pub email: String,
+}
+
+// A derived `Debug` would print the token.
+impl std::fmt::Debug for HubSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HubSession")
+            .field("email", &self.email)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A random value that ties the page the browser comes back from to the sign-in that was started.
+#[must_use]
+pub fn new_state() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+/// The Hub page the browser opens. It asks the admin to sign in, if needed, and to agree.
+pub fn sign_in_url(hub: &str, port: u16, state: &str) -> Result<String, Error> {
+    let base = checked_base(hub)?;
+    Ok(format!("{base}/forge/connect?port={port}&state={state}"))
+}
+
+/// An address the code and the session may be sent to: https, or this PC (a Hub started for a test).
+fn checked_base(hub: &str) -> Result<&str, Error> {
+    let base = hub.trim_end_matches('/');
+    if safe_for_password(base) {
+        Ok(base)
+    } else {
+        Err(Error::Hub(format!(
+            "{base} is not https, so the sign-in would cross the network in the clear"
+        )))
+    }
+}
+
+/// Waits for the browser to come back to `listener` and returns the code the Hub put in the
+/// address. A request without the right `state` is answered and ignored, because anything on this
+/// PC (a web page, for one) can send a request to the port.
+pub fn wait_for_code(listener: &TcpListener, state: &str, wait: Duration) -> Result<String, Error> {
+    let io = |e| Error::io("waiting for the browser", e);
+    listener.set_nonblocking(true).map_err(io)?;
+    let until = Instant::now() + wait;
+    while Instant::now() < until {
+        let mut stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            Err(e) => return Err(io(e)),
+        };
+        stream.set_nonblocking(false).map_err(io)?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(io)?;
+        let code = read_callback(&mut stream, state);
+        let (status, text) = match code {
+            Some(_) => (
+                "200 OK",
+                "Signed in. You can close this tab and go back to Keeper Forge.",
+            ),
+            None => (
+                "400 Bad Request",
+                "This is not the sign-in Keeper Forge is waiting for.",
+            ),
+        };
+        let page =
+            format!("<!doctype html><meta charset=utf-8><title>Keeper Forge</title><p>{text}</p>");
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n{page}",
+            page.len()
+        );
+        if let Some(code) = code {
+            return Ok(code);
+        }
+    }
+    Err(Error::Hub(
+        "the sign-in in the browser was not finished in time; try again".into(),
+    ))
+}
+
+/// The code of a `GET /callback?code=..&state=..` request, when the state is the expected one.
+fn read_callback(stream: &mut impl Read, state: &str) -> Option<String> {
+    let mut head = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    // Only the first line matters, and a browser sends it in one piece.
+    while !head.contains(&b'\n') && head.len() < 8192 {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => head.extend_from_slice(&chunk[..n]),
+        }
+    }
+    let text = String::from_utf8_lossy(&head);
+    let target = text.lines().next()?.strip_prefix("GET ")?;
+    let query = target.split(' ').next()?.strip_prefix("/callback?")?;
+    let mut code = None;
+    let mut got_state = None;
+    for pair in query.split('&') {
+        match pair.split_once('=') {
+            Some(("code", value)) => code = Some(value),
+            Some(("state", value)) => got_state = Some(value),
+            _ => {}
+        }
+    }
+    let code = code.filter(|c| !c.is_empty() && c.chars().all(is_token_char))?;
+    (got_state == Some(state)).then(|| code.to_owned())
+}
+
+fn is_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_'
+}
+
+#[derive(Deserialize)]
+struct TokenAnswer {
+    token: String,
+    email: String,
+}
+
+/// Trades the code from the browser for a session.
+pub fn sign_in_with_code(hub: &str, code: &str) -> Result<HubSession, Error> {
+    let base = checked_base(hub)?;
+    let mut answer = agent()
+        .post(format!("{base}/api/v1/forge/token"))
+        .send_json(json!({ "code": code }))
+        .map_err(|e| Error::Hub(format!("cannot reach the Hub at {base}: {e}")))?;
+    match answer.status().as_u16() {
+        200 => {}
+        400 => return Err(Error::Hub("the sign-in code ended; sign in again".into())),
+        code => {
+            return Err(Error::Hub(format!(
+                "the Hub answered {code} to the sign-in"
+            )));
+        }
+    }
+    let answer: TokenAnswer = answer
+        .body_mut()
+        .read_json()
+        .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}")))?;
+    Ok(HubSession {
+        token: answer.token,
+        email: answer.email,
+    })
+}
+
+/// Sends every stick of the registry file, as the signed-in admin.
+///
+/// Sending the same registry twice is safe. A stick the Hub already has with a different secret is
+/// listed in `conflicts` and left as it was.
+pub fn push_registry_signed_in(
+    hub: &str,
+    session: &HubSession,
+    registry: &Path,
+) -> Result<Pushed, Error> {
+    let base = checked_base(hub)?;
+    let body = std::fs::read_to_string(registry)
+        .map_err(|e| Error::io(format!("reading {}", registry.display()), e))?;
+    let bearer = format!("Bearer {}", session.token);
+    post_registry(&agent(), base, ("authorization", &bearer), body)
+}
+
+/// Ends the session at the Hub. A Hub that cannot be reached is not an error: the session ends by
+/// itself.
+pub fn sign_out(hub: &str, session: &HubSession) {
+    let Ok(base) = checked_base(hub) else { return };
+    let bearer = format!("Bearer {}", session.token);
+    let _ = agent()
+        .post(format!("{base}/api/v1/logout"))
+        .header("authorization", &bearer)
+        .send_empty();
+}
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        // A redirect would resend the code or the token to wherever it points.
+        .max_redirects(0)
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into()
 }
 
 /// A password may only go over https, or to this PC (a Hub started for a test).

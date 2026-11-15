@@ -91,7 +91,8 @@
         <dt>Registered in</dt>
         <dd class="mono">{built.registry}</dd>
       </dl>
-      <p class="hint">Next: write it to a stick, then send the registry to the Hub.</p>
+      {#if built.hub}<p class="hint">{built.hub}</p>{/if}
+      <p class="hint">Next: write it to a stick.</p>
     </div>
   {/if}
   <div>

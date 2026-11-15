@@ -47,7 +47,9 @@ pub fn save_profile(path: PathBuf, profile: Profile) -> Result<(), String> {
 
 /// What is wrong with a profile being edited, so the page can say so next to the field.
 #[tauri::command]
-pub fn check_profile(profile: Profile) -> Checked {
+pub fn check_profile(mut profile: Profile) -> Checked {
+    // The server address is not set in the window: a stick gets it when the admin is signed in.
+    "set at build".clone_into(&mut profile.settings.api.url);
     Checked {
         problems: profile.problems().iter().map(ToString::to_string).collect(),
         warnings: profile.warnings(),

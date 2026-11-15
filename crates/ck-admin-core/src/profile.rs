@@ -1,10 +1,22 @@
 use std::path::Path;
 
-use ck_protocol::Settings;
+use ck_protocol::{Bookmark, Platform, Settings};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::file::{read_json, write_json_atomically};
+
+const DEFAULT_BOOKMARKS: [(&str, &str); 2] = [
+    ("Codeforces", "https://codeforces.com"),
+    ("C++ reference", "https://en.cppreference.com"),
+];
+
+/// The sites of the default bookmarks, which is all a new profile lets contestants reach.
+const DEFAULT_ALLOWED_DOMAINS: [&str; 2] = [".codeforces.com", ".cppreference.com"];
+
+fn is_codeforces_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_digit())
+}
 
 /// The admin's settings for one contest, saved as a JSON file.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -17,9 +29,22 @@ impl Profile {
     /// A profile with sensible defaults for the admin to edit.
     #[must_use]
     pub fn template() -> Self {
+        let mut settings = Settings::default();
+        settings.contest.platform = Platform::Codeforces;
+        settings.branding.bookmarks = DEFAULT_BOOKMARKS
+            .iter()
+            .map(|(title, url)| Bookmark {
+                title: (*title).to_owned(),
+                url: (*url).to_owned(),
+            })
+            .collect();
+        settings.network.allowed_domains = DEFAULT_ALLOWED_DOMAINS
+            .iter()
+            .map(|domain| (*domain).to_owned())
+            .collect();
         Self {
             name: "My contest".to_owned(),
-            settings: Settings::default(),
+            settings,
         }
     }
 
@@ -31,6 +56,19 @@ impl Profile {
         if settings.contest.name.is_empty() {
             settings.contest.name.clone_from(&self.name);
         }
+        let contest_id = settings.contest.contest_id.trim();
+        if is_codeforces_id(contest_id) {
+            // The contest itself comes first, so contestants find it before the reference sites.
+            let url = format!("https://codeforces.com/contest/{contest_id}");
+            settings.branding.bookmarks.retain(|b| b.url != url);
+            settings.branding.bookmarks.insert(
+                0,
+                Bookmark {
+                    title: "Contest".to_owned(),
+                    url,
+                },
+            );
+        }
         settings
     }
 
@@ -38,6 +76,13 @@ impl Profile {
     #[must_use]
     pub fn warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
+        let contest_id = self.settings.contest.contest_id.trim();
+        if !contest_id.is_empty() && !is_codeforces_id(contest_id) {
+            warnings.push(
+                "the contest ID is not a number, so contestants get no bookmark for the contest"
+                    .to_owned(),
+            );
+        }
         if self.settings.api.url.is_empty() {
             warnings.push(
                 "no server address (api.url) is set, so sticks made from this profile cannot report to a Hub"
