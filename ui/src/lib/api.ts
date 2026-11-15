@@ -7,14 +7,6 @@ import type { Profile } from '../core/profile';
 
 export type Checked = { problems: string[]; warnings: string[] };
 
-export type Built = {
-  stick_id: string;
-  computer_name: string;
-  team: string;
-  registry: string;
-  hub: string | null;
-};
-
 export type SignedIn = { email: string; registry: string | null };
 
 export type HubProfileItem = { id: string; name: string };
@@ -38,32 +30,27 @@ export const saveProfile = (path: string, profile: Profile) =>
   invoke<null>('save_profile', { path, profile });
 export const checkProfile = (profile: Profile) => invoke<Checked>('check_profile', { profile });
 
-export const buildImage = (base: string, out: string, profilePath: string) =>
-  invoke<Built>('build_image', { base, out, profilePath });
-
-export const listDisks = (image: string, allowVirtual: boolean) =>
-  invoke<DiskView[]>('list_disks', { image, allowVirtual });
+export const listDisks = (base: string, allowVirtual: boolean) =>
+  invoke<DiskView[]>('list_disks', { base, allowVirtual });
 
 /**
  * Writes to disks (all at the same time, with one Windows permission prompt) or, for a test
  * without a stick, to a file.
  */
 export const writeStick = (
-  image: string,
+  base: string,
+  profilePath: string,
   target: { disks: number[] } | { file: string },
   allowVirtual: boolean,
-  more: { base: string; profilePath: string } | null,
 ) =>
   invoke<string>('write_stick', {
-    image,
+    base,
+    profilePath,
     disks: 'disks' in target ? target.disks : [],
     toFile: 'file' in target ? target.file : null,
     allowVirtual,
-    base: more?.base ?? null,
-    profilePath: more?.profilePath ?? null,
   });
 
-/** Opens the Hub in the browser and waits until the admin has signed in there. */
 export const hubSignIn = (profilePath: string | null) =>
   invoke<SignedIn>('hub_sign_in', { profilePath });
 export const hubSignOut = () => invoke<null>('hub_sign_out');

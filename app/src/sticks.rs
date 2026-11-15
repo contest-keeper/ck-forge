@@ -30,18 +30,6 @@ pub struct Built {
     hub: Option<String>,
 }
 
-#[tauri::command]
-pub async fn build_image(
-    app: AppHandle,
-    base: PathBuf,
-    out: PathBuf,
-    profile_path: PathBuf,
-) -> Result<Built, String> {
-    tauri::async_runtime::spawn_blocking(move || build_stick(&app, &base, &out, &profile_path))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
 /// Makes the image of one stick, from the profile at `profile_path`, and registers the stick. When
 /// the admin is signed in to the Hub the stick reports to it and the registry is sent; otherwise the
 /// stick has no server address and keeps its events on the stick.
@@ -100,22 +88,6 @@ fn build_stick(
     })
 }
 
-/// A new name next to `image` for the image of another stick: `stick.img` gives `stick-2.img`,
-/// the first one of that kind that does not exist yet, with or without its manifest.
-fn next_image_path(image: &Path) -> PathBuf {
-    let stem = image
-        .file_stem()
-        .map_or_else(|| "stick".to_owned(), |s| s.to_string_lossy().into_owned());
-    let mut n = 2_u32;
-    loop {
-        let path = image.with_file_name(format!("{stem}-{n}.img"));
-        if !path.exists() && !ck_writer::thin::manifest_path(&path).exists() {
-            return path;
-        }
-        n += 1;
-    }
-}
-
 #[derive(Serialize)]
 pub struct DiskView {
     number: u32,
@@ -128,9 +100,9 @@ pub struct DiskView {
 }
 
 #[tauri::command]
-pub async fn list_disks(image: PathBuf, allow_virtual: bool) -> Result<Vec<DiskView>, String> {
+pub async fn list_disks(base: PathBuf, allow_virtual: bool) -> Result<Vec<DiskView>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let size = ck_writer::thin::image_len(&image).map_err(|e| e.to_string())?;
+        let size = ck_writer::thin::image_len(&base).map_err(|e| e.to_string())?;
         let disks = ck_writer::list_disks().map_err(|e| e.to_string())?;
         Ok(disks
             .iter()
@@ -197,121 +169,142 @@ fn quote(path: &Path) -> Result<String, String> {
     Ok(format!("\"{text}\""))
 }
 
-/// Writes `image` to the disk `disks` or, for several disks, makes one more image for each disk
-/// after the first, from `base` and the profile, so that every stick has its own identity, and
-/// writes them all at the same time. Or writes to the file `to_file`. Raw disk access needs administrator
-/// rights, so the write runs in `ck-forge.exe` started through the Windows permission prompt, and
-/// this window stays unelevated. The helper reports in a file, which is read here to show progress.
+/// Makes one image for each stick from `base` and the saved profile, so every stick has its own
+/// identity, and writes them to `disks` all at the same time. Or writes the first image to the file
+/// `to_file`. Raw disk access needs administrator rights, so the write runs in `ck-forge.exe`
+/// started through the Windows permission prompt, and this window stays unelevated. The helper
+/// reports in a file, which is read here to show progress.
 ///
 /// Returns the SHA-256 of what was written and read back.
 #[tauri::command]
 pub async fn write_stick(
     app: AppHandle,
-    image: PathBuf,
+    base: PathBuf,
+    profile_path: PathBuf,
     disks: Vec<u32>,
     to_file: Option<PathBuf>,
     allow_virtual: bool,
-    base: Option<PathBuf>,
-    profile_path: Option<PathBuf>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        // A file needs no administrator rights, so it is written here: a test without a stick.
-        if let Some(file) = to_file {
-            return write_to_file(&app, &image, &file);
-        }
-        if disks.is_empty() {
+        if to_file.is_none() && disks.is_empty() {
             return Err("choose a disk or a file to write to".to_owned());
         }
-        let mut images = vec![image.clone()];
-        if let (true, Some(base), Some(profile_path)) = (disks.len() > 1, &base, &profile_path) {
-            for _ in 1..disks.len() {
-                let next = next_image_path(images.last().unwrap_or(&image));
-                build_stick(&app, base, &next, profile_path)?;
-                images.push(next);
-            }
-        } else {
-            // One image for every disk: only an image with no stick identity may go to several.
-            ck_admin_core::check_one_stick(&image, disks.len()).map_err(|e| message(&e))?;
-        }
-        let exe = forge_exe()?;
-        let progress_file =
-            std::env::temp_dir().join(format!("ck-write-{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&progress_file);
-        let mut arguments = vec!["stick".to_owned(), "write".to_owned()];
-        for image in &images {
-            arguments.push(quote(image)?);
-        }
-        arguments.extend([
-            "--yes".to_owned(),
-            "--progress-file".to_owned(),
-            quote(&progress_file)?,
-        ]);
-        for disk in &disks {
-            arguments.push("--disk".to_owned());
-            arguments.push(disk.to_string());
-        }
-        if allow_virtual {
-            arguments.push("--allow-virtual".to_owned());
-        }
-        // The program and its arguments go in environment variables, so nothing chosen in the
-        // window is ever part of the PowerShell command text.
-        let mut child = Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Start-Process -FilePath $env:CK_EXE -ArgumentList $env:CK_ARGS -Verb RunAs \
-                 -WindowStyle Hidden -Wait",
-            ])
-            .env("CK_EXE", &exe)
-            .env("CK_ARGS", arguments.join(" "))
-            .spawn()
-            .map_err(|e| format!("could not start the writer: {e}"))?;
-        let status = loop {
-            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-                break status;
-            }
-            if let Some(state) = read_state(&progress_file)
-                && state.total > 0
-            {
-                let phase = if state.state == "checking" {
-                    "checking"
-                } else {
-                    "writing"
-                };
-                let _ = app.emit(
-                    "progress",
-                    Progress {
-                        done: state.done,
-                        total: state.total,
-                        phase,
-                    },
-                );
-            }
-            std::thread::sleep(Duration::from_millis(500));
-        };
-        let finished = read_state(&progress_file);
-        let _ = std::fs::remove_file(&progress_file);
-        match finished {
-            Some(HelperState {
-                state,
-                sha256: Some(hash),
-                ..
-            }) if state == "done" => Ok(hash),
-            Some(HelperState {
-                message: Some(why), ..
-            }) => Err(why),
-            _ if !status.success() => {
-                Err("the administrator permission was refused, so nothing was written".to_owned())
-            }
-            _ => Err(
-                "the writer stopped without saying why; nothing on the stick can be trusted"
-                    .to_owned(),
-            ),
-        }
+        // Every stick gets an image of its own, so every stick has its own identity. The images
+        // are small (only the start of the base is copied) and are removed when the write ends.
+        let work = std::env::temp_dir().join(format!("ck-sticks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work)
+            .map_err(|e| format!("could not make {}: {e}", work.display()))?;
+        let result = make_and_write(
+            &app,
+            &base,
+            &profile_path,
+            &work,
+            &disks,
+            to_file.as_deref(),
+            allow_virtual,
+        );
+        let _ = std::fs::remove_dir_all(&work);
+        result
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Builds one image per stick in `work`, then writes them to the disks, or the first to a file.
+fn make_and_write(
+    app: &AppHandle,
+    base: &Path,
+    profile_path: &Path,
+    work: &Path,
+    disks: &[u32],
+    to_file: Option<&Path>,
+    allow_virtual: bool,
+) -> Result<String, String> {
+    let mut images = Vec::new();
+    for n in 1..=disks.len().max(1) {
+        let image = work.join(format!("stick-{n}.img"));
+        build_stick(app, base, &image, profile_path)?;
+        images.push(image);
+    }
+    // A file needs no administrator rights, so it is written here: a test without a stick.
+    if let Some(file) = to_file {
+        return write_to_file(app, &images[0], file);
+    }
+    let exe = forge_exe()?;
+    let progress_file = std::env::temp_dir().join(format!("ck-write-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&progress_file);
+    let mut arguments = vec!["stick".to_owned(), "write".to_owned()];
+    for image in &images {
+        arguments.push(quote(image)?);
+    }
+    arguments.extend([
+        "--yes".to_owned(),
+        "--progress-file".to_owned(),
+        quote(&progress_file)?,
+    ]);
+    for disk in disks {
+        arguments.push("--disk".to_owned());
+        arguments.push(disk.to_string());
+    }
+    if allow_virtual {
+        arguments.push("--allow-virtual".to_owned());
+    }
+    // The program and its arguments go in environment variables, so nothing chosen in the
+    // window is ever part of the PowerShell command text.
+    let mut child = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Process -FilePath $env:CK_EXE -ArgumentList $env:CK_ARGS -Verb RunAs \
+                 -WindowStyle Hidden -Wait",
+        ])
+        .env("CK_EXE", &exe)
+        .env("CK_ARGS", arguments.join(" "))
+        .spawn()
+        .map_err(|e| format!("could not start the writer: {e}"))?;
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        if let Some(state) = read_state(&progress_file)
+            && state.total > 0
+        {
+            let phase = if state.state == "checking" {
+                "checking"
+            } else {
+                "writing"
+            };
+            let _ = app.emit(
+                "progress",
+                Progress {
+                    done: state.done,
+                    total: state.total,
+                    phase,
+                },
+            );
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    let finished = read_state(&progress_file);
+    let _ = std::fs::remove_file(&progress_file);
+    match finished {
+        Some(HelperState {
+            state,
+            sha256: Some(hash),
+            ..
+        }) if state == "done" => Ok(hash),
+        Some(HelperState {
+            message: Some(why), ..
+        }) => Err(why),
+        _ if !status.success() => {
+            Err("the administrator permission was refused, so nothing was written".to_owned())
+        }
+        _ => Err(
+            "the writer stopped without saying why; nothing on the stick can be trusted".to_owned(),
+        ),
+    }
 }
 
 fn write_to_file(app: &AppHandle, image: &Path, file: &Path) -> Result<String, String> {
@@ -345,20 +338,6 @@ mod tests {
         assert!(quote(Path::new(r#"x.img" --to "C:\Windows\win.ini"#)).is_err());
         // A backslash before the closing quote would make the quote part of the argument.
         assert!(quote(Path::new(r"C:\folder\")).is_err());
-    }
-
-    #[test]
-    fn the_image_of_another_stick_gets_the_next_free_name_beside_the_first() {
-        let dir = std::env::temp_dir().join(format!("ck-next-image-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let first = dir.join("stick.img");
-        assert_eq!(next_image_path(&first), dir.join("stick-2.img"));
-        std::fs::write(dir.join("stick-2.img"), b"x").expect("taken");
-        assert_eq!(next_image_path(&first), dir.join("stick-3.img"));
-        // A manifest alone also takes the name.
-        std::fs::write(dir.join("stick-3.img.thin.json"), b"{}").expect("taken");
-        assert_eq!(next_image_path(&first), dir.join("stick-4.img"));
-        std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
     #[test]

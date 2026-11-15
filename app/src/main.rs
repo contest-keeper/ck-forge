@@ -14,7 +14,6 @@ fn main() {
             profiles::open_profile,
             profiles::save_profile,
             profiles::check_profile,
-            sticks::build_image,
             sticks::list_disks,
             sticks::write_stick,
             hub::hub_sign_in,
