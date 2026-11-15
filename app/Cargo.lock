@@ -351,6 +351,7 @@ dependencies = [
 name = "ck-admin-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "ck-crypto",
  "ck-image",
  "ck-protocol",

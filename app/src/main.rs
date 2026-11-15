@@ -18,6 +18,9 @@ fn main() {
             sticks::write_stick,
             hub::hub_sign_in,
             hub::hub_sign_out,
+            hub::hub_list_profiles,
+            hub::hub_load_profile,
+            hub::hub_save_profile,
             hub::hub_status,
         ])
         .run(tauri::generate_context!())
