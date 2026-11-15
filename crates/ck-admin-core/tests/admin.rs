@@ -195,7 +195,7 @@ fn machines_of_a_contest_are_numbered_one_after_another() {
 #[test]
 fn a_new_profile_is_for_codeforces_and_the_contest_is_the_first_bookmark() {
     let mut profile = Profile::template();
-    assert!(profile.problems().is_empty());
+    assert_eq!(profile.problems(), []);
     assert!(
         profile
             .settings
@@ -209,7 +209,7 @@ fn a_new_profile_is_for_codeforces_and_the_contest_is_the_first_bookmark() {
     let bookmarks = profile.stick_settings().branding.bookmarks;
     assert_eq!(bookmarks[0].url, "https://codeforces.com/contest/2042");
     let warnings = profile.warnings().len();
-    assert!(profile.problems().is_empty());
+    assert_eq!(profile.problems(), []);
 
     profile.settings.contest.contest_id = "x y".to_owned();
     assert_eq!(profile.stick_settings().branding.bookmarks.len(), 2);
