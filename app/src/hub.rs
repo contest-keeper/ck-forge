@@ -18,11 +18,11 @@ use tauri::State;
 use crate::profiles::{message, registry_of};
 
 /// Where sticks report and where admins sign in. Sticks only get this address when the admin who
-/// made them was signed in. Release builds use the production Hub; the develop build sets
-/// `CK_HUB_URL` to the develop Hub when it compiles.
+/// made them was signed in. Every build from develop, a pull request or a local checkout uses the
+/// develop Hub; only the release workflow sets `CK_HUB_URL` to the production Hub when it compiles.
 pub const HUB_URL: &str = match option_env!("CK_HUB_URL") {
     Some(url) => url,
-    None => "https://hub.contestkeeper.com",
+    None => "https://hub.dev.contestkeeper.com",
 };
 
 const SIGN_IN_WAIT: Duration = Duration::from_secs(180);
