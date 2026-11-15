@@ -3,9 +3,8 @@
   import ProgressBar from '../components/ProgressBar.svelte';
   import { describeError, eraseConfirmation } from '../core/format';
   import * as api from '../lib/api';
-  import { app } from '../state.svelte';
+  import { app, setBasePath } from '../state.svelte';
 
-  let image = $state(app.imagePath ?? '');
   let disks = $state<api.DiskView[]>([]);
   let chosen = $state<number[]>([]);
   let allowVirtual = $state(false);
@@ -18,25 +17,21 @@
   let failure = $state('');
 
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
-  // The first stick gets the image of step 2. Each more stick gets one of its own, made here from
-  // the same base and profile, so every stick has its own identity.
-  const more = $derived(
-    chosen.length > 1 && image === app.imagePath && app.basePath && app.profilePath
-      ? { base: app.basePath, profilePath: app.profilePath }
-      : null,
-  );
+  const ready = $derived(app.profilePath !== null && app.basePath !== null);
   const confirmed = $derived(chosen.length > 0 && typed.trim() === eraseConfirmation(chosen));
   const names = $derived([...chosen].sort((a, b) => a - b).join(', '));
 
   onMount(() => {
     const stop = api.onProgress((p) => {
-      if (busy && p.phase !== 'building') progress = p;
+      if (busy) progress = p;
     });
     return () => void stop.then((unlisten) => unlisten());
   });
 
-  async function chooseImage() {
-    image = (await api.chooseImageToOpen()) ?? image;
+  async function chooseBase() {
+    const path = await api.chooseImageToOpen();
+    if (!path) return;
+    setBasePath(path);
     chosen = [];
     disks = [];
   }
@@ -46,7 +41,7 @@
     chosen = [];
     typed = '';
     try {
-      disks = await api.listDisks(image, allowVirtual);
+      disks = await api.listDisks(app.basePath ?? '', allowVirtual);
     } catch (error) {
       failure = describeError(error);
     }
@@ -61,8 +56,9 @@
     failure = '';
     hash = '';
     progress = null;
+    if (!app.profilePath || !app.basePath) return;
     try {
-      hash = await api.writeStick(image, target, allowVirtual, more);
+      hash = await api.writeStick(app.basePath, app.profilePath, target, allowVirtual);
       written = 'disks' in target ? target.disks.length : 1;
       app.written = true;
     } catch (error) {
@@ -76,15 +72,22 @@
 </script>
 
 <div class="page">
+  {#if !app.profilePath}
+    <p class="note error">Save a profile on the Contest profile page first.</p>
+  {/if}
   <div class="card">
-    <h2>Image</h2>
+    <h2>Base image</h2>
+    <p class="hint">
+      The disk image every stick starts from. It is only read, never changed, and must stay where it
+      is. Chosen once; it is remembered.
+    </p>
     <div class="path">
       <div class="grow">
-        <div class="n">{image ? fileName(image) : 'none chosen'}</div>
-        {#if image}<div class="p">{image}</div>{/if}
+        <div class="n">{app.basePath ? fileName(app.basePath) : 'none chosen'}</div>
+        {#if app.basePath}<div class="p">{app.basePath}</div>{/if}
       </div>
-      <button type="button" class="btn sm" onclick={chooseImage} disabled={busy}>
-        {image ? 'Change…' : 'Choose…'}
+      <button type="button" class="btn sm" onclick={chooseBase} disabled={busy}>
+        {app.basePath ? 'Change…' : 'Choose…'}
       </button>
     </div>
   </div>
@@ -93,11 +96,11 @@
     <h2>Choose the sticks to erase</h2>
     <p class="hint">
       A stick of at least 32 GB is needed. Everything on it is erased. Tick several sticks to write
-      them at the same time: each gets an image of its own, with its own identity, made in a second
-      from the profile and the base image of step 2.
+      them at the same time: each gets its own identity, made in a second from the saved profile and
+      the base image. Windows asks for administrator permission when the write starts.
     </p>
     <div class="row">
-      <button type="button" class="btn sm" onclick={refresh} disabled={busy || !image}>
+      <button type="button" class="btn sm" onclick={refresh} disabled={busy || !ready}>
         Find sticks
       </button>
       <label class="check">
@@ -146,8 +149,6 @@
         </div>
         <div class="hint">
           This cannot be undone. Type <strong>{eraseConfirmation(chosen)}</strong> to confirm.
-          {#if more}{chosen.length - 1} more {chosen.length === 2 ? 'image is' : 'images are'} made, one
-            for each stick after the first.{/if}
         </div>
       </div>
       <input
@@ -197,7 +198,7 @@
         type="button"
         class="btn sm"
         onclick={() => write({ file: testFile })}
-        disabled={busy || !image || !testFile}
+        disabled={busy || !ready || !testFile}
       >
         Write the file
       </button>

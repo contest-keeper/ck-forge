@@ -1,8 +1,7 @@
 <script lang="ts">
   import HubSignIn from './components/HubSignIn.svelte';
-  import BuildPage from './pages/BuildPage.svelte';
   import ContestPage from './pages/ContestPage.svelte';
-  import WritePage from './pages/WritePage.svelte';
+  import MakePage from './pages/MakePage.svelte';
   import { app } from './state.svelte';
   import { look, setTheme } from './theme/theme.svelte';
 
@@ -15,27 +14,18 @@
       page: ContestPage,
     },
     {
-      id: 'build',
-      title: 'Make image',
-      hint: 'Copy base, apply profile',
+      id: 'make',
+      title: 'Make sticks',
+      hint: 'Base image, erase and write USB',
       blurb:
-        'Makes the image of one stick: the base image with its own identity and the settings of the saved profile. Only the start of the image is copied, so this takes a second, and the base image must stay where it is. The base image is only read, never changed.',
-      page: BuildPage,
-    },
-    {
-      id: 'write',
-      title: 'Write sticks',
-      hint: 'Erase and write USB',
-      blurb:
-        'Choose the stick to write. Windows asks for administrator permission when the write starts.',
-      page: WritePage,
+        'Choose the base image once, tick the sticks and write. Each stick gets its own identity from the saved profile. Windows asks for administrator permission when the write starts.',
+      page: MakePage,
     },
   ] as const;
 
   let index = $state(0);
   const tab = $derived(tabs[index] ?? tabs[0]);
-  const Page = $derived(tab.page);
-  const done = $derived([app.profilePath !== null, app.imagePath !== null, app.written]);
+  const done = $derived([app.profilePath !== null, app.written]);
 </script>
 
 <div class="win">
@@ -103,7 +93,11 @@
       <p>{tab.blurb}</p>
     </header>
     <main class="body">
-      <Page />
+      <!-- Every page stays in place and is only hidden, so what was typed or chosen is still there when
+           the admin comes back to it. -->
+      {#each tabs as step, i (step.id)}
+        <div hidden={i !== index}><step.page /></div>
+      {/each}
     </main>
     <footer class="foot">
       {#if index > 0}

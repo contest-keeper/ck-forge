@@ -2,13 +2,13 @@
 
 import type { Profile } from './core/profile';
 
+const BASE_KEY = 'ck.basePath';
+
 export type AppState = {
   profile: Profile | null;
   /** Where the profile is saved. Building needs it, because the registry and the wallpaper sit next to it. */
   profilePath: string | null;
-  /** The newest stick image made here, offered on the page that writes sticks. */
-  imagePath: string | null;
-  /** The base image the newest stick image was made from; more sticks are made from it. */
+  /** The base image every stick starts from; remembered between runs. */
   basePath: string | null;
   /** A stick was written and read back in this session. */
   written: boolean;
@@ -19,8 +19,12 @@ export type AppState = {
 export const app: AppState = $state({
   profile: null,
   profilePath: null,
-  imagePath: null,
-  basePath: null,
+  basePath: localStorage.getItem(BASE_KEY),
   written: false,
   hubEmail: null,
 });
+
+export function setBasePath(path: string) {
+  app.basePath = path;
+  localStorage.setItem(BASE_KEY, path);
+}
