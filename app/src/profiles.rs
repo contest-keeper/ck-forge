@@ -49,9 +49,21 @@ pub fn save_profile(path: PathBuf, profile: Profile) -> Result<(), String> {
 #[tauri::command]
 pub fn check_profile(mut profile: Profile) -> Checked {
     // The server address is not set in the window: a stick gets it when the admin is signed in.
-    "set at build".clone_into(&mut profile.settings.api.url);
+    crate::hub::HUB_URL.clone_into(&mut profile.settings.api.url);
     Checked {
         problems: profile.problems().iter().map(ToString::to_string).collect(),
         warnings: profile.warnings(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_profile_checks_clean_in_the_window() {
+        let checked = check_profile(new_profile());
+        assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+        assert!(checked.warnings.is_empty(), "{:?}", checked.warnings);
     }
 }
