@@ -13,7 +13,10 @@ mod wallpaper;
 
 pub use error::Error;
 pub use file::folder_of;
-pub use hub::{Pushed, push_registry};
+pub use hub::{
+    HubSession, Pushed, new_state, push_registry, push_registry_signed_in, sign_in_url,
+    sign_in_with_code, sign_out, wait_for_code,
+};
 pub use image::{
     Built, build_image, build_thin_image, check_one_stick, configure_image, show_image,
 };

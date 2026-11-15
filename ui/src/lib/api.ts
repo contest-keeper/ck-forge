@@ -7,7 +7,15 @@ import type { Profile } from '../core/profile';
 
 export type Checked = { problems: string[]; warnings: string[] };
 
-export type Built = { stick_id: string; computer_name: string; team: string; registry: string };
+export type Built = {
+  stick_id: string;
+  computer_name: string;
+  team: string;
+  registry: string;
+  hub: string | null;
+};
+
+export type SignedIn = { email: string; registry: string | null };
 
 export type DiskView = {
   number: number;
@@ -51,8 +59,11 @@ export const writeStick = (
     profilePath: more?.profilePath ?? null,
   });
 
-export const pushRegistry = (hub: string, user: string, password: string, profilePath: string) =>
-  invoke<string>('push_registry', { hub, user, password, profilePath });
+/** Opens the Hub in the browser and waits until the admin has signed in there. */
+export const hubSignIn = (profilePath: string | null) =>
+  invoke<SignedIn>('hub_sign_in', { profilePath });
+export const hubSignOut = () => invoke<null>('hub_sign_out');
+export const hubStatus = () => invoke<string | null>('hub_status');
 
 export function onProgress(handler: (progress: Progress) => void): Promise<() => void> {
   return listen<Progress>('progress', (event) => handler(event.payload));

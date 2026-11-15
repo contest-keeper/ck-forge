@@ -27,10 +27,10 @@
     ></textarea>
   </Field>
   <div class="grid">
-    <Field label="Hub address" hint="https://… Sticks send their heartbeats here.">
-      <input bind:value={settings.api.url} />
-    </Field>
-    <Field label="Heartbeat every (seconds)">
+    <Field
+      label="Heartbeat every (seconds)"
+      hint="Sticks made while signed in to the Hub send heartbeats to it."
+    >
       <input
         type="number"
         min="1"

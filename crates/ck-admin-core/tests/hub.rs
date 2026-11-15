@@ -120,3 +120,107 @@ fn a_password_is_never_sent_over_plain_http_to_another_machine() {
         push_registry("http://hub.example.org", "ana", "pw", &registry_file(&dir)).unwrap_err();
     assert!(matches!(error, Error::Hub(_)));
 }
+
+mod signed_in {
+    use super::{fake_hub, registry_file, reply};
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+
+    use ck_admin_core::{
+        Error, new_state, push_registry_signed_in, sign_in_url, sign_in_with_code, wait_for_code,
+    };
+    use tempfile::TempDir;
+
+    fn browser(port: u16, target: &str) -> String {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        write!(stream, "GET {target} HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n").expect("send");
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).expect("answer");
+        answer
+    }
+
+    #[test]
+    fn the_browser_page_carries_the_port_and_a_state_nobody_can_guess() {
+        let url = sign_in_url("https://hub.example.org/", 4000, "abc").expect("url");
+        assert_eq!(
+            url,
+            "https://hub.example.org/forge/connect?port=4000&state=abc"
+        );
+        assert_ne!(new_state(), new_state());
+        assert_eq!(new_state().len(), 64);
+        assert!(sign_in_url("http://hub.example.org", 4000, "abc").is_err());
+    }
+
+    #[test]
+    fn the_code_is_taken_only_from_a_request_with_the_right_state() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("address").port();
+        let waiting = std::thread::spawn(move || {
+            wait_for_code(&listener, "right-state", Duration::from_secs(10))
+        });
+        assert!(browser(port, "/callback?code=evil&state=wrong").contains("400"));
+        assert!(browser(port, "/favicon.ico").contains("400"));
+        assert!(browser(port, "/callback?code=a%20b&state=right-state").contains("400"));
+        assert!(browser(port, "/callback?code=good_code-1&state=right-state").contains("200"));
+        assert_eq!(
+            waiting.join().expect("thread").expect("code"),
+            "good_code-1"
+        );
+    }
+
+    #[test]
+    fn it_gives_up_when_the_browser_never_comes_back() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let error = wait_for_code(&listener, "s", Duration::from_millis(300)).unwrap_err();
+        assert!(error.to_string().contains("not finished in time"));
+    }
+
+    #[test]
+    fn the_code_gives_a_session_that_sends_the_registry_as_a_bearer() {
+        let dir = TempDir::new().expect("dir");
+        let (hub, handle) = fake_hub(vec![
+            reply(
+                "200 OK",
+                "",
+                r#"{"token":"tok123","email":"ana@example.org","expires_in":43200}"#,
+            ),
+            reply(
+                "200 OK",
+                "",
+                r#"{"added":1,"already_known":0,"conflicts":[]}"#,
+            ),
+        ]);
+        let session = sign_in_with_code(&hub, "the-code").expect("session");
+        assert_eq!(session.email, "ana@example.org");
+        assert!(!format!("{session:?}").contains("tok123"));
+        let pushed = push_registry_signed_in(&hub, &session, &registry_file(&dir)).expect("push");
+        assert_eq!(pushed.added, 1);
+
+        let seen = handle.join().expect("hub");
+        assert!(seen[0].starts_with("POST /api/v1/forge/token"));
+        assert!(seen[0].contains(r#""code": "the-code""#), "{}", seen[0]);
+        assert!(seen[1].starts_with("POST /api/v1/sticks"));
+        assert!(
+            seen[1]
+                .to_lowercase()
+                .contains("authorization: bearer tok123")
+        );
+    }
+
+    #[test]
+    fn an_old_code_or_an_ended_session_says_to_sign_in_again() {
+        let (hub, _handle) = fake_hub(vec![reply("400 Bad Request", "", "{}")]);
+        let error = sign_in_with_code(&hub, "old").unwrap_err();
+        assert!(error.to_string().contains("sign in again"));
+
+        let dir = TempDir::new().expect("dir");
+        let (hub, _handle) = fake_hub(vec![
+            reply("200 OK", "", r#"{"token":"t","email":"a@b.c"}"#),
+            reply("401 Unauthorized", "", "{}"),
+        ]);
+        let session = sign_in_with_code(&hub, "c").expect("session");
+        let error = push_registry_signed_in(&hub, &session, &registry_file(&dir)).unwrap_err();
+        assert!(matches!(error, Error::Hub(text) if text.contains("sign in again")));
+    }
+}

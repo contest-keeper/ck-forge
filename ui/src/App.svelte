@@ -1,7 +1,7 @@
 <script lang="ts">
+  import HubSignIn from './components/HubSignIn.svelte';
   import BuildPage from './pages/BuildPage.svelte';
   import ContestPage from './pages/ContestPage.svelte';
-  import HubPage from './pages/HubPage.svelte';
   import WritePage from './pages/WritePage.svelte';
   import { app } from './state.svelte';
   import { look, setTheme } from './theme/theme.svelte';
@@ -30,25 +30,12 @@
         'Choose the stick to write. Windows asks for administrator permission when the write starts.',
       page: WritePage,
     },
-    {
-      id: 'hub',
-      title: 'Register with Hub',
-      hint: 'So sticks are recognised',
-      blurb:
-        'The Hub only accepts heartbeats from sticks it knows. This sends it the registry that sits next to the profile.',
-      page: HubPage,
-    },
   ] as const;
 
   let index = $state(0);
   const tab = $derived(tabs[index] ?? tabs[0]);
   const Page = $derived(tab.page);
-  const done = $derived([
-    app.profilePath !== null,
-    app.imagePath !== null,
-    app.written,
-    app.registered,
-  ]);
+  const done = $derived([app.profilePath !== null, app.imagePath !== null, app.written]);
 </script>
 
 <div class="win">
@@ -93,6 +80,7 @@
       {/each}
     </nav>
     <div class="side-foot">
+      <HubSignIn />
       <b>{app.profile?.name || 'No profile yet'}</b>
       <div class="seg" role="group" aria-label="Look">
         <button

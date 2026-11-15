@@ -1,4 +1,4 @@
-//! Commands that make sticks: build an image, write it to a USB stick, tell the Hub.
+//! Commands that make sticks: build an image, write it to a USB stick.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 use ck_admin_core::{Profile, Wallpaper, build_thin_image as build, folder_of};
 use ck_protocol::LocalDateTime;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
+use crate::hub::{HUB_URL, HubState};
 use crate::profiles::{message, registry_of};
 
 #[derive(Clone, Serialize)]
@@ -25,6 +26,8 @@ pub struct Built {
     computer_name: String,
     team: String,
     registry: String,
+    /// What happened when the registry was sent to the Hub; nothing when nobody is signed in.
+    hub: Option<String>,
 }
 
 #[tauri::command]
@@ -39,14 +42,23 @@ pub async fn build_image(
         .map_err(|e| e.to_string())?
 }
 
-/// Makes the image of one stick, from the profile at `profile_path`, and registers the stick.
+/// Makes the image of one stick, from the profile at `profile_path`, and registers the stick. When
+/// the admin is signed in to the Hub the stick reports to it and the registry is sent; otherwise the
+/// stick has no server address and keeps its events on the stick.
 fn build_stick(
     app: &AppHandle,
     base: &Path,
     out: &Path,
     profile_path: &Path,
 ) -> Result<Built, String> {
-    let profile = Profile::load(profile_path).map_err(|e| message(&e))?;
+    let mut profile = Profile::load(profile_path).map_err(|e| message(&e))?;
+    let hub = app.state::<HubState>();
+    // The address in the profile file is not used: it is the sign-in that decides.
+    profile.settings.api.url = if hub.signed_in() {
+        HUB_URL.to_owned()
+    } else {
+        String::new()
+    };
     let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(profile_path))
         .map_err(|e| message(&e))?;
     let registry = registry_of(profile_path);
@@ -74,11 +86,17 @@ fn build_stick(
         },
     )
     .map_err(|e| message(&e))?;
+    let hub = hub.push(&registry).map(|sent| match sent {
+        Ok(text) => format!("Sent to the Hub: {text}"),
+        // The stick is made either way; the next registry that is sent includes it.
+        Err(why) => format!("The registry was not sent to the Hub: {why}"),
+    });
     Ok(Built {
         stick_id: built.config.stick_id.to_string(),
         computer_name: built.config.computer_name(),
         team: built.config.settings.team.clone(),
         registry: registry.display().to_string(),
+        hub,
     })
 }
 
@@ -311,34 +329,6 @@ fn write_to_file(app: &AppHandle, image: &Path, file: &Path) -> Result<String, S
         let _ = app.emit("progress", Progress { done, total, phase });
     })
     .map_err(|e| e.to_string())
-}
-
-/// Sends the registry to the Hub. The password is used for one login and then dropped.
-#[tauri::command]
-pub async fn push_registry(
-    hub: String,
-    user: String,
-    password: String,
-    profile_path: PathBuf,
-) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let registry = registry_of(&profile_path);
-        let pushed = ck_admin_core::push_registry(&hub, &user, &password, &registry)
-            .map_err(|e| message(&e))?;
-        let mut text = format!(
-            "{} added, {} already known",
-            pushed.added, pushed.already_known
-        );
-        if !pushed.conflicts.is_empty() {
-            text = format!(
-                "{text}. The Hub has a different secret for {}; they were left as they were",
-                pushed.conflicts.join(", ")
-            );
-        }
-        Ok(text)
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
