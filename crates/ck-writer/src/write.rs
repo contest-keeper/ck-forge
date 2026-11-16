@@ -1,8 +1,9 @@
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::thread::{self, ScopedJoinHandle};
 
 use sha2::{Digest, Sha256};
@@ -79,8 +80,9 @@ pub fn write_image_to_all(
 /// of one base, or the same plain image for every target. What they share is read once. Each target
 /// is written by a thread of its own: its own image's start, then the shared rest. So a batch of
 /// sticks, each with its own identity, takes about as long as the slowest stick and not as long as
-/// all of them in a row. The check starts only after every write is flushed, so it reads what a
-/// target holds and not what was just handed to it, and all targets are checked together.
+/// all of them in a row. Each target is also checked while it is written: every so many blocks its
+/// writer flushes, and a second thread reads back what was flushed a distance ago, so it reads what
+/// the target holds and not what was just handed to it. The last part is read after the final flush.
 ///
 /// A target that already holds the image, such as a stick that was written before with another
 /// stick's image of the same base, is written only where it differs: a few blocks are compared
@@ -147,27 +149,18 @@ pub fn write_images(
         head_len,
         total,
     };
-    let written = write_all_targets(&shared, writers, &mut progress)?;
-    let mut to_check = Vec::new();
-    for (index, outcome) in written {
-        match outcome {
-            Ok(done) => to_check.push((index, done)),
-            Err(error) => results[index] = Some(Err(error)),
-        }
-    }
-
-    let indexes: Vec<usize> = to_check.iter().map(|(index, _)| *index).collect();
-    let targets: Vec<&Path> = jobs.iter().map(|(_, target)| target.as_path()).collect();
-    let read_backs = check_all_targets(&indexes, &targets, total, &mut progress);
-    for ((index, done), (_, read_back)) in to_check.into_iter().zip(read_backs) {
-        let Written { sha256, unchanged } = done;
-        results[index] = Some(match read_back {
-            Ok(read_back) if read_back == sha256 => Ok(Written { sha256, unchanged }),
-            Ok(read_back) => Err(Error::Mismatch {
+    let outcomes = write_all_targets(&shared, writers, &mut progress)?;
+    for (index, written, read_back) in outcomes {
+        // A write that failed is the reason; the check then only ran out of data to read.
+        results[index] = Some(match (written, read_back) {
+            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+            (Ok(Written { sha256, unchanged }), Ok(read_back)) if read_back == sha256 => {
+                Ok(Written { sha256, unchanged })
+            }
+            (Ok(Written { sha256, .. }), Ok(read_back)) => Err(Error::Mismatch {
                 written: sha256,
                 read_back,
             }),
-            Err(error) => Err(error),
         });
     }
     Ok(results.into_iter().flatten().collect())
@@ -223,11 +216,55 @@ struct Shared<'a> {
     total: u64,
 }
 
-type Outcomes = Vec<(usize, Result<Written, Error>)>;
+/// For each target, in order of the jobs: how its write went, and the SHA-256 of what was read back.
+type Outcomes = Vec<(usize, Result<Written, Error>, Result<String, Error>)>;
+
+/// After this many bytes a writer flushes, and tells its checker how far the target is flushed.
+const FLUSH_EVERY: u64 = if cfg!(test) {
+    BLOCK as u64
+} else {
+    64 * 1024 * 1024
+};
+/// The checker stays this far behind the flushed part. Recently written data may still be in the
+/// system's cache, which would check the cache and not the target.
+const CHECK_LAG: u64 = if cfg!(test) {
+    2 * BLOCK as u64
+} else {
+    256 * 1024 * 1024
+};
+
+/// What a checker reads: the target, but only as far as its writer has said it is flushed.
+struct Trailing {
+    file: File,
+    position: u64,
+    flushed: u64,
+    marks: Receiver<u64>,
+}
+
+impl Read for Trailing {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let end = self.position + buffer.len() as u64;
+        while self.flushed < end {
+            match self.marks.recv() {
+                Ok(mark) => self.flushed = self.flushed.max(mark),
+                // The writer ended without flushing all, so it failed; its error is the one told.
+                Err(_) => return Err(io::ErrorKind::BrokenPipe.into()),
+            }
+        }
+        let read = self.file.read(buffer)?;
+        self.position += read as u64;
+        Ok(read)
+    }
+}
 
 /// The write pass: one thread reads the shared rest of the image and hands every block to one
-/// writer thread per target, which first writes its own start. Returns how each writer fared: the
-/// SHA-256 of what it wrote.
+/// writer thread per target, which first writes its own start. A checker thread per target reads
+/// back what its writer has flushed, while the writing goes on. Returns, per target, how the
+/// writer fared (the SHA-256 of what it wrote) and what the checker read (its SHA-256).
+///
+/// `progress` gets the writing as it goes. The checking is reported only once that target is
+/// written and flushed, from how far it has got by then, so a caller sees writing and then
+/// checking, as when the two did not overlap.
 fn write_all_targets(
     shared: &Shared<'_>,
     writers: Vec<Writer<'_>>,
@@ -242,12 +279,12 @@ fn write_all_targets(
     let read_context = format!("reading {}", shared.tail.display());
 
     thread::scope(|scope| {
-        let (events, events_in) = channel::<(usize, u64)>();
+        let (events, events_in) = channel::<(usize, Phase, u64)>();
         let mut senders = Vec::new();
         let mut handles = Vec::new();
         for Writer {
             index,
-            mut out,
+            out,
             head,
             compare,
             image,
@@ -256,100 +293,149 @@ fn write_all_targets(
         {
             let (sender, receiver) = sync_channel::<Arc<Vec<u8>>>(IN_FLIGHT);
             senders.push(sender);
-            let events = events.clone();
-            handles.push((
-                index,
-                scope.spawn(move || {
-                    let write_error = |e| Error::io(format!("writing to {}", target.display()), e);
-                    let mut hash = Sha256::new();
-                    let mut put = Put::new(compare);
-                    if let Some(mut head) = head {
-                        let mut buffer = vec![0_u8; BLOCK];
-                        let mut done = 0_u64;
-                        while done < head_len {
-                            let want = block_len(head_len - done);
-                            head.read_exact(&mut buffer[..want]).map_err(|e| {
-                                Error::io(format!("reading {}", image.display()), e)
-                            })?;
-                            hash.update(&buffer[..want]);
-                            put.block(&mut out, done, &buffer[..want])
-                                .map_err(write_error)?;
-                            done += want as u64;
-                            let _ = events.send((index, done));
-                        }
-                    }
-                    let mut before = 0_u64;
-                    let (done, hash) = consume_all(receiver, tail_len, hash, |block, done| {
-                        put.block(&mut out, head_len + before, block)
-                            .map_err(write_error)?;
-                        before = done;
-                        let _ = events.send((index, head_len + done));
-                        Ok(())
-                    })?;
-                    if done != tail_len {
-                        return Err(write_error(io::ErrorKind::UnexpectedEof.into()));
-                    }
-                    out.sync_all()
-                        .map_err(|e| Error::io(format!("flushing {}", target.display()), e))?;
-                    Ok(Written {
-                        sha256: hex(&hash.finalize()),
-                        unchanged: put.unchanged,
-                    })
-                }),
-            ));
+            let (marks_out, marks) = channel::<u64>();
+            let writer_events = events.clone();
+            let writer = scope.spawn(move || {
+                let writer = Writer {
+                    index,
+                    out,
+                    head,
+                    compare,
+                    image,
+                    target,
+                };
+                write_target(writer, receiver, shared, &writer_events, &marks_out)
+            });
+
+            let checker_events = events.clone();
+            let checker = scope.spawn(move || {
+                let events = checker_events;
+                let file = File::open(target)
+                    .map_err(|e| Error::io(format!("reopening {}", target.display()), e))?;
+                let source = Trailing {
+                    file,
+                    position: 0,
+                    flushed: 0,
+                    marks,
+                };
+                let context = format!("reading back {}", target.display());
+                stream(source, total, true, &context, |_, done| {
+                    let _ = events.send((index, Phase::Verifying, done));
+                    Ok(())
+                })
+            });
+            handles.push((index, writer, checker));
         }
         drop(events);
         let reader =
             scope.spawn(move || read_blocks(tail, tail_len, false, &read_context, senders));
 
-        // Ends when every writer is done, because each holds a sender of the events.
-        for (index, done) in events_in {
-            progress(index, Phase::Writing, done, total);
-        }
+        // Ends when every writer and checker is done, because each holds a sender of the events.
+        report(events_in, total, progress);
         let read = join(reader);
-        let written = handles
+        let outcomes = handles
             .into_iter()
-            .map(|(index, writer)| (index, join(writer)))
+            .map(|(index, writer, checker)| (index, join(writer), join(checker)))
             .collect();
-        read.map(|()| written)
+        read.map(|()| outcomes)
     })
 }
 
-/// The check pass: reads every target back, all at once. Returns the SHA-256 of what each holds.
-fn check_all_targets(
-    indexes: &[usize],
-    targets: &[&Path],
+/// Writes one target from the blocks of `blocks` after its own start, flushing now and then and
+/// telling the checker of the target how far it can read. Returns the SHA-256 of what it wrote.
+fn write_target(
+    writer: Writer<'_>,
+    blocks: Receiver<Arc<Vec<u8>>>,
+    shared: &Shared<'_>,
+    events: &Sender<(usize, Phase, u64)>,
+    marks: &Sender<u64>,
+) -> Result<Written, Error> {
+    let Writer {
+        index,
+        mut out,
+        head,
+        compare,
+        image,
+        target,
+    } = writer;
+    let (head_len, total) = (shared.head_len, shared.total);
+    let write_error = |e| Error::io(format!("writing to {}", target.display()), e);
+    let flush_error = |e| Error::io(format!("flushing {}", target.display()), e);
+    let mut hash = Sha256::new();
+    let mut put = Put::new(compare);
+    // The last byte is reported only after the final flush, so the end of the writing means flushed.
+    let reported = |done: u64| done.min(total - 1);
+    if let Some(mut head) = head {
+        let mut buffer = vec![0_u8; BLOCK];
+        let mut done = 0_u64;
+        while done < head_len {
+            let want = block_len(head_len - done);
+            head.read_exact(&mut buffer[..want])
+                .map_err(|e| Error::io(format!("reading {}", image.display()), e))?;
+            hash.update(&buffer[..want]);
+            put.block(&mut out, done, &buffer[..want])
+                .map_err(write_error)?;
+            done += want as u64;
+            let _ = events.send((index, Phase::Writing, reported(done)));
+        }
+    }
+    let tail_len = total - head_len;
+    let mut before = 0_u64;
+    let mut unflushed = 0_u64;
+    let (done, hash) = consume_all(blocks, tail_len, hash, |block, done| {
+        put.block(&mut out, head_len + before, block)
+            .map_err(write_error)?;
+        unflushed += done - before;
+        before = done;
+        let _ = events.send((index, Phase::Writing, reported(head_len + done)));
+        if unflushed >= FLUSH_EVERY {
+            out.sync_all().map_err(flush_error)?;
+            unflushed = 0;
+            let _ = marks.send((head_len + done).saturating_sub(CHECK_LAG));
+        }
+        Ok(())
+    })?;
+    if done != tail_len {
+        return Err(write_error(io::ErrorKind::UnexpectedEof.into()));
+    }
+    out.sync_all().map_err(flush_error)?;
+    let _ = events.send((index, Phase::Writing, total));
+    let _ = marks.send(u64::MAX);
+    Ok(Written {
+        sha256: hex(&hash.finalize()),
+        unchanged: put.unchanged,
+    })
+}
+
+/// Passes on what the writers and checkers report. The checking of a target is passed on only once
+/// it is written and flushed, from how far it has got by then, so a caller sees the writing and
+/// then the checking, as when the two did not overlap.
+fn report(
+    events: Receiver<(usize, Phase, u64)>,
     total: u64,
     progress: &mut impl FnMut(usize, Phase, u64, u64),
-) -> Vec<(usize, Result<String, Error>)> {
-    thread::scope(|scope| {
-        let (events, events_in) = channel::<(usize, u64)>();
-        let mut checks = Vec::new();
-        for &index in indexes {
-            let events = events.clone();
-            let target = targets[index];
-            checks.push((
-                index,
-                scope.spawn(move || {
-                    let reopened = File::open(target)
-                        .map_err(|e| Error::io(format!("reopening {}", target.display()), e))?;
-                    let context = format!("reading back {}", target.display());
-                    stream(reopened, total, true, &context, |_, done| {
-                        let _ = events.send((index, done));
-                        Ok(())
-                    })
-                }),
-            ));
+) {
+    let mut written = HashSet::new();
+    let mut checked = HashMap::new();
+    for (index, phase, done) in events {
+        match phase {
+            Phase::Writing => {
+                progress(index, Phase::Writing, done, total);
+                if done == total {
+                    written.insert(index);
+                    if let Some(&so_far) = checked.get(&index) {
+                        progress(index, Phase::Verifying, so_far, total);
+                    }
+                }
+            }
+            Phase::Verifying => {
+                checked.insert(index, done);
+                if written.contains(&index) {
+                    progress(index, Phase::Verifying, done, total);
+                }
+            }
         }
-        drop(events);
-        for (index, done) in events_in {
-            progress(index, Phase::Verifying, done, total);
-        }
-        checks
-            .into_iter()
-            .map(|(index, check)| (index, join(check)))
-            .collect()
-    })
+    }
 }
 
 /// How many blocks of the shared rest a target is asked about to tell whether it already holds
@@ -546,6 +632,37 @@ mod tests {
             left -= part as u64;
         }
         hex(&hash.finalize())
+    }
+
+    #[test]
+    fn checks_behind_the_writing_and_reports_writing_before_checking() {
+        // Many blocks, so the checker runs behind the writer through several flushes.
+        let dir = std::env::temp_dir().join(format!("ck-writer-overlap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (image, target) = (dir.join("image.img"), dir.join("stick.img"));
+        let length = 20 * BLOCK as u64 + 1000;
+        std::fs::write(&image, vec![3_u8; usize::try_from(length).unwrap()]).unwrap();
+
+        let mut events = Vec::new();
+        let hash = write_image(&image, &target, |phase, done, total| {
+            events.push((phase, done, total));
+        })
+        .unwrap();
+
+        assert_eq!(hash, sha(3, length));
+        // The writing is reported first, to the end, and only then the checking.
+        let first_check = events
+            .iter()
+            .position(|(phase, ..)| *phase == Phase::Verifying)
+            .unwrap();
+        assert!(
+            events[..first_check]
+                .iter()
+                .all(|(p, ..)| *p == Phase::Writing)
+        );
+        assert_eq!(events[first_check - 1].1, length);
+        assert_eq!(events.last().unwrap(), &(Phase::Verifying, length, length));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
