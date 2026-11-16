@@ -419,25 +419,19 @@ fn stick_write(
             bar
         })
         .collect();
-    // For each target whether it is checking and how far it is; the slowest one is reported.
-    let mut state = vec![(false, 0_u64); targets.len()];
+    // For each target how far it is written and how far it is checked; the slowest is reported.
+    let mut state = vec![(0_u64, 0_u64); targets.len()];
     let mut last_report = Instant::now();
     let results = ck_writer::write_images(&jobs, |index, phase, done, total| {
-        let checking = phase == ck_writer::Phase::Verifying;
-        let name = if checking { "checking" } else { "writing" };
-        bars[index].set_length(total);
-        bars[index].set_position(done);
-        bars[index].set_message(name);
-        state[index] = (checking, done);
+        match phase {
+            ck_writer::Phase::Writing => state[index].0 = done,
+            ck_writer::Phase::Verifying => state[index].1 = done,
+        }
+        show_target(&bars[index], state[index], total);
         // A file rewritten for every 4 MiB block would be needless work.
         if done == total || last_report.elapsed() >= Duration::from_millis(500) {
             last_report = Instant::now();
-            let (checking, done) = state.iter().copied().min().unwrap_or_default();
-            let name = if checking { "checking" } else { "writing" };
-            report_progress(
-                progress,
-                &json!({ "state": name, "done": done, "total": total }),
-            );
+            report_slowest(progress, &state, total);
         }
     });
     for bar in &bars {
@@ -639,6 +633,41 @@ fn registry_push(hub: &str, user: &str, registry: &Path) -> Result<String, Error
         "the Hub already has a different secret for: {}; they were left as they were",
         pushed.conflicts.join(", ")
     )))
+}
+
+/// Shows a target's bar: the writing, then the checking once the writing is over.
+fn show_target(bar: &ProgressBar, (written, checked): (u64, u64), total: u64) {
+    let writing = written < total;
+    bar.set_length(total);
+    bar.set_position(if writing { written } else { checked });
+    bar.set_message(if writing {
+        format!("check {}%", checked * 100 / total)
+    } else {
+        "checking".to_owned()
+    });
+}
+
+/// Reports how far the slowest target is written and checked.
+fn report_slowest(file: Option<&Path>, state: &[(u64, u64)], total: u64) {
+    let written = state
+        .iter()
+        .map(|(written, _)| *written)
+        .min()
+        .unwrap_or_default();
+    let checked = state
+        .iter()
+        .map(|(_, checked)| *checked)
+        .min()
+        .unwrap_or_default();
+    let name = if written < total {
+        "writing"
+    } else {
+        "checking"
+    };
+    report_progress(
+        file,
+        &json!({ "state": name, "done": written, "checked": checked, "total": total }),
+    );
 }
 
 /// Keeps the progress file of `stick write` up to date, when one was asked for. A failure to write it

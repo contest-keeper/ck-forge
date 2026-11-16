@@ -14,6 +14,10 @@
       {labels[progress.phase]}: {formatBytes(progress.done)} of {formatBytes(progress.total)}
     </span>
     <progress max="100" value={percent(progress.done, progress.total)}></progress>
+    {#if progress.phase !== 'building'}
+      <span>Checked: {formatBytes(progress.checked)} of {formatBytes(progress.total)}</span>
+      <progress max="100" value={percent(progress.checked, progress.total)}></progress>
+    {/if}
   </div>
 {/if}
 
