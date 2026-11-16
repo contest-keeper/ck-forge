@@ -152,7 +152,7 @@ jobs:
 
   # The develop site serves the download from Azure, so the installer there is replaced too.
   azure:
-    needs: release
+    needs: [windows, release]
     permissions:
       contents: read
       id-token: write
