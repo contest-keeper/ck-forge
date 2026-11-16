@@ -18,6 +18,8 @@ struct Progress {
     total: u64,
     /// What is going on: `building`, `writing` or `checking`.
     phase: &'static str,
+    /// How far the stick is checked. The checking goes on while the writing does.
+    checked: u64,
 }
 
 #[derive(Serialize)]
@@ -68,6 +70,7 @@ fn build_stick(
                         done,
                         total,
                         phase: "building",
+                        checked: 0,
                     },
                 );
             }
@@ -149,6 +152,8 @@ struct HelperState {
     state: String,
     #[serde(default)]
     done: u64,
+    #[serde(default)]
+    checked: u64,
     #[serde(default)]
     total: u64,
     sha256: Option<String>,
@@ -282,6 +287,7 @@ fn make_and_write(
                     done: state.done,
                     total: state.total,
                     phase,
+                    checked: state.checked,
                 },
             );
         }
@@ -309,17 +315,28 @@ fn make_and_write(
 
 fn write_to_file(app: &AppHandle, image: &Path, file: &Path) -> Result<String, String> {
     let mut last = Instant::now();
+    // How far the file is written and how far it is checked, which go on together.
+    let (mut written, mut checked) = (0_u64, 0_u64);
     ck_writer::write_image(image, file, |phase, done, total| {
+        match phase {
+            ck_writer::Phase::Writing => written = done,
+            ck_writer::Phase::Verifying => checked = done,
+        }
         // Like the image build: no event for every block, but always one for the end of a phase.
         if done != total && last.elapsed() < Duration::from_millis(250) {
             return;
         }
         last = Instant::now();
-        let phase = match phase {
-            ck_writer::Phase::Writing => "writing",
-            ck_writer::Phase::Verifying => "checking",
-        };
-        let _ = app.emit("progress", Progress { done, total, phase });
+        let phase = if written < total { "writing" } else { "checking" };
+        let _ = app.emit(
+            "progress",
+            Progress {
+                done: written,
+                total,
+                phase,
+                checked,
+            },
+        );
     })
     .map_err(|e| e.to_string())
 }

@@ -22,7 +22,13 @@ export type DiskView = {
   refused: string | null;
 };
 
-export type Progress = { done: number; total: number; phase: 'building' | 'writing' | 'checking' };
+export type Progress = {
+  done: number;
+  total: number;
+  phase: 'building' | 'writing' | 'checking';
+  /** How far the stick is checked; the checking goes on while the writing does. */
+  checked: number;
+};
 
 export const newProfile = () => invoke<Profile>('new_profile');
 export const openProfile = (path: string) => invoke<Profile>('open_profile', { path });

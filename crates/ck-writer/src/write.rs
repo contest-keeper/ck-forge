@@ -1,4 +1,3 @@
-use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -262,9 +261,8 @@ impl Read for Trailing {
 /// back what its writer has flushed, while the writing goes on. Returns, per target, how the
 /// writer fared (the SHA-256 of what it wrote) and what the checker read (its SHA-256).
 ///
-/// `progress` gets the writing as it goes. The checking is reported only once that target is
-/// written and flushed, from how far it has got by then, so a caller sees writing and then
-/// checking, as when the two did not overlap.
+/// `progress` gets the writing and the checking as they go, both of one target at the same time.
+/// The writing reaches its end only after the final flush.
 fn write_all_targets(
     shared: &Shared<'_>,
     writers: Vec<Writer<'_>>,
@@ -331,7 +329,9 @@ fn write_all_targets(
             scope.spawn(move || read_blocks(tail, tail_len, false, &read_context, senders));
 
         // Ends when every writer and checker is done, because each holds a sender of the events.
-        report(events_in, total, progress);
+        for (index, phase, done) in events_in {
+            progress(index, phase, done, total);
+        }
         let read = join(reader);
         let outcomes = handles
             .into_iter()
@@ -405,37 +405,6 @@ fn write_target(
         sha256: hex(&hash.finalize()),
         unchanged: put.unchanged,
     })
-}
-
-/// Passes on what the writers and checkers report. The checking of a target is passed on only once
-/// it is written and flushed, from how far it has got by then, so a caller sees the writing and
-/// then the checking, as when the two did not overlap.
-fn report(
-    events: Receiver<(usize, Phase, u64)>,
-    total: u64,
-    progress: &mut impl FnMut(usize, Phase, u64, u64),
-) {
-    let mut written = HashSet::new();
-    let mut checked = HashMap::new();
-    for (index, phase, done) in events {
-        match phase {
-            Phase::Writing => {
-                progress(index, Phase::Writing, done, total);
-                if done == total {
-                    written.insert(index);
-                    if let Some(&so_far) = checked.get(&index) {
-                        progress(index, Phase::Verifying, so_far, total);
-                    }
-                }
-            }
-            Phase::Verifying => {
-                checked.insert(index, done);
-                if written.contains(&index) {
-                    progress(index, Phase::Verifying, done, total);
-                }
-            }
-        }
-    }
 }
 
 /// How many blocks of the shared rest a target is asked about to tell whether it already holds
@@ -635,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn checks_behind_the_writing_and_reports_writing_before_checking() {
+    fn checks_behind_the_writing_and_never_ahead_of_it() {
         // Many blocks, so the checker runs behind the writer through several flushes.
         let dir = std::env::temp_dir().join(format!("ck-writer-overlap-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -650,17 +619,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(hash, sha(3, length));
-        // The writing is reported first, to the end, and only then the checking.
-        let first_check = events
-            .iter()
-            .position(|(phase, ..)| *phase == Phase::Verifying)
-            .unwrap();
-        assert!(
-            events[..first_check]
-                .iter()
-                .all(|(p, ..)| *p == Phase::Writing)
-        );
-        assert_eq!(events[first_check - 1].1, length);
+        // What is checked was written before: a check never gets ahead of the writing.
+        let mut written = 0;
+        for &(phase, done, total) in &events {
+            assert_eq!(total, length);
+            match phase {
+                Phase::Writing => written = written.max(done),
+                Phase::Verifying => assert!(done <= written),
+            }
+        }
+        assert!(events.contains(&(Phase::Writing, length, length)));
         assert_eq!(events.last().unwrap(), &(Phase::Verifying, length, length));
         std::fs::remove_dir_all(&dir).unwrap();
     }
