@@ -1,0 +1,63 @@
+name: Update signing key
+description: >
+  Reads the key that signs Keeper Forge updates from the environment's Key Vault, or makes it on the
+  very first run. Run it after pnpm install and with the job's environment set, so Azure accepts the
+  sign-in. Sets TAURI_SIGNING_PRIVATE_KEY for the build and returns the public key to build into the app.
+
+inputs:
+  environment:
+    description: develop or production
+    required: true
+  client-id:
+    required: true
+  tenant-id:
+    required: true
+  subscription-id:
+    required: true
+
+outputs:
+  pubkey:
+    description: The public key the installed app uses to check an update
+    value: ${{ steps.key.outputs.pubkey }}
+
+runs:
+  using: composite
+  steps:
+    - uses: azure/login@v2
+      with:
+        client-id: ${{ inputs.client-id }}
+        tenant-id: ${{ inputs.tenant-id }}
+        subscription-id: ${{ inputs.subscription-id }}
+    - id: key
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+        case "$ENVIRONMENT" in
+          develop) group=rg-ckhub-dev ;;
+          production) group=rg-ckhub ;;
+          *) echo "environment must be develop or production" >&2; exit 1 ;;
+        esac
+        vault=$(az keyvault list --resource-group "$group" --query "[0].name" -o tsv)
+        test -n "$vault" || { echo "No Key Vault in $group: deploy the Hub first" >&2; exit 1; }
+
+        # The key must never change once an app has been built with its public half, or installed
+        # copies would refuse every later update. So it is made only when it is missing. The caller's
+        # concurrency group keeps two runs from making it at the same time.
+        if ! az keyvault secret show --vault-name "$vault" --name forge-update-key --query id -o tsv > /dev/null 2>&1; then
+          dir=$(mktemp -d)
+          node ui/node_modules/@tauri-apps/cli/tauri.js signer generate --ci --write-keys "$dir/key" --password ""
+          tr -d '\r\n' < "$dir/key" > "$dir/private"
+          tr -d '\r\n' < "$dir/key.pub" > "$dir/public"
+          az keyvault secret set --vault-name "$vault" --name forge-update-pubkey --file "$dir/public" --output none
+          # Last, so that finding the private key means the public one is there too.
+          az keyvault secret set --vault-name "$vault" --name forge-update-key --file "$dir/private" --output none
+          rm -rf "$dir"
+        fi
+
+        private=$(az keyvault secret show --vault-name "$vault" --name forge-update-key --query value -o tsv)
+        echo "::add-mask::$private"
+        echo "TAURI_SIGNING_PRIVATE_KEY=$private" >> "$GITHUB_ENV"
+        echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+        echo "pubkey=$(az keyvault secret show --vault-name "$vault" --name forge-update-pubkey --query value -o tsv)" >> "$GITHUB_OUTPUT"
