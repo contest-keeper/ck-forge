@@ -15,6 +15,13 @@
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "set by the release pipeline from the Key Vault",
+      "endpoints": ["https://github.com/contest-keeper/ck-forge/releases/latest/download/update.json"],
+      "windows": { "installMode": "passive" }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
