@@ -1,7 +1,8 @@
 //! Signing in to the Hub through the browser, and sending it the registry once signed in.
 //!
-//! The session lives in memory only: closing the window signs out, and nothing about it is saved,
-//! printed or sent to the page except the admin's email.
+//! The session is kept in memory and in the Windows Credential Manager, so the admin is still
+//! signed in after closing the program, until the Hub ends it. Nothing about it is written to a
+//! file, printed or sent to the page except the admin's email.
 
 // Tauri hands each command its arguments by value.
 #![allow(clippy::needless_pass_by_value)]
@@ -9,6 +10,7 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ck_admin_core::{
@@ -30,11 +32,23 @@ pub const HUB_URL: &str = match option_env!("CK_HUB_URL") {
 const SIGN_IN_WAIT: Duration = Duration::from_secs(180);
 
 #[derive(Default)]
-pub struct HubState(Mutex<Option<HubSession>>);
+pub struct HubState {
+    session: Mutex<Option<HubSession>>,
+    /// Whether the Hub has said yes to the session saved by an earlier run.
+    checked: AtomicBool,
+}
 
 impl HubState {
+    /// Starts signed in when an earlier run saved a session.
+    pub fn restored() -> Self {
+        Self {
+            session: Mutex::new(crate::vault::load()),
+            checked: AtomicBool::new(false),
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<HubSession>> {
-        self.0
+        self.session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -87,6 +101,8 @@ pub async fn hub_sign_in(
         .await
         .map_err(|e| e.to_string())??;
     let email = session.email.clone();
+    crate::vault::save(&session);
+    state.checked.store(true, Ordering::Relaxed);
     if let Some(old) = state.lock().replace(session) {
         ck_admin_core::sign_out(HUB_URL, &old);
     }
@@ -109,14 +125,27 @@ fn sign_in() -> Result<HubSession, String> {
     ck_admin_core::sign_in_with_code(HUB_URL, &code).map_err(|e| message(&e))
 }
 
+/// The signed-in admin's email. The first time after a run that restored a saved session, the Hub is
+/// asked whether it still stands; a Hub that cannot be reached is not an answer, so it is kept.
 #[tauri::command]
-pub fn hub_status(state: State<'_, HubState>) -> Option<String> {
-    state.lock().as_ref().map(|session| session.email.clone())
+pub async fn hub_status(state: State<'_, HubState>) -> Result<Option<String>, String> {
+    if !state.checked.swap(true, Ordering::Relaxed) && state.signed_in() {
+        let ended = state
+            .as_admin(|session| ck_admin_core::list_profiles(HUB_URL, session))
+            .err()
+            .is_some_and(|why| why.contains("sign in again"));
+        if ended {
+            state.lock().take();
+            crate::vault::forget();
+        }
+    }
+    Ok(state.lock().as_ref().map(|session| session.email.clone()))
 }
 
 #[tauri::command]
 pub async fn hub_sign_out(state: State<'_, HubState>) -> Result<(), String> {
     let session = state.lock().take();
+    crate::vault::forget();
     if let Some(session) = session {
         tauri::async_runtime::spawn_blocking(move || ck_admin_core::sign_out(HUB_URL, &session))
             .await

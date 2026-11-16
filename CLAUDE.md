@@ -21,6 +21,6 @@ Run before committing: cargo fmt --all; cargo clippy --all-targets -- -D warning
   promotions into `main` use merge commits after all required checks pass.
 - Commit and PR titles: `type: lowercase imperative subject` (e.g. `feat: add ESP config reader`).
 - No `Co-Authored-By` trailers, "Generated with" lines or other tool attribution in commits or PRs.
-- Never store, log or send passwords, cookies, session ids or tokens. The user types credentials.
+- Never store, log or send passwords, cookies, session ids or tokens. The user types credentials. The one exception: the Hub session token may be kept in the operating system's credential vault (`app/src/vault.rs`), never in a file.
 - Ask before deleting, force pushing or anything that leaves this machine.
 - Skills: `/ck:next-step` for the next plan step, `/ck:commit-pr` to commit and open a PR.
