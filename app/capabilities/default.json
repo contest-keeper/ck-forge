@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "What the Keeper Forge window may do: talk to its own commands and ask for files",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save"]
+  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save", "updater:default"]
 }

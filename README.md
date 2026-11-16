@@ -28,6 +28,16 @@ gh attestation verify .\keeper-forge-setup-x64.exe --repo contest-keeper/ck-forg
 
 The second command proves the file was built by this repository's release workflow.
 
+Installed copies look for a newer build when they start and offer to install it, put it off, or skip
+that version. Every merge to `develop` publishes a preview build to the develop feed. Releases do not update
+installed copies yet.
+
+To make an update mandatory, set `min-version.txt` to the oldest version that may still run (for
+example the version being released). A copy older than that must update before it can be used.
+
+Updates are signed. The key is kept in the develop environment's Azure Key Vault, made by the pipeline
+on its first run and read from there afterwards, so nothing is stored in GitHub.
+
 To build the installer yourself: `tools/build-installer.ps1`.
 
 ## The window

@@ -22,8 +22,33 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
+    environment: develop
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
+      # The whole history and the tags are needed to count the commits since the last release.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # The name is <next release>-preview.<commits since the last release>, e.g. 0.2.0-preview.14, so a
+      # higher number is always a newer build. Before the first release it counts from the start. The
+      # installed app carries this version, which is how it knows a newer build exists.
+      - id: version
+        run: |
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          if [ -z "$last" ]; then
+            base=$(tr -d '[:space:]' < version.txt)
+            count=$(git rev-list --count HEAD)
+          else
+            IFS=. read -r major minor _ <<< "${last#v}"
+            base="${major}.$((minor + 1)).0"
+            count=$(git rev-list --count "${last}..HEAD")
+          fi
+          echo "version=${base}-preview.${count}" >> "$GITHUB_OUTPUT"
+        shell: bash
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: ui/package.json
@@ -45,6 +70,14 @@ jobs:
           workspaces: |
             .
             app
+      # Signs the update with the develop key kept in Azure Key Vault (made on the first run).
+      - id: key
+        uses: ./.github/actions/signing-key
+        with:
+          environment: develop
+          client-id: ${{ vars.AZURE_CLIENT_ID_DEVELOP }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Build the command line tool and place it as the installer's helper
         run: |
           cargo build --release --locked -p ck-forge
@@ -52,14 +85,29 @@ jobs:
           cp target/release/ck-forge.exe app/binaries/ck-forge-x86_64-pc-windows-gnu.exe
         shell: bash
       - name: Build the installer
-        run: node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-gnu
+        # This build looks for updates in the develop feed and carries the preview version.
+        run: |
+          config=$(jq -nc --arg version "$VERSION" --arg pubkey "$PUBKEY" --arg feed "$FEED" \
+            '{version: $version, bundle: {createUpdaterArtifacts: true},
+              plugins: {updater: {pubkey: $pubkey, endpoints: [$feed]}}}')
+          node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-gnu --config "$config"
+        shell: bash
         working-directory: app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PUBKEY: ${{ steps.key.outputs.pubkey }}
+          FEED: https://github.com/contest-keeper/ck-forge/releases/download/dev/update.json
       - name: Collect the files under stable names
         run: |
           mkdir out
           cp app/target/x86_64-pc-windows-gnu/release/bundle/nsis/*-setup.exe out/keeper-forge-setup-x64.exe
           cp target/release/ck-forge.exe out/ck-forge-windows-x64.exe
+          tools/make-update-manifest.sh "$VERSION" \
+            https://github.com/contest-keeper/ck-forge/releases/download/dev/keeper-forge-setup-x64.exe \
+            app/target/x86_64-pc-windows-gnu/release/bundle/nsis/*-setup.exe.sig min-version.txt out/update.json
         shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
       - uses: actions/upload-artifact@v4
         with:
           name: forge-windows
@@ -69,36 +117,17 @@ jobs:
   release:
     needs: windows
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: write
     steps:
-      # The whole history and the tags are needed to count the commits since the last release.
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      # The name is <next release>-preview.<commits since the last release>, e.g. 0.2.0-preview.14, so a
-      # higher number is always a newer build. Before the first release it counts from the start.
-      - id: version
-        run: |
-          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
-          if [ -z "$last" ]; then
-            base=$(tr -d '[:space:]' < version.txt)
-            count=$(git rev-list --count HEAD)
-          else
-            IFS=. read -r major minor _ <<< "${last#v}"
-            base="${major}.$((minor + 1)).0"
-            count=$(git rev-list --count "${last}..HEAD")
-          fi
-          echo "version=${base}-preview.${count}" >> "$GITHUB_OUTPUT"
       # The release is updated in place, never deleted, so the download links keep working while a
       # new build is on its way: the tag moves to this commit and the files are replaced by publish.
       - name: Update the dev pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.windows.outputs.version }}
         run: |
           title="Preview build ${VERSION}"
           notes="Built from develop at ${SHA}. Not a release: it is replaced on every merge to develop."
@@ -132,4 +161,4 @@ jobs:
       environment: develop
       artifact: forge-windows
       folder: forge
-      version: ${{ needs.release.outputs.version }}
+      version: ${{ needs.windows.outputs.version }}
