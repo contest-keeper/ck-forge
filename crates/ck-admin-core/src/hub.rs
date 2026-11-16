@@ -109,13 +109,26 @@ fn post_registry(
     }
 }
 
-/// What the Hub gave this window when the admin signed in. It lives in memory only.
+/// What the Hub gave this window when the admin signed in. The program keeps it in memory and in
+/// the operating system's credential vault, never in a file.
 pub struct HubSession {
     token: String,
     pub email: String,
 }
 
 impl HubSession {
+    /// Rebuilds a session the program saved earlier.
+    #[must_use]
+    pub fn restore(token: String, email: String) -> Self {
+        Self { token, email }
+    }
+
+    /// The secret the Hub gave. Only for saving it in the operating system's vault.
+    #[must_use]
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
     fn bearer(&self) -> String {
         format!("Bearer {}", self.token)
     }
