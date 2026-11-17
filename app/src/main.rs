@@ -4,6 +4,7 @@
 // Without this, Windows opens a console window next to the program.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod base_image;
 mod hub;
 mod profiles;
 mod sticks;
@@ -24,6 +25,8 @@ fn main() {
             profiles::open_profile,
             profiles::save_profile,
             profiles::check_profile,
+            base_image::list_catalog,
+            base_image::make_base_image,
             sticks::list_disks,
             sticks::write_stick,
             hub::hub_sign_in,

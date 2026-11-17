@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    Error, Profile, Registry, Wallpaper, build_image, build_thin_image, check_one_stick,
-    configure_image, folder_of, show_image,
+    CreateOptions, CreateStep, Error, Profile, Registry, Wallpaper, build_image, build_thin_image,
+    catalog, check_one_stick, configure_image, create_base_image, folder_of, show_image,
 };
 use ck_protocol::{LocalDateTime, StickConfig};
 use clap::{Args, Parser, Subcommand};
@@ -123,6 +123,35 @@ enum ImageCommand {
         #[command(flatten)]
         registry: RegistryFile,
     },
+    /// List the base images Keeper can make for you
+    Catalog,
+    /// Make a base image from an official distribution image, when you have no contest image.
+    /// Downloads it (about 600 MB), boots it once in QEMU to install a desktop and the contest
+    /// tools (15 to 40 minutes), then applies the Keeper OS patch. Needs QEMU and 30 GB free
+    Create {
+        /// Which image to make (see `image catalog`)
+        #[arg(long)]
+        distro: String,
+        /// The base image to create (must not exist)
+        #[arg(long)]
+        out: PathBuf,
+        /// The release's ck-os-patch.tar.gz. Without it the image is a plain desktop, not Keeper OS.
+        /// Applying it needs WSL
+        #[arg(long)]
+        patch: Option<PathBuf>,
+        /// Where downloads are kept (default: a folder under %LOCALAPPDATA%)
+        #[arg(long)]
+        cache: Option<PathBuf>,
+        /// The QEMU folder (default: C:\Program Files\qemu)
+        #[arg(long)]
+        qemu: Option<PathBuf>,
+        /// QEMU acceleration: whpx on Windows, kvm on Linux, tcg works everywhere but is slow
+        #[arg(long, default_value = "whpx")]
+        accel: String,
+        /// Give up on the installation after this many minutes
+        #[arg(long, default_value_t = 90)]
+        timeout_minutes: u64,
+    },
     /// Print the settings on a stick image (the secret is not shown)
     Show {
         /// The stick image to read
@@ -213,6 +242,25 @@ fn run(command: Command) -> Result<String, Error> {
                 config_text(&config)
             ))
         }
+        Command::Image(ImageCommand::Catalog) => image_catalog(),
+        Command::Image(ImageCommand::Create {
+            distro,
+            out,
+            patch,
+            cache,
+            qemu,
+            accel,
+            timeout_minutes,
+        }) => image_create(&CreateOptions {
+            entry: ck_admin_core::find_catalog_entry(&distro)?,
+            out,
+            cache: cache.unwrap_or_else(default_cache),
+            qemu_dir: qemu,
+            accel,
+            memory_mb: 4096,
+            timeout: Duration::from_secs(timeout_minutes * 60),
+            patch,
+        }),
         Command::Image(ImageCommand::Show { image }) => Ok(config_text(&show_image(&image)?)),
         Command::Registry(RegistryCommand::List { registry }) => registry_list(&registry.registry),
         Command::Registry(RegistryCommand::Push {
@@ -240,6 +288,48 @@ fn run(command: Command) -> Result<String, Error> {
             result
         }
     }
+}
+
+fn image_catalog() -> Result<String, Error> {
+    let mut text = String::new();
+    for entry in catalog()? {
+        let _ = writeln!(text, "{}\t{} ({} GB)", entry.id, entry.label, entry.disk_gb);
+    }
+    Ok(text)
+}
+
+/// Downloads under the user's local data folder, so a second build does not download again.
+fn default_cache() -> PathBuf {
+    match std::env::var_os("LOCALAPPDATA") {
+        Some(base) => PathBuf::from(base).join("ck-forge").join("cache"),
+        None => PathBuf::from("ck-forge-cache"),
+    }
+}
+
+fn image_create(options: &CreateOptions) -> Result<String, Error> {
+    let bar = ProgressBar::new(0);
+    let out = options.out.clone();
+    let record = create_base_image(options, |step, done, total| {
+        let (label, unit) = match step {
+            CreateStep::Download => ("downloading", 1_000_000),
+            CreateStep::Convert => ("converting to a raw disk", 1),
+            CreateStep::Provision => ("installing the desktop and tools (seconds)", 1),
+            CreateStep::Patch => ("applying the Keeper OS patch", 1),
+            CreateStep::Hash => ("checking the finished image", 1),
+        };
+        bar.set_length(total / unit);
+        bar.set_position(done / unit);
+        bar.set_message(label);
+    })?;
+    bar.finish_and_clear();
+    let mut text = format!("Made {}\n", out.display());
+    let _ = writeln!(text, "  SHA-256: {}", record.image_sha256);
+    if !record.patched {
+        text.push_str(
+            "  Not Keeper OS yet: run again with --patch ck-os-patch.tar.gz (needs WSL) to add the agent.\n",
+        );
+    }
+    Ok(text)
 }
 
 fn profile_new(file: &Path) -> Result<String, Error> {

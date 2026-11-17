@@ -27,6 +27,8 @@ pub enum Error {
     #[error("{0}")]
     Writer(#[from] ck_writer::Error),
     #[error("{0}")]
+    BaseImage(#[from] ck_base_image::Error),
+    #[error("{0}")]
     Hub(String),
     #[error("the wallpaper cannot be used: {0}")]
     Wallpaper(String),
