@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use ck_admin_core::{Profile, Wallpaper, build_thin_image as build, folder_of};
-use ck_protocol::LocalDateTime;
+use ck_admin_core::{Profile, Wallpaper, build_thin_image as build, folder_of, local_now};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -52,7 +51,7 @@ fn build_stick(
     let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(profile_path))
         .map_err(|e| message(&e))?;
     let registry = registry_of(profile_path);
-    let now = LocalDateTime::from(chrono::Local::now().naive_local());
+    let now = local_now();
     let mut last = Instant::now();
     let built = build(
         base,

@@ -1,10 +1,5 @@
 [advisories]
 yanked = "deny"
-# chrono is flagged unmaintained, with no fixed version. It is a dependency of ck-protocol as well, so
-# it cannot be dropped from this repo alone. Remove this once ck-protocol and ck-forge use jiff or time.
-ignore = [
-  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no patched version; replace with jiff or time" },
-]
 
 [licenses]
 allow = [

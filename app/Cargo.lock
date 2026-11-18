@@ -370,6 +370,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "time",
  "ureq",
  "uuid",
 ]
@@ -388,7 +389,7 @@ dependencies = [
 [[package]]
 name = "ck-crypto"
 version = "0.1.0"
-source = "git+https://github.com/contest-keeper/ck-protocol?rev=dae0c134c3eec8d1efff27c4cc69fecd6a8d1bdf#dae0c134c3eec8d1efff27c4cc69fecd6a8d1bdf"
+source = "git+https://github.com/contest-keeper/ck-protocol?rev=e3db30a1eeb3ba4d715478624a32aa45192d8a5a#e3db30a1eeb3ba4d715478624a32aa45192d8a5a"
 dependencies = [
  "base64 0.23.1",
  "ck-protocol",
@@ -402,7 +403,6 @@ dependencies = [
 name = "ck-forge-app"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "ck-admin-core",
  "ck-protocol",
  "ck-writer",
@@ -420,7 +420,7 @@ dependencies = [
 [[package]]
 name = "ck-image"
 version = "0.1.0"
-source = "git+https://github.com/contest-keeper/ck-protocol?rev=dae0c134c3eec8d1efff27c4cc69fecd6a8d1bdf#dae0c134c3eec8d1efff27c4cc69fecd6a8d1bdf"
+source = "git+https://github.com/contest-keeper/ck-protocol?rev=e3db30a1eeb3ba4d715478624a32aa45192d8a5a#e3db30a1eeb3ba4d715478624a32aa45192d8a5a"
 dependencies = [
  "crc32fast",
  "fatfs",
@@ -433,12 +433,12 @@ dependencies = [
 [[package]]
 name = "ck-protocol"
 version = "0.1.0"
-source = "git+https://github.com/contest-keeper/ck-protocol?rev=dae0c134c3eec8d1efff27c4cc69fecd6a8d1bdf#dae0c134c3eec8d1efff27c4cc69fecd6a8d1bdf"
+source = "git+https://github.com/contest-keeper/ck-protocol?rev=e3db30a1eeb3ba4d715478624a32aa45192d8a5a#e3db30a1eeb3ba4d715478624a32aa45192d8a5a"
 dependencies = [
- "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "time",
 ]
 
 [[package]]
@@ -2259,6 +2259,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_threads"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cabcc654086861f9e1bc5115258de62ef92c79b20f4615a1b0cc57c4e82027d4"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "objc2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4000,7 +4009,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -4062,7 +4071,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
 dependencies = [
  "deranged",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",

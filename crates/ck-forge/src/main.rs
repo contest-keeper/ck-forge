@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use ck_admin_core::{
     CreateOptions, CreateStep, Error, Profile, Registry, Wallpaper, build_image, build_thin_image,
-    catalog, check_one_stick, configure_image, create_base_image, folder_of, show_image,
+    catalog, check_one_stick, configure_image, create_base_image, folder_of, local_now, show_image,
 };
-use ck_protocol::{LocalDateTime, StickConfig};
+use ck_protocol::StickConfig;
 use clap::{Args, Parser, Subcommand};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde_json::json;
@@ -376,7 +376,7 @@ fn image_build(
         ProgressStyle::with_template("{bar:40} {bytes}/{total_bytes} ({eta})")
             .unwrap_or_else(|_| ProgressStyle::default_bar()),
     );
-    let now = LocalDateTime::from(chrono::Local::now().naive_local());
+    let now = local_now();
     let make = if full_copy {
         build_image
     } else {
