@@ -4,6 +4,14 @@ use uuid::Uuid;
 
 use crate::error::Error;
 
+/// The wall clock of this computer, for `created_at`. Falls back to UTC when the time zone cannot
+/// be read, which only happens where the operating system hides it.
+#[must_use]
+pub fn local_now() -> LocalDateTime {
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    LocalDateTime::from(time::PrimitiveDateTime::new(now.date(), now.time()))
+}
+
 /// The file for a new stick: the contest settings with a new id and secret, and its number among
 /// the machines of the contest.
 ///

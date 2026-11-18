@@ -27,5 +27,5 @@ pub use image::{
 };
 pub use profile::Profile;
 pub use registry::{Registry, RegistryEntry};
-pub use stick::make_stick_config;
+pub use stick::{local_now, make_stick_config};
 pub use wallpaper::{MAX_WALLPAPER_BYTES, Wallpaper};
