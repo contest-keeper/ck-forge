@@ -1,0 +1,10 @@
+[
+  {
+    "id": "ubuntu-24.04",
+    "label": "Ubuntu 24.04 LTS (contest desktop)",
+    "url": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img",
+    "sha256": "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94",
+    "disk_gb": 30,
+    "provision": "ubuntu-24.04.sh"
+  }
+]

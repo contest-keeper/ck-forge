@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import BaseImageCreator from '../components/BaseImageCreator.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
   import { describeError, eraseConfirmation } from '../core/format';
   import * as api from '../lib/api';
@@ -91,6 +92,8 @@
       </button>
     </div>
   </div>
+
+  <BaseImageCreator disabled={busy} />
 
   <div class="card">
     <h2>Choose the sticks to erase</h2>

@@ -30,6 +30,14 @@ export type Progress = {
   checked: number;
 };
 
+export type CatalogItem = { id: string; label: string; disk_gb: number };
+
+export type BaseProgress = {
+  step: 'download' | 'convert' | 'provision' | 'patch' | 'hash';
+  done: number;
+  total: number;
+};
+
 export const newProfile = () => invoke<Profile>('new_profile');
 export const openProfile = (path: string) => invoke<Profile>('open_profile', { path });
 export const saveProfile = (path: string, profile: Profile) =>
@@ -57,6 +65,16 @@ export const writeStick = (
     allowVirtual,
   });
 
+export const listCatalog = () => invoke<CatalogItem[]>('list_catalog');
+
+/** Makes a base image from an official distribution; takes 15 to 40 minutes. Returns its SHA-256. */
+export const makeBaseImage = (distro: string, out: string, patch: string | null) =>
+  invoke<string>('make_base_image', { distro, out, patch });
+
+export function onBaseProgress(handler: (progress: BaseProgress) => void): Promise<() => void> {
+  return listen<BaseProgress>('base-progress', (event) => handler(event.payload));
+}
+
 export const hubSignIn = (profilePath: string | null) =>
   invoke<SignedIn>('hub_sign_in', { profilePath });
 export const hubSignOut = () => invoke<null>('hub_sign_out');
@@ -73,6 +91,8 @@ export const chooseProfileToOpen = () => open({ filters: JSON_FILES });
 export const chooseProfileToSave = () =>
   save({ filters: JSON_FILES, defaultPath: 'contest-profile.json' });
 export const chooseImageToOpen = () => open({ filters: IMAGE_FILES });
+export const choosePatchToOpen = () =>
+  open({ filters: [{ name: 'Keeper OS patch', extensions: ['gz'] }] });
 export const chooseImageToSave = () => save({ filters: IMAGE_FILES, defaultPath: 'stick.img' });
 
 export const hubListProfiles = () => invoke<HubProfileItem[]>('hub_list_profiles');

@@ -11,6 +11,10 @@ mod registry;
 mod stick;
 mod wallpaper;
 
+pub use ck_base_image::{
+    Entry as CatalogEntry, Options as CreateOptions, Record as BaseRecord, Step as CreateStep,
+    catalog, create_base_image, find as find_catalog_entry,
+};
 pub use error::Error;
 pub use file::folder_of;
 pub use hub::{

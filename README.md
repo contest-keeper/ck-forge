@@ -61,11 +61,19 @@ For work on the page itself, run `pnpm dev` in `ui/` and `cargo run` in `app/`.
 
 ```sh
 ck-forge profile new p.json                  # then edit it, and: ck-forge profile check p.json
+ck-forge image catalog                       # the base images Keeper can make for you
+ck-forge image create --distro ubuntu-24.04 --out base.img --patch ck-os-patch.tar.gz
 ck-forge image build --base base.img --out stick.img --profile p.json
 ck-forge stick list                          # disks, and which ones may be written
 ck-forge stick write stick.img --disk 3      # in an administrator terminal; erases the stick
 ck-forge registry push --hub https://hub.example.org --user ana
 ```
+
+`image create` is for an admin with no contest image: it downloads the official Ubuntu cloud image
+(checked against the hash in the catalog), boots it once in QEMU to install a desktop and the contest
+tools, and applies the Keeper OS patch (needs WSL). It takes 15 to 40 minutes, needs QEMU and 30 GB
+free, and writes `base.img.base.json` with what the image was made from. The window does the same in
+the image step ("No base image? Make one"). Use the result as `--base` below.
 
 `image build` takes about a second. The settings of a stick sit in the EFI partition at the start of
 the image, so `stick.img` holds only that start (about 130 MB) and a manifest, `stick.img.thin.json`,
