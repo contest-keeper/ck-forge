@@ -30,6 +30,10 @@ pub enum Error {
     BaseImage(#[from] ck_base_image::Error),
     #[error("{0}")]
     Hub(String),
+    #[error(
+        "there is no Wi-Fi network to give a password to: set one in the profile or give --wifi-ssid"
+    )]
+    NoWifiNetwork,
     #[error("the wallpaper cannot be used: {0}")]
     Wallpaper(String),
     #[error("the image has no settings yet (no ck/config.json on its EFI partition)")]

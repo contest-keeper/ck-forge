@@ -259,7 +259,7 @@ mod profiles {
             ("p1", "Round")
         );
 
-        let loaded = fetch_profile(&hub, &session, "p1").expect("fetch");
+        let mut loaded = fetch_profile(&hub, &session, "p1").expect("fetch");
         assert_eq!(loaded.name, "Round");
         let wallpaper = loaded.wallpaper.as_ref().expect("wallpaper");
         assert_eq!(
@@ -267,6 +267,10 @@ mod profiles {
             ("w.png", &b"PNGBYTES"[..])
         );
 
+        loaded.settings.wifi = Some(ck_protocol::Wifi {
+            ssid: "venue".to_owned(),
+            password: Some(ck_protocol::WifiPassword::new("hunter2-hunter2")),
+        });
         upload_profile(&hub, &session, "p1", &loaded).expect("upload");
         let seen = handle.join().expect("hub");
         assert!(seen[1].starts_with("GET /api/v1/profiles "));
@@ -275,6 +279,11 @@ mod profiles {
             seen[4].contains("UE5HQllURVM="),
             "wallpaper goes as base64: {}",
             seen[4]
+        );
+        assert!(seen[4].contains("venue"), "the network name is shared");
+        assert!(
+            !seen.iter().any(|r| r.contains("hunter2")),
+            "the Wi-Fi password never goes to the Hub"
         );
         assert!(
             seen.iter()

@@ -4,6 +4,7 @@
     RECORDING_MODES,
     linesToList,
     optionalCount,
+    optionalText,
     wholeNumber,
     type Settings,
   } from '../core/profile';
@@ -36,6 +37,29 @@
         min="1"
         bind:value={
           () => settings.api.heartbeat_s, (v) => (settings.api.heartbeat_s = wholeNumber(v, 1))
+        }
+      />
+    </Field>
+  </div>
+</section>
+
+<section>
+  <h3>Bluetooth and Wi-Fi</h3>
+  <label class="check">
+    <input type="checkbox" bind:checked={settings.block_bluetooth} />
+    <span>Block Bluetooth on the sticks</span>
+  </label>
+  <div class="grid">
+    <Field
+      label="Wi-Fi name (SSID)"
+      hint="Sticks join this network at boot. Empty means none. The password is asked on the Make page and is never saved in the profile."
+    >
+      <input
+        type="text"
+        maxlength="32"
+        bind:value={
+          () => settings.wifi?.ssid ?? '',
+          (v) => (settings.wifi = optionalText(v) === undefined ? undefined : { ssid: v.trim() })
         }
       />
     </Field>

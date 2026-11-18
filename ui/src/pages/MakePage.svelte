@@ -11,6 +11,7 @@
   let allowVirtual = $state(false);
   let typed = $state('');
   let testFile = $state('');
+  let wifiPassword = $state('');
   let busy = $state(false);
   let progress = $state<api.Progress | null>(null);
   let hash = $state('');
@@ -59,7 +60,13 @@
     progress = null;
     if (!app.profilePath || !app.basePath) return;
     try {
-      hash = await api.writeStick(app.basePath, app.profilePath, target, allowVirtual);
+      hash = await api.writeStick(
+        app.basePath,
+        app.profilePath,
+        target,
+        allowVirtual,
+        wifiPassword,
+      );
       written = 'disks' in target ? target.disks.length : 1;
       app.written = true;
     } catch (error) {
@@ -68,6 +75,7 @@
       busy = false;
       progress = null;
       typed = '';
+      wifiPassword = '';
     }
   }
 </script>
@@ -94,6 +102,21 @@
   </div>
 
   <BaseImageCreator disabled={busy} />
+
+  <div class="card">
+    <h2>Wi-Fi password</h2>
+    <p class="hint">
+      Only needed when the profile has a Wi-Fi name. It is written on the sticks and nowhere else:
+      not in the profile, the Hub or any log. It is cleared after each write.
+    </p>
+    <input
+      type="password"
+      autocomplete="off"
+      placeholder="Leave empty for an open network"
+      bind:value={wifiPassword}
+      disabled={busy}
+    />
+  </div>
 
   <div class="card">
     <h2>Choose the sticks to erase</h2>

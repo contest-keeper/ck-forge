@@ -5,6 +5,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{Profile, Wallpaper, build_thin_image as build, folder_of, local_now};
+use ck_protocol::WifiPassword;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -39,8 +40,11 @@ fn build_stick(
     base: &Path,
     out: &Path,
     profile_path: &Path,
+    wifi_password: Option<&WifiPassword>,
 ) -> Result<Built, String> {
     let mut profile = Profile::load(profile_path).map_err(|e| message(&e))?;
+    // Typed in the window for this write only: it is not in the profile file.
+    profile.set_wifi_password(wifi_password.cloned());
     let hub = app.state::<HubState>();
     // The address in the profile file is not used: it is the sign-in that decides.
     profile.settings.api.url = if hub.signed_in() {
@@ -188,7 +192,11 @@ pub async fn write_stick(
     disks: Vec<u32>,
     to_file: Option<PathBuf>,
     allow_virtual: bool,
+    wifi_password: Option<String>,
 ) -> Result<String, String> {
+    let wifi_password = wifi_password
+        .filter(|text| !text.is_empty())
+        .map(WifiPassword::new);
     tauri::async_runtime::spawn_blocking(move || {
         if to_file.is_none() && disks.is_empty() {
             return Err("choose a disk or a file to write to".to_owned());
@@ -199,20 +207,26 @@ pub async fn write_stick(
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(&work)
             .map_err(|e| format!("could not make {}: {e}", work.display()))?;
-        let result = make_and_write(
-            &app,
-            &base,
-            &profile_path,
-            &work,
-            &disks,
-            to_file.as_deref(),
+        let target = Target {
+            disks: &disks,
+            to_file: to_file.as_deref(),
             allow_virtual,
-        );
+            wifi_password: wifi_password.as_ref(),
+        };
+        let result = make_and_write(&app, &base, &profile_path, &work, &target);
         let _ = std::fs::remove_dir_all(&work);
         result
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Where the sticks go and what is typed for this write only.
+struct Target<'a> {
+    disks: &'a [u32],
+    to_file: Option<&'a Path>,
+    allow_virtual: bool,
+    wifi_password: Option<&'a WifiPassword>,
 }
 
 /// Builds one image per stick in `work`, then writes them to the disks, or the first to a file.
@@ -221,14 +235,18 @@ fn make_and_write(
     base: &Path,
     profile_path: &Path,
     work: &Path,
-    disks: &[u32],
-    to_file: Option<&Path>,
-    allow_virtual: bool,
+    target: &Target<'_>,
 ) -> Result<String, String> {
+    let Target {
+        disks,
+        to_file,
+        allow_virtual,
+        wifi_password,
+    } = *target;
     let mut images = Vec::new();
     for n in 1..=disks.len().max(1) {
         let image = work.join(format!("stick-{n}.img"));
-        build_stick(app, base, &image, profile_path)?;
+        build_stick(app, base, &image, profile_path, wifi_password)?;
         images.push(image);
     }
     // A file needs no administrator rights, so it is written here: a test without a stick.
