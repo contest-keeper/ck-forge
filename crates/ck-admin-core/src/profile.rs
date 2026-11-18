@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use ck_protocol::{Bookmark, Platform, Settings};
+use ck_protocol::{Bookmark, Platform, Settings, WifiPassword};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -76,6 +76,25 @@ impl Profile {
         settings
     }
 
+    /// The settings without the Wi-Fi password. This is what is saved in a profile file and sent
+    /// to the Hub: the password belongs only on the stick, so it is typed again for each build.
+    #[must_use]
+    pub fn settings_without_secrets(&self) -> Settings {
+        let mut settings = self.settings.clone();
+        if let Some(wifi) = &mut settings.wifi {
+            wifi.password = None;
+        }
+        settings
+    }
+
+    /// Sets the Wi-Fi password for this build. It does nothing when the profile has no Wi-Fi
+    /// network, so a password is never added to settings that have no place for it.
+    pub fn set_wifi_password(&mut self, password: Option<WifiPassword>) {
+        if let Some(wifi) = &mut self.settings.wifi {
+            wifi.password = password;
+        }
+    }
+
     /// Things that are allowed but probably not what the admin wants. They do not stop a build.
     #[must_use]
     pub fn warnings(&self) -> Vec<String> {
@@ -113,7 +132,9 @@ impl Profile {
     /// Checks the settings and writes the profile. An invalid profile is never saved.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
         self.check()?;
-        write_json_atomically(path, self)
+        let mut without_secrets = self.clone();
+        without_secrets.settings = self.settings_without_secrets();
+        write_json_atomically(path, &without_secrets)
     }
 
     fn check(&self) -> Result<(), Error> {

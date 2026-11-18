@@ -11,7 +11,7 @@ use ck_admin_core::{
     CreateOptions, CreateStep, Error, Profile, Registry, Wallpaper, build_image, build_thin_image,
     catalog, check_one_stick, configure_image, create_base_image, folder_of, local_now, show_image,
 };
-use ck_protocol::StickConfig;
+use ck_protocol::{StickConfig, Wifi, WifiPassword};
 use clap::{Args, Parser, Subcommand};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde_json::json;
@@ -112,6 +112,8 @@ enum ImageCommand {
         full_copy: bool,
         #[command(flatten)]
         registry: RegistryFile,
+        #[command(flatten)]
+        extras: ExtraSettings,
     },
     /// Replace the settings on a stick image, keeping its identity
     Configure {
@@ -122,6 +124,8 @@ enum ImageCommand {
         profile: PathBuf,
         #[command(flatten)]
         registry: RegistryFile,
+        #[command(flatten)]
+        extras: ExtraSettings,
     },
     /// List the base images Keeper can make for you
     Catalog,
@@ -179,6 +183,51 @@ enum RegistryCommand {
     },
 }
 
+/// Settings that are given for one build, on top of the profile.
+#[derive(Args)]
+struct ExtraSettings {
+    /// Block Bluetooth on the stick, whatever the profile says
+    #[arg(long)]
+    block_bluetooth: bool,
+    /// The Wi-Fi network the stick joins (replaces the profile's)
+    #[arg(long)]
+    wifi_ssid: Option<String>,
+    /// Ask for the Wi-Fi password at a prompt. The password is only written on the stick: it is not
+    /// saved in the profile, not printed and not sent to the Hub
+    #[arg(long)]
+    ask_wifi_password: bool,
+}
+
+impl ExtraSettings {
+    /// The profile with these settings applied. The password is read without echo and never from an
+    /// argument or the environment, so it is not left in a history.
+    fn apply(&self, profile: &mut Profile) -> Result<(), Error> {
+        if self.block_bluetooth {
+            profile.settings.block_bluetooth = true;
+        }
+        if let Some(ssid) = &self.wifi_ssid {
+            profile.settings.wifi = Some(Wifi {
+                ssid: ssid.clone(),
+                password: None,
+            });
+        }
+        if self.ask_wifi_password {
+            if profile.settings.wifi.is_none() {
+                return Err(Error::NoWifiNetwork);
+            }
+            let password = rpassword::prompt_password("Wi-Fi password: ")
+                .map_err(|e| Error::io("reading the password", e))?;
+            profile.set_wifi_password(Some(WifiPassword::new(password)));
+        }
+        let problems = profile.problems();
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::InvalidProfile(problems))
+        }
+    }
+}
+
 #[derive(Args)]
 struct RegistryFile {
     /// The registry file. It holds every stick's secret, so keep it private. A file with `.lock`
@@ -226,13 +275,23 @@ fn run(command: Command) -> Result<String, Error> {
             profile,
             full_copy,
             registry,
-        }) => image_build(&base, &out, &profile, &registry.registry, full_copy),
+            extras,
+        }) => image_build(
+            &base,
+            &out,
+            &profile,
+            &registry.registry,
+            full_copy,
+            &extras,
+        ),
         Command::Image(ImageCommand::Configure {
             image,
             profile,
             registry,
+            extras,
         }) => {
-            let loaded = Profile::load(&profile)?;
+            let mut loaded = Profile::load(&profile)?;
+            extras.apply(&mut loaded)?;
             let wallpaper = Wallpaper::read(&loaded.stick_settings(), folder_of(&profile))?;
             let config = configure_image(&image, &loaded, wallpaper.as_ref(), &registry.registry)?;
             warn(&loaded);
@@ -366,9 +425,11 @@ fn image_build(
     profile: &Path,
     registry: &Path,
     full_copy: bool,
+    extras: &ExtraSettings,
 ) -> Result<String, Error> {
     let profile_file = profile;
-    let profile = Profile::load(profile_file)?;
+    let mut profile = Profile::load(profile_file)?;
+    extras.apply(&mut profile)?;
     let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(profile_file))?;
     warn(&profile);
     let bar = ProgressBar::new(0);
@@ -428,6 +489,28 @@ fn config_text(config: &StickConfig) -> String {
         s.recording.mode,
         s.network.allowed_domains.join(", ")
     );
+    let _ = writeln!(
+        text,
+        "Bluetooth: {}",
+        if s.block_bluetooth {
+            "blocked"
+        } else {
+            "not blocked"
+        }
+    );
+    // Only the network name: the password stays on the stick.
+    if let Some(wifi) = &s.wifi {
+        let _ = writeln!(
+            text,
+            "Wi-Fi:    {}{}",
+            wifi.ssid,
+            if wifi.password.is_some() {
+                " (password set)"
+            } else {
+                " (open)"
+            }
+        );
+    }
     text
 }
 

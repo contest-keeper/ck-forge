@@ -215,3 +215,44 @@ fn a_new_profile_is_for_codeforces_and_the_contest_is_the_first_bookmark() {
     assert_eq!(profile.stick_settings().branding.bookmarks.len(), 2);
     assert_eq!(profile.warnings().len(), warnings + 1);
 }
+
+#[test]
+fn the_wifi_password_goes_on_the_stick_but_never_into_the_saved_profile() {
+    use ck_protocol::{Wifi, WifiPassword};
+
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("profile.json");
+
+    let mut profile = Profile::template();
+    profile.settings.wifi = Some(Wifi {
+        ssid: "venue".to_owned(),
+        password: None,
+    });
+    profile.set_wifi_password(Some(WifiPassword::new("hunter2-hunter2")));
+    assert_eq!(
+        profile
+            .stick_settings()
+            .wifi
+            .and_then(|w| w.password)
+            .map(|p| p.expose().to_owned()),
+        Some("hunter2-hunter2".to_owned()),
+        "the stick gets the password"
+    );
+
+    profile.save(&path).expect("save");
+    let saved = std::fs::read_to_string(&path).expect("read");
+    assert!(saved.contains("venue"));
+    assert!(
+        !saved.contains("hunter2"),
+        "the profile file has no password"
+    );
+    assert!(
+        !format!("{profile:?}").contains("hunter2"),
+        "Debug hides it"
+    );
+
+    // A profile without a network ignores a password instead of inventing a network.
+    let mut open = Profile::template();
+    open.set_wifi_password(Some(WifiPassword::new("hunter2-hunter2")));
+    assert_eq!(open.settings.wifi, None);
+}

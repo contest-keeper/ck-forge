@@ -399,7 +399,12 @@ pub fn upload_profile(
     let wallpaper = profile.wallpaper.as_ref().map(|w| {
         json!({ "name": w.name, "data_base64": base64::engine::general_purpose::STANDARD.encode(&w.bytes) })
     });
-    let settings = serde_json::to_value(&profile.settings)
+    // The Wi-Fi password never leaves the admin's computer except on a stick.
+    let mut shared = profile.settings.clone();
+    if let Some(wifi) = &mut shared.wifi {
+        wifi.password = None;
+    }
+    let settings = serde_json::to_value(&shared)
         .map_err(|e| Error::Hub(format!("settings cannot be sent: {e}")))?;
     let mut answer = agent()
         .put(format!("{base}/api/v1/profiles/{id}"))

@@ -33,6 +33,9 @@ export type Recording = {
 
 export type Api = { url: string; heartbeat_s: number };
 
+/** The venue network. The password is not part of the profile: it is typed on the Make page. */
+export type Wifi = { ssid: string };
+
 export type Settings = {
   contest: Contest;
   team: string;
@@ -41,6 +44,8 @@ export type Settings = {
   allowed_domains: string[];
   recording: Recording;
   api: Api;
+  block_bluetooth: boolean;
+  wifi?: Wifi | undefined;
 };
 
 export type Profile = { name: string; settings: Settings; hub_id?: string | undefined };

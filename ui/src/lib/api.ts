@@ -56,6 +56,7 @@ export const writeStick = (
   profilePath: string,
   target: { disks: number[] } | { file: string },
   allowVirtual: boolean,
+  wifiPassword: string,
 ) =>
   invoke<string>('write_stick', {
     base,
@@ -63,6 +64,7 @@ export const writeStick = (
     disks: 'disks' in target ? target.disks : [],
     toFile: 'file' in target ? target.file : null,
     allowVirtual,
+    wifiPassword: wifiPassword === '' ? null : wifiPassword,
   });
 
 export const listCatalog = () => invoke<CatalogItem[]>('list_catalog');
