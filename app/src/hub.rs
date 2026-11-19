@@ -154,6 +154,11 @@ pub async fn hub_sign_out(state: State<'_, HubState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn hub_retire_stick(state: State<'_, HubState>, id: String) -> Result<(), String> {
+    state.as_admin(|session| ck_admin_core::retire_stick_credential(HUB_URL, session, &id))
+}
+
 impl HubState {
     /// Runs a Hub request as the signed-in admin, or says to sign in.
     pub(crate) fn as_admin<T>(
@@ -217,6 +222,7 @@ pub async fn hub_load_profile(
         name: remote.name,
         settings,
         hub_id: Some(id),
+        stick_key_window: remote.stick_key_window,
     };
     let path = folder.join("contest-profile.json");
     profile.save(&path).map_err(|e| message(&e))?;
@@ -230,6 +236,7 @@ pub async fn hub_save_profile(
     path: PathBuf,
     mut profile: Profile,
 ) -> Result<Profile, String> {
+    profile.credential_scope().map_err(|e| message(&e))?;
     let id = profile
         .hub_id
         .clone()
@@ -239,6 +246,7 @@ pub async fn hub_save_profile(
     let upload = HubProfile {
         name: profile.name.clone(),
         settings: profile.settings.clone(),
+        stick_key_window: profile.stick_key_window.clone(),
         wallpaper,
     };
     state.as_admin(|session| ck_admin_core::upload_profile(HUB_URL, session, &id, &upload))?;

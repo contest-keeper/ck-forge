@@ -22,6 +22,10 @@
   let hash = $state('');
   let written = $state(0);
   let failure = $state('');
+  let retiring = $state(false);
+  let previousStick = $state('');
+  let retirementStatus = $state('');
+  let retirementError = $state('');
 
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
   const ready = $derived(app.profilePath !== null && app.basePath !== null);
@@ -113,6 +117,21 @@
     testFile = (await api.chooseImageToSave()) ?? testFile;
   }
 
+  async function retirePreviousKey() {
+    retiring = true;
+    retirementStatus = '';
+    retirementError = '';
+    try {
+      await api.hubRetireStick(previousStick.trim());
+      previousStick = '';
+      retirementStatus = 'The previous stick key is retired. Its history stays in the Hub.';
+    } catch (error) {
+      retirementError = describeError(error);
+    } finally {
+      retiring = false;
+    }
+  }
+
   async function write(target: { disks: number[] } | { file: string }) {
     busy = true;
     failure = '';
@@ -188,6 +207,30 @@
   </div>
 
   <BaseImageCreator disabled={busy} />
+
+  {#if app.hubEmail}
+    <details class="card">
+      <summary>Retire a previous stick key</summary>
+      <label class="grow">
+        <span class="n">Previous stick ID</span>
+        <input type="text" bind:value={previousStick} spellcheck="false" disabled={retiring} />
+        <span class="p"
+          >Retire the old key after verifying the replacement and finishing any uploads from the old
+          stick.</span
+        >
+      </label>
+      <button
+        type="button"
+        class="btn sm"
+        onclick={retirePreviousKey}
+        disabled={busy || retiring || !/^[a-z0-9-]{1,64}$/i.test(previousStick.trim())}
+      >
+        Retire previous key
+      </button>
+      {#if retirementStatus}<p class="note ok">{retirementStatus}</p>{/if}
+      {#if retirementError}<p class="note error" role="alert">{retirementError}</p>{/if}
+    </details>
+  {/if}
 
   <div class="card">
     <h2>Wi-Fi password</h2>

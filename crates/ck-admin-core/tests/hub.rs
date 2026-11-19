@@ -378,7 +378,10 @@ mod signed_in {
 }
 
 mod profiles {
-    use ck_admin_core::{Profile, fetch_profile, list_profiles, sign_in_with_code, upload_profile};
+    use ck_admin_core::{
+        Profile, fetch_profile, list_profiles, retire_stick_credential, sign_in_with_code,
+        upload_profile,
+    };
 
     use super::{fake_hub, reply};
 
@@ -388,7 +391,10 @@ mod profiles {
 
     #[test]
     fn lists_loads_and_saves_profiles_as_the_signed_in_admin() {
-        let settings = serde_json::to_string(&Profile::template().settings).expect("json");
+        let mut settings = serde_json::to_value(&Profile::template().settings).expect("json");
+        settings["stick_key_window"] = serde_json::json!({
+            "valid_from": "2026-11-19T08:00:00Z", "valid_until": "2026-11-19T13:00:00Z"
+        });
         let mut replies = signed_in_replies();
         replies.push(reply(
             "200 OK",
@@ -413,6 +419,14 @@ mod profiles {
 
         let mut loaded = fetch_profile(&hub, &session, "p1").expect("fetch");
         assert_eq!(loaded.name, "Round");
+        assert_eq!(
+            loaded
+                .stick_key_window
+                .as_ref()
+                .expect("key window")
+                .valid_from,
+            "2026-11-19T08:00:00Z"
+        );
         let wallpaper = loaded.wallpaper.as_ref().expect("wallpaper");
         assert_eq!(
             (wallpaper.name.as_str(), wallpaper.bytes.as_slice()),
@@ -433,6 +447,7 @@ mod profiles {
             seen[4]
         );
         assert!(seen[4].contains("venue"), "the network name is shared");
+        assert!(seen[4].contains("2026-11-19T13:00:00Z"));
         assert!(
             !seen.iter().any(|r| r.contains("hunter2")),
             "the Wi-Fi password never goes to the Hub"
@@ -441,6 +456,23 @@ mod profiles {
             seen.iter()
                 .skip(1)
                 .all(|r| r.to_lowercase().contains("authorization: bearer tok123"))
+        );
+    }
+
+    #[test]
+    fn retiring_a_key_uses_the_signed_in_admin_and_the_exact_stick_id() {
+        let mut replies = signed_in_replies();
+        replies.push(reply("204 No Content", "", ""));
+        let (hub, handle) = fake_hub(replies);
+        let session = sign_in_with_code(&hub, "c").expect("session");
+        assert!(retire_stick_credential(&hub, &session, "../another-stick").is_err());
+        retire_stick_credential(&hub, &session, "old-stick").expect("retire");
+        let seen = handle.join().expect("hub");
+        assert!(seen[1].starts_with("DELETE /api/v1/sticks/old-stick/credential "));
+        assert!(
+            seen[1]
+                .to_lowercase()
+                .contains("authorization: bearer tok123")
         );
     }
 

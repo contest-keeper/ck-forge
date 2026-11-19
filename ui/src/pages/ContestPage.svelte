@@ -2,6 +2,7 @@
   import Field from '../components/Field.svelte';
   import Messages from '../components/Messages.svelte';
   import { describeError } from '../core/format';
+  import type { StickKeyWindow } from '../core/profile';
   import * as api from '../lib/api';
   import { app } from '../state.svelte';
   import BrandingForm from './BrandingForm.svelte';
@@ -12,6 +13,16 @@
   let warnings = $state<string[]>([]);
   let status = $state('');
   let failure = $state('');
+
+  function setKeyTime(field: keyof StickKeyWindow, value: string) {
+    const profile = app.profile;
+    if (!profile) return;
+    const window = {
+      ...(profile.stick_key_window ?? { valid_from: '', valid_until: '' }),
+      [field]: value,
+    };
+    profile.stick_key_window = window.valid_from || window.valid_until ? window : undefined;
+  }
 
   // Check the profile as it is edited, so a mistake is shown next to the form and not at build time.
   $effect(() => {
@@ -129,6 +140,25 @@
       </Field>
     </div>
     <ContestForm bind:settings={app.profile.settings} />
+    <details class="card" open={app.profile.stick_key_window !== undefined}>
+      <summary>Stick key validity</summary>
+      <Field label="Valid from (UTC)" hint="Use a UTC date such as 2026-11-19T08:00:00Z.">
+        <input
+          value={app.profile.stick_key_window?.valid_from ?? ''}
+          oninput={(event) => setKeyTime('valid_from', event.currentTarget.value)}
+        />
+      </Field>
+      <Field
+        label="Valid until (UTC)"
+        hint="Both dates and a contest ID are required for a scoped key."
+      >
+        <input
+          value={app.profile.stick_key_window?.valid_until ?? ''}
+          oninput={(event) => setKeyTime('valid_until', event.currentTarget.value)}
+        />
+      </Field>
+      <p>To re-key a stick, make a new stick with the new contest profile.</p>
+    </details>
     <details class="card">
       <summary>What contestants see</summary>
       <BrandingForm bind:settings={app.profile.settings} />
