@@ -5,7 +5,12 @@
   type Props = { progress: Progress | null };
   let { progress }: Props = $props();
 
-  const labels = { building: 'Copying the image', writing: 'Writing', checking: 'Checking' };
+  const labels = {
+    importing: 'Verifying and expanding the download',
+    building: 'Copying the image',
+    writing: 'Writing',
+    checking: 'Checking',
+  };
 </script>
 
 {#if progress}
@@ -14,7 +19,7 @@
       {labels[progress.phase]}: {formatBytes(progress.done)} of {formatBytes(progress.total)}
     </span>
     <progress max="100" value={percent(progress.done, progress.total)}></progress>
-    {#if progress.phase !== 'building'}
+    {#if progress.phase === 'writing' || progress.phase === 'checking'}
       <span>Checked: {formatBytes(progress.checked)} of {formatBytes(progress.total)}</span>
       <progress max="100" value={percent(progress.checked, progress.total)}></progress>
     {/if}

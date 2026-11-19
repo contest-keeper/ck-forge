@@ -8,6 +8,7 @@
 mod catalog;
 mod download;
 mod error;
+mod import;
 mod patch;
 mod provision;
 mod seed;
@@ -23,6 +24,7 @@ use sha2::{Digest, Sha256};
 pub use catalog::{Entry, catalog, find};
 pub use download::sha256_file;
 pub use error::Error;
+pub use import::import_image;
 pub use tools::Qemu;
 
 /// How many times a crashed provisioning machine is tried again from the start.

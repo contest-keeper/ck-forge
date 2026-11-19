@@ -199,6 +199,15 @@ fn open_plain(image: &Path) -> Result<Parts, Error> {
         .metadata()
         .map_err(|e| Error::io(format!("reading the size of {}", image.display()), e))?
         .len();
+    if len >= 4 {
+        let mut magic = [0_u8; 4];
+        file.read_exact(&mut magic)
+            .map_err(|e| Error::io(format!("reading {}", image.display()), e))?;
+        if magic == [0x28, 0xb5, 0x2f, 0xfd] {
+            return Err(Error::CompressedImage);
+        }
+    }
+    // The GPT check seeks to its header, so the magic-byte read can leave the cursor here.
     if is_cut_off(&mut file, len)
         .map_err(|e| Error::io(format!("reading {}", image.display()), e))?
     {
