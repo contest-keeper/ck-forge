@@ -5,7 +5,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    Profile, Wallpaper, build_thin_image as build, folder_of, import_image, local_now,
+    HubImage, HubImageStep, Profile, Wallpaper, build_thin_image as build, folder_of, import_image,
+    local_now,
 };
 use ck_protocol::WifiPassword;
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,6 @@ use crate::profiles::{message, registry_of};
 struct Progress {
     done: u64,
     total: u64,
-    /// What is going on: `importing`, `building`, `writing` or `checking`.
     phase: &'static str,
     /// How far the stick is checked. The checking goes on while the writing does.
     checked: u64,
@@ -32,25 +32,65 @@ pub async fn import_base_image(
     sha256: String,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut last = Instant::now();
+        let mut emit = base_progress(&app);
         import_image(&archive, &out, &sha256, |done, total| {
-            if done == total || last.elapsed() >= Duration::from_millis(250) {
-                last = Instant::now();
-                let _ = app.emit(
-                    "progress",
-                    Progress {
-                        done,
-                        total,
-                        phase: "importing",
-                        checked: 0,
-                    },
-                );
-            }
+            emit("importing", done, total);
         })
         .map_err(|error| message(&error.into()))
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn list_hub_images(app: AppHandle) -> Result<Vec<HubImage>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<HubState>()
+            .as_admin(|session| ck_admin_core::list_hub_images(HUB_URL, session))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn download_hub_image(app: AppHandle, id: String, out: PathBuf) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let download = app
+            .state::<HubState>()
+            .as_admin(|session| ck_admin_core::prepare_hub_image_download(HUB_URL, session, &id))?;
+        let mut emit = base_progress(&app);
+        ck_admin_core::download_hub_image(download, &out, |step, done, total| {
+            let phase = match step {
+                HubImageStep::Download => "downloading",
+                HubImageStep::Import => "importing",
+            };
+            emit(phase, done, total);
+        })
+        .map_err(|error| message(&error))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn base_progress(app: &AppHandle) -> impl FnMut(&'static str, u64, u64) + '_ {
+    let mut last = Instant::now();
+    let mut previous_phase = "";
+    move |phase, done, total| {
+        if phase != previous_phase || done == total || last.elapsed() >= Duration::from_millis(250)
+        {
+            last = Instant::now();
+            previous_phase = phase;
+            let _ = app.emit(
+                "progress",
+                Progress {
+                    done,
+                    total,
+                    phase,
+                    checked: 0,
+                },
+            );
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -375,7 +415,11 @@ fn write_to_file(app: &AppHandle, image: &Path, file: &Path) -> Result<String, S
             return;
         }
         last = Instant::now();
-        let phase = if written < total { "writing" } else { "checking" };
+        let phase = if written < total {
+            "writing"
+        } else {
+            "checking"
+        };
         let _ = app.emit(
             "progress",
             Progress {
