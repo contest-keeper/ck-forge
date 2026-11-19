@@ -1,4 +1,8 @@
-//! A small fake disk image: a GPT with a FAT32 EFI partition and a Linux partition.
+//! Small fake disk images: a GPT with a FAT32 EFI partition and a Linux partition, and the same with
+//! a `CKCONFIG` partition between them.
+
+// Each test file uses some of these.
+#![allow(dead_code)]
 
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -52,6 +56,10 @@ fn write_gpt(file: &mut File) {
         entry[32..40].copy_from_slice(&first.to_le_bytes());
         entry[40..48].copy_from_slice(&last.to_le_bytes());
     }
+    write_gpt_table(file, &entries);
+}
+
+fn write_gpt_table(file: &mut File, entries: &[u8]) {
     let mut header = [0_u8; 92];
     header[..8].copy_from_slice(b"EFI PART");
     header[8..12].copy_from_slice(&0x0001_0000_u32.to_le_bytes());
@@ -60,11 +68,73 @@ fn write_gpt(file: &mut File) {
     header[72..80].copy_from_slice(&2_u64.to_le_bytes());
     header[80..84].copy_from_slice(&128_u32.to_le_bytes());
     header[84..88].copy_from_slice(&128_u32.to_le_bytes());
-    header[88..92].copy_from_slice(&crc32fast::hash(&entries).to_le_bytes());
+    header[88..92].copy_from_slice(&crc32fast::hash(entries).to_le_bytes());
     let crc = crc32fast::hash(&header);
     header[16..20].copy_from_slice(&crc.to_le_bytes());
     file.seek(SeekFrom::Start(SECTOR_SIZE)).expect("seek");
     file.write_all(&header).expect("header");
     file.seek(SeekFrom::Start(2 * SECTOR_SIZE)).expect("seek");
-    file.write_all(&entries).expect("entries");
+    file.write_all(entries).expect("entries");
+}
+
+const CONFIG_FIRST: u64 = EFI_LAST + 1;
+const CONFIG_LAST: u64 = CONFIG_FIRST + 16 * 1024 * 1024 / SECTOR_SIZE - 1;
+const WITH_CONFIG_IMAGE_SIZE: u64 = 128 * 1024 * 1024;
+
+/// Where the part that differs from stick to stick ends on an image made by [`make_image_with_config`].
+pub const CONFIG_END: u64 = (CONFIG_LAST + 1) * SECTOR_SIZE;
+
+/// Like the image of [`make_image`], with a 16 MiB FAT16 partition named `CKCONFIG` after the EFI
+/// partition.
+pub fn make_image_with_config(dir: &TempDir, name: &str) -> PathBuf {
+    let path = dir.path().join(name);
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .expect("create image");
+    file.set_len(WITH_CONFIG_IMAGE_SIZE).expect("size image");
+    let root_first = CONFIG_LAST + 1;
+    let root_last = WITH_CONFIG_IMAGE_SIZE / SECTOR_SIZE - 34;
+    write_gpt_with(
+        &mut file,
+        &[
+            (Guid::EFI_SYSTEM, 1, EFI_FIRST, EFI_LAST, "EFI"),
+            (Guid::BASIC_DATA, 2, CONFIG_FIRST, CONFIG_LAST, "CKCONFIG"),
+            (Guid::LINUX_FILESYSTEM, 3, root_first, root_last, "root"),
+        ],
+    );
+    file.seek(SeekFrom::Start(root_first * SECTOR_SIZE))
+        .expect("seek root");
+    file.write_all(&[0xAB; 4096]).expect("fill root");
+    for (first, last, label, fat) in [
+        (EFI_FIRST, EFI_LAST, *b"EFI        ", FatType::Fat32),
+        (CONFIG_FIRST, CONFIG_LAST, *b"CKCONFIG   ", FatType::Fat16),
+    ] {
+        let slice = StreamSlice::new(
+            file.try_clone().expect("clone"),
+            first * SECTOR_SIZE,
+            (last + 1) * SECTOR_SIZE,
+        )
+        .expect("slice");
+        let options = FormatVolumeOptions::new().fat_type(fat).volume_label(label);
+        fatfs::format_volume(slice, options).expect("format");
+    }
+    path
+}
+
+fn write_gpt_with(file: &mut File, partitions: &[(Guid, u8, u64, u64, &str)]) {
+    let mut entries = vec![0_u8; 128 * 128];
+    for (index, (guid, unique, first, last, name)) in partitions.iter().enumerate() {
+        let entry = &mut entries[index * 128..(index + 1) * 128];
+        entry[..16].copy_from_slice(&guid.to_disk_bytes());
+        entry[16..32].copy_from_slice(&[*unique; 16]);
+        entry[32..40].copy_from_slice(&first.to_le_bytes());
+        entry[40..48].copy_from_slice(&last.to_le_bytes());
+        for (i, unit) in name.encode_utf16().enumerate() {
+            entry[56 + i * 2..58 + i * 2].copy_from_slice(&unit.to_le_bytes());
+        }
+    }
+    write_gpt_table(file, &entries);
 }

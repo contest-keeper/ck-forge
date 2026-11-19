@@ -1,8 +1,12 @@
 use std::fs;
 use std::path::Path;
 
-use ck_image::{copy_image, read_file, write_file};
-use ck_protocol::{ESP_CONFIG_DIR, ESP_CONFIG_FILE, LocalDateTime, Settings, StickConfig};
+use ck_image::{
+    copy_image, has_config_partition, read_config_file, read_file, write_config_file, write_file,
+};
+use ck_protocol::{
+    CONFIG_FILE, ESP_CONFIG_DIR, ESP_CONFIG_FILE, LocalDateTime, Settings, StickConfig,
+};
 
 use crate::error::Error;
 use crate::profile::Profile;
@@ -23,13 +27,25 @@ pub struct Built {
 enum Copy {
     /// All of it: a file of the size of the base that runs on its own.
     Full,
-    /// Only its start, up to the end of the EFI partition, and a manifest that names the base for
+    /// Only its start, up to the end of the config partition (the EFI partition on an older image),
+    /// and a manifest that names the base for
     /// the rest. See `ck_writer::thin`.
     Thin,
 }
 
-fn config_path() -> String {
+fn esp_config_path() -> String {
     format!("{ESP_CONFIG_DIR}/{ESP_CONFIG_FILE}")
+}
+
+/// Writes a file next to the stick's settings: at the root of the `CKCONFIG` partition when the
+/// image has one, in the `ck` folder of the EFI partition on an older image.
+fn write_beside_settings(image: &Path, name: &str, content: &[u8]) -> Result<(), Error> {
+    if has_config_partition(image)? {
+        write_config_file(image, name, content)?;
+    } else {
+        write_file(image, &format!("{ESP_CONFIG_DIR}/{name}"), content)?;
+    }
+    Ok(())
 }
 
 /// The wallpaper must be the one the settings name, or the stick would point at a missing file.
@@ -51,11 +67,7 @@ fn check_wallpaper(settings: &Settings, wallpaper: Option<&Wallpaper>) -> Result
 
 fn write_wallpaper(image: &Path, wallpaper: Option<&Wallpaper>) -> Result<(), Error> {
     if let Some(wallpaper) = wallpaper {
-        write_file(
-            image,
-            &format!("{ESP_CONFIG_DIR}/{}", wallpaper.name),
-            &wallpaper.bytes,
-        )?;
+        write_beside_settings(image, &wallpaper.name, &wallpaper.bytes)?;
     }
     Ok(())
 }
@@ -93,8 +105,8 @@ pub fn build_image(
     )
 }
 
-/// Like [`build_image`], but `out` holds only the start of the base image, through its EFI
-/// partition, and a manifest `out` + `.thin.json` names `base` for the rest. That is a copy of a
+/// Like [`build_image`], but `out` holds only the start of the base image, through its config
+/// partition (its EFI partition on an older image), and a manifest `out` + `.thin.json` names `base` for the rest. That is a copy of a
 /// few hundred megabytes and not of 30 GB, and a stick written from it is the same stick. The
 /// result is not an image that runs by itself: `ck-forge stick write` reads the rest from `base`,
 /// and refuses it when `base` is not the image it was made from. Needs the EFI partition to be
@@ -139,12 +151,11 @@ fn build(
     let base_sha256 = match copy {
         Copy::Full => Some(copy_image(base, out, progress)?),
         Copy::Thin => {
-            ck_writer::thin::create(base, out, efi_end(base)?, progress)?;
+            ck_writer::thin::create(base, out, settings_end(base)?, progress)?;
             None
         }
     };
-    let result = write_file(out, &config_path(), &to_json(&config))
-        .map_err(Error::from)
+    let result = write_beside_settings(out, CONFIG_FILE, &to_json(&config))
         .and_then(|()| write_wallpaper(out, wallpaper))
         .and_then(|()| {
             Registry::register(
@@ -173,12 +184,13 @@ fn build(
     })
 }
 
-/// Where the EFI partition of `base` ends: the settings are written inside it.
-fn efi_end(base: &Path) -> Result<u64, Error> {
+/// Where the part of `base` that differs from stick to stick ends: the settings are written inside
+/// it. That is the end of the `CKCONFIG` partition, or of the EFI partition on an older image.
+fn settings_end(base: &Path) -> Result<u64, Error> {
     let mut file =
         fs::File::open(base).map_err(|e| Error::io(format!("opening {}", base.display()), e))?;
     let partitions = ck_image::read_partitions(&mut file)?;
-    Ok(ck_image::find_efi(&partitions)?.end_byte())
+    Ok(ck_image::settings_end(&partitions)?)
 }
 
 /// Replaces the settings on an image with the profile's, keeping the stick's id, secret and
@@ -200,7 +212,7 @@ pub fn configure_image(
     }
     check_wallpaper(&config.settings, wallpaper)?;
     write_wallpaper(image, wallpaper)?;
-    write_file(image, &config_path(), &to_json(&config))?;
+    write_beside_settings(image, CONFIG_FILE, &to_json(&config))?;
     Registry::update_labels(
         registry,
         &config.stick_id,
@@ -224,7 +236,12 @@ pub fn check_one_stick(image: &Path, sticks: usize) -> Result<(), Error> {
 
 /// The settings on an image, secret included: callers decide what to show.
 pub fn show_image(image: &Path) -> Result<StickConfig, Error> {
-    let bytes = match read_file(image, &config_path()) {
+    let read = if has_config_partition(image)? {
+        read_config_file(image, CONFIG_FILE)
+    } else {
+        read_file(image, &esp_config_path())
+    };
+    let bytes = match read {
         Ok(bytes) => bytes,
         Err(ck_image::Error::FileNotFound(_)) => return Err(Error::ImageNotConfigured),
         Err(other) => return Err(other.into()),
