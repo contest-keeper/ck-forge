@@ -51,15 +51,26 @@ jobs:
           mkdir -p app/binaries
           cp target/release/ck-forge.exe app/binaries/ck-forge-x86_64-pc-windows-gnu.exe
         shell: bash
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: Write the third-party licences
+        # Fails on a licence that is not allowed (about.toml) or on an empty result. The file goes
+        # into the installer and is published with the release.
+        run: |
+          mkdir -p out
+          tools/make-licences.sh out/THIRD-PARTY-LICENSES.txt
+          cp out/THIRD-PARTY-LICENSES.txt app/THIRD-PARTY-LICENSES.txt
+          echo '{"bundle":{"resources":["THIRD-PARTY-LICENSES.txt"]}}' > app/bundle-licences.json
+        shell: bash
       - name: Build the installer
-        run: node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-gnu
+        run: node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-gnu --config bundle-licences.json
         working-directory: app
         # Only a release signs in to, and reports to, the production Hub.
         env:
           CK_HUB_URL: https://hub.contestkeeper.com
       - name: Collect the files under stable names
         run: |
-          mkdir out
           cp app/target/x86_64-pc-windows-gnu/release/bundle/nsis/*-setup.exe out/keeper-forge-setup-x64.exe
           cp target/release/ck-forge.exe out/ck-forge-windows-x64.exe
         shell: bash
