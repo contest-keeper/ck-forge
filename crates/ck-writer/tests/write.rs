@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ck_writer::{Error, Phase, disk_path, thin, write_image, write_image_to_all, write_images};
+use ck_writer::{
+    Error, Phase, disk_path, thin, write_disk_images, write_image, write_image_to_all, write_images,
+};
 use tempfile::tempdir;
 
 #[test]
@@ -27,6 +29,20 @@ fn image(dir: &Path, size: usize) -> PathBuf {
         .collect();
     fs::write(&path, bytes).expect("write image");
     path
+}
+
+#[test]
+fn the_disk_writer_refuses_a_target_without_a_prepared_identity() {
+    let dir = tempdir().unwrap();
+    let source = image(dir.path(), 512);
+    let missing = dir.path().join("disk.img");
+
+    let error = write_disk_images(&[(source, missing.clone())], &[], |_, _, _, _| {})
+        .expect_err("no disk was prepared");
+
+    assert!(matches!(error, Error::Io { source, .. }
+        if source.kind() == std::io::ErrorKind::InvalidInput));
+    assert!(!missing.exists());
 }
 
 #[test]

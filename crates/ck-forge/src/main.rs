@@ -597,10 +597,18 @@ fn stick_write(
     let images = images_for(images, count)?;
     // Before anything is erased: the images must fit together, and a base that moved is found now.
     let size = ck_writer::check_images(&images)?;
-    let targets = if to.is_empty() {
+    let prepared = if to.is_empty() {
         prepare_disks(disks, size, allow_virtual, yes)?
     } else {
+        Vec::new()
+    };
+    let targets = if prepared.is_empty() {
         to
+    } else {
+        prepared
+            .iter()
+            .map(|disk| ck_writer::disk_path(disk.number))
+            .collect()
     };
     let jobs: Vec<(PathBuf, PathBuf)> = images.into_iter().zip(targets).collect();
     let targets: Vec<&PathBuf> = jobs.iter().map(|(_, target)| target).collect();
@@ -623,7 +631,7 @@ fn stick_write(
     // For each target how far it is written and how far it is checked; the slowest is reported.
     let mut state = vec![(0_u64, 0_u64); targets.len()];
     let mut last_report = Instant::now();
-    let results = ck_writer::write_images(&jobs, |index, phase, done, total| {
+    let report = |index: usize, phase, done, total| {
         match phase {
             ck_writer::Phase::Writing => state[index].0 = done,
             ck_writer::Phase::Verifying => state[index].1 = done,
@@ -634,7 +642,12 @@ fn stick_write(
             last_report = Instant::now();
             report_slowest(progress, &state, total);
         }
-    });
+    };
+    let results = if prepared.is_empty() {
+        ck_writer::write_images(&jobs, report)
+    } else {
+        ck_writer::write_disk_images(&jobs, &prepared, report)
+    };
     for bar in &bars {
         bar.finish_and_clear();
     }
@@ -731,14 +744,14 @@ fn label(target: &Path) -> String {
 }
 
 /// Looks every disk up and checks that it may be written, asks once for all of them, then gets
-/// each ready. Nothing is touched before every disk has passed the checks. Returns the device
-/// paths.
+/// each ready. Nothing is touched before every disk has passed the checks. Keeps the selected
+/// identities so the writer can match them again before opening the devices.
 fn prepare_disks(
     numbers: &[u32],
     size: u64,
     allow_virtual: bool,
     yes: bool,
-) -> Result<Vec<PathBuf>, Error> {
+) -> Result<Vec<ck_writer::Disk>, Error> {
     let listed = ck_writer::list_disks()?;
     let mut chosen: Vec<ck_writer::Disk> = Vec::new();
     for &number in numbers {
@@ -762,10 +775,7 @@ fn prepare_disks(
     for disk in &chosen {
         ck_writer::prepare_disk(disk, size, allow_virtual).map_err(admin_hint)?;
     }
-    Ok(chosen
-        .iter()
-        .map(|d| ck_writer::disk_path(d.number))
-        .collect())
+    Ok(chosen)
 }
 
 /// Asks the admin to type the disk numbers, because this erases the whole disks.
