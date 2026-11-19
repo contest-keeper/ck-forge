@@ -2,6 +2,7 @@
 
 export type Platform = 'kilonova' | 'codeforces' | 'vjudge' | 'other';
 export type RecordingMode = 'off' | 'snapshots' | 'low' | 'standard';
+export type RecordingUpload = 'keep' | 'after_contest' | 'during_contest';
 
 export type Bookmark = { title: string; url: string };
 
@@ -29,6 +30,8 @@ export type Recording = {
   start_delay_s: number;
   start_at?: string | undefined;
   snapshot_interval_s?: number | undefined;
+  upload?: RecordingUpload | undefined;
+  retention_days?: number | undefined;
 };
 
 export type Api = { url: string; heartbeat_s: number };
