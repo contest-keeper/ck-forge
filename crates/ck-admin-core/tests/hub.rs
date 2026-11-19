@@ -6,7 +6,9 @@ use ck_admin_core::{Error, push_registry};
 use tempfile::TempDir;
 
 /// Answers one request per canned reply, and hands back what it was sent.
-fn fake_hub(replies: Vec<String>) -> (String, thread::JoinHandle<Vec<String>>) {
+fn fake_hub<T: AsRef<[u8]> + Send + 'static>(
+    replies: Vec<T>,
+) -> (String, thread::JoinHandle<Vec<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let address = format!("http://{}", listener.local_addr().expect("address"));
     let handle = thread::spawn(move || {
@@ -35,7 +37,7 @@ fn fake_hub(replies: Vec<String>) -> (String, thread::JoinHandle<Vec<String>>) {
                     }
                 }
             }
-            stream.write_all(reply.as_bytes()).expect("reply");
+            stream.write_all(reply.as_ref()).expect("reply");
         }
         seen
     });
@@ -47,6 +49,156 @@ fn reply(status: &str, headers: &str, body: &str) -> String {
         "HTTP/1.1 {status}\r\n{headers}content-length: {}\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+mod hub_images {
+    use super::{fake_hub, reply};
+    use ck_admin_core::{
+        HubImageStep, HubSession, download_hub_image, list_hub_images, prepare_hub_image_download,
+    };
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    const PATH: &str = "/download/image/keeper-os-fixture";
+    const ARCHIVE: &[u8] = b"\x28\xb5\x2f\xfd\x20\x03\x19\x00\x00abc";
+    const BLOB_PATH: &str = "/fixture.img.zst?sig=fixture-signed-value";
+
+    fn session() -> HubSession {
+        HubSession::restore("fixture-bearer".to_owned(), "admin@example.test".to_owned())
+    }
+
+    fn catalogue(path: &str, size: usize, digest: &str) -> String {
+        reply(
+            "200 OK",
+            "",
+            &json!({"images": [{
+                "id": "keeper-os-fixture", "name": "Keeper OS", "version": "1.0",
+                "url": path, "size": size, "sha256": digest, "family": "ubuntu",
+                "profile": "generic", "source_offer_url": null
+            }]})
+            .to_string(),
+        )
+    }
+
+    fn archive_reply(status: &str, headers: &str) -> Vec<u8> {
+        let mut bytes = format!(
+            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            ARCHIVE.len(),
+        )
+        .into_bytes();
+        bytes.extend_from_slice(ARCHIVE);
+        bytes
+    }
+
+    #[test]
+    fn pulls_a_verified_image_without_forwarding_the_hub_session() {
+        let (blob, blob_requests) = fake_hub(vec![archive_reply("200 OK", "")]);
+        let location = format!("Location: {blob}{BLOB_PATH}\r\n");
+        let list = catalogue(PATH, ARCHIVE.len(), &ck_crypto::sha256_hex(ARCHIVE));
+        let (hub, hub_requests) =
+            fake_hub(vec![list.clone(), list, reply("302 Found", &location, "")]);
+        let items = list_hub_images(&hub, &session()).expect("catalogue");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "Keeper OS");
+        assert_eq!(items[0].filename, None, "older catalogue without filename");
+
+        let download =
+            prepare_hub_image_download(&hub, &session(), &items[0].id).expect("location");
+        let dir = TempDir::new().expect("dir");
+        let out = dir.path().join("base.img");
+        let mut stages = Vec::new();
+        download_hub_image(download, &out, |step, done, total| {
+            stages.push((step, done, total));
+        })
+        .expect("verified image");
+        assert_eq!(std::fs::read(&out).expect("raw image"), b"abc");
+        assert_eq!(dir.path().read_dir().expect("files").count(), 1);
+        assert!(stages.iter().any(|(step, done, total)| {
+            *step == HubImageStep::Download && *done == *total && *total > 0
+        }));
+        assert!(stages.iter().any(|(step, done, total)| {
+            *step == HubImageStep::Import && *done == *total && *total > 0
+        }));
+        let target = dir.path().join("written.img");
+        let checked = ck_writer::write_image(&out, &target, |_, _, _| {}).expect("write test file");
+        assert_eq!(checked, ck_crypto::sha256_hex(b"abc"));
+        assert!(
+            std::fs::read(target)
+                .expect("written image")
+                .starts_with(b"abc")
+        );
+
+        let seen = hub_requests.join().expect("hub requests");
+        assert!(seen[2].starts_with(&format!("GET {PATH} HTTP/1.1")));
+        for request in seen {
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer fixture-bearer")
+            );
+        }
+        let seen = blob_requests.join().expect("blob requests");
+        assert!(seen[0].starts_with(&format!("GET {BLOB_PATH} HTTP/1.1")));
+        assert!(!seen[0].to_ascii_lowercase().contains("authorization:"));
+        assert!(!seen[0].to_ascii_lowercase().contains("cookie:"));
+    }
+
+    #[test]
+    fn rejects_unsafe_catalogue_paths_and_locations_without_disclosing_them() {
+        let digest = ck_crypto::sha256_hex(ARCHIVE);
+        let unsafe_path = "https://other.example.test/?sig=fixture-signed-value";
+        let (hub, _) = fake_hub(vec![catalogue(unsafe_path, ARCHIVE.len(), &digest)]);
+        let error = list_hub_images(&hub, &session()).unwrap_err();
+        assert!(!error.to_string().contains("fixture-signed-value"));
+        for location in [
+            "http://outside.example.test/image?sig=fixture-signed-value",
+            "https://name:password@outside.example.test/image?sig=fixture-signed-value",
+            "/relative?sig=fixture-signed-value",
+        ] {
+            let (hub, _) = fake_hub(vec![
+                catalogue(PATH, ARCHIVE.len(), &digest),
+                reply("302 Found", &format!("Location: {location}\r\n"), ""),
+            ]);
+            let Err(error) = prepare_hub_image_download(&hub, &session(), "keeper-os-fixture")
+            else {
+                panic!("unsafe location accepted");
+            };
+            assert!(!error.to_string().contains("fixture-signed-value"));
+        }
+    }
+
+    #[test]
+    fn refuses_wrong_sizes_corrupt_archives_and_storage_redirects() {
+        let digest = ck_crypto::sha256_hex(ARCHIVE);
+        let corrupt_digest = "0".repeat(64);
+        for (size, expected, status, headers) in [
+            (ARCHIVE.len() - 1, digest.as_str(), "200 OK", ""),
+            (ARCHIVE.len() + 1, digest.as_str(), "200 OK", ""),
+            (ARCHIVE.len(), corrupt_digest.as_str(), "200 OK", ""),
+            (
+                ARCHIVE.len(),
+                digest.as_str(),
+                "302 Found",
+                "Location: /elsewhere?sig=fixture-signed-value\r\n",
+            ),
+        ] {
+            let (blob, _) = fake_hub(vec![archive_reply(status, headers)]);
+            let (hub, _) = fake_hub(vec![
+                catalogue(PATH, size, expected),
+                reply("302 Found", &format!("Location: {blob}{BLOB_PATH}\r\n"), ""),
+            ]);
+            let download = prepare_hub_image_download(&hub, &session(), "keeper-os-fixture")
+                .expect("location");
+            let dir = TempDir::new().expect("dir");
+            let out = dir.path().join("base.img");
+            let error = download_hub_image(download, &out, |_, _, _| {}).unwrap_err();
+            assert!(!error.to_string().contains("fixture-signed-value"));
+            if status == "302 Found" {
+                assert!(error.to_string().contains("storage returned HTTP 302"));
+            }
+            assert_eq!(dir.path().read_dir().expect("files").count(), 0);
+        }
+    }
 }
 
 fn registry_file(dir: &TempDir) -> std::path::PathBuf {

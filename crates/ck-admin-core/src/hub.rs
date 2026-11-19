@@ -129,7 +129,7 @@ impl HubSession {
         &self.token
     }
 
-    fn bearer(&self) -> String {
+    pub(crate) fn bearer(&self) -> String {
         format!("Bearer {}", self.token)
     }
 }
@@ -166,7 +166,7 @@ pub fn sign_in_url(hub: &str, port: u16, state: &str) -> Result<String, Error> {
 }
 
 /// An address the code and the session may be sent to: https, or this PC (a Hub started for a test).
-fn checked_base(hub: &str) -> Result<&str, Error> {
+pub(crate) fn checked_base(hub: &str) -> Result<&str, Error> {
     let base = hub.trim_end_matches('/');
     if safe_for_password(base) {
         Ok(base)
@@ -446,7 +446,7 @@ pub fn sign_out(hub: &str, session: &HubSession) {
         .send_empty();
 }
 
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .http_status_as_error(false)
         // A redirect would resend the code or the token to wherever it points.
