@@ -6,6 +6,7 @@
     optionalCount,
     optionalText,
     wholeNumber,
+    type RecordingUpload,
     type Settings,
   } from '../core/profile';
 
@@ -91,6 +92,31 @@
         bind:value={
           () => settings.recording.snapshot_interval_s ?? '',
           (v) => (settings.recording.snapshot_interval_s = optionalCount(String(v)))
+        }
+      />
+    </Field>
+    <Field label="Recording upload">
+      <select
+        bind:value={
+          () => settings.recording.upload ?? 'keep',
+          (value: RecordingUpload) => (settings.recording.upload = value)
+        }
+      >
+        <option value="keep">Keep on the stick</option>
+        <option value="after_contest">Upload after the contest</option>
+        <option value="during_contest">Upload during the contest</option>
+      </select>
+    </Field>
+    <Field
+      label="Keep on the stick (days)"
+      hint="Leave empty to keep recordings until you collect them."
+    >
+      <input
+        type="number"
+        min="1"
+        bind:value={
+          () => settings.recording.retention_days ?? '',
+          (value) => (settings.recording.retention_days = optionalCount(String(value)))
         }
       />
     </Field>

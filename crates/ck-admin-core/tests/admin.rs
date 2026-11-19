@@ -1,5 +1,5 @@
 use ck_admin_core::{Error, Profile, Registry, RegistryEntry, make_stick_config};
-use ck_protocol::{LocalDateTime, Problem};
+use ck_protocol::{LocalDateTime, Problem, UploadMode};
 use tempfile::TempDir;
 
 fn time() -> LocalDateTime {
@@ -43,6 +43,19 @@ fn every_stick_gets_its_own_id_and_secret() {
     assert_ne!(first.stick_id, second.stick_id);
     assert_ne!(first.token, second.token);
     assert_eq!(first.settings, profile.settings);
+}
+
+#[test]
+fn after_contest_upload_warns_when_the_contest_has_no_end() {
+    let mut profile = Profile::template();
+    profile.settings.api.url = "https://hub.example.com".to_owned();
+    profile.settings.recording.upload = UploadMode::AfterContest;
+    assert_eq!(
+        profile.warnings(),
+        ["set the contest end time to upload recordings after the contest"]
+    );
+    profile.settings.contest.end = Some(time());
+    assert_eq!(profile.warnings(), Vec::<String>::new());
 }
 
 #[test]
