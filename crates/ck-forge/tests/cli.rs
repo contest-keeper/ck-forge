@@ -19,6 +19,47 @@ fn text(bytes: &[u8]) -> String {
 }
 
 #[test]
+fn image_detection_reads_os_release_instead_of_using_the_filename() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let dir = TempDir::new().expect("temp dir");
+    let path = support::make_image(&dir, "fedora.img");
+    let mut disk = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("open fixture");
+    let partitions = ck_image::read_partitions(&mut disk).expect("partition table");
+    let root = ck_image::find_linux_root(&partitions).expect("Linux partition");
+    disk.seek(SeekFrom::Start(root.start_byte()))
+        .expect("seek root");
+    // The small ext2 fixture contains only /usr/lib/os-release, forcing the standard fallback.
+    disk.write_all(include_bytes!("fixtures/os-release.ext2"))
+        .expect("write ext filesystem fixture");
+    drop(disk);
+
+    let result = forge(&["image", "detect", "fedora.img"], dir.path());
+
+    assert!(result.status.success(), "{}", text(&result.stderr));
+    let answer = text(&result.stdout);
+    assert!(answer.contains("SHA-256:"), "{answer}");
+    assert!(answer.contains("Ubuntu 24.04"), "{answer}");
+    assert!(answer.contains("ID: ubuntu"), "{answer}");
+    assert!(answer.contains("/usr/lib/os-release"), "{answer}");
+}
+
+#[test]
+fn image_detection_reports_unsupported_root_filesystems() {
+    let dir = TempDir::new().expect("temp dir");
+    support::make_image(&dir, "ubuntu.img");
+
+    let result = forge(&["image", "detect", "ubuntu.img"], dir.path());
+
+    assert!(!result.status.success());
+    assert!(text(&result.stderr).contains("supported Linux filesystem"));
+}
+
+#[test]
 fn a_new_profile_passes_its_own_check_and_is_never_replaced() {
     let dir = TempDir::new().expect("temp dir");
     assert!(

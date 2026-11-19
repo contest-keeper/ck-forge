@@ -20,12 +20,14 @@ pub fn hex(bytes: &[u8]) -> String {
 pub fn sha256_file(path: &Path) -> Result<String, Error> {
     let mut file =
         File::open(path).map_err(|e| Error::io(format!("opening {}", path.display()), e))?;
+    sha256_reader(&mut file).map_err(|e| Error::io(format!("reading {}", path.display()), e))
+}
+
+pub(crate) fn sha256_reader(file: &mut impl Read) -> std::io::Result<String> {
     let mut hash = Sha256::new();
     let mut buffer = vec![0u8; 1 << 20];
     loop {
-        let count = file
-            .read(&mut buffer)
-            .map_err(|e| Error::io(format!("reading {}", path.display()), e))?;
+        let count = file.read(&mut buffer)?;
         if count == 0 {
             return Ok(hex(&hash.finalize()));
         }

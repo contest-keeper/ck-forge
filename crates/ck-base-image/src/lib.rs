@@ -6,6 +6,7 @@
 //! write a record of what the image was made from.
 
 mod catalog;
+mod detect;
 mod download;
 mod error;
 mod import;
@@ -22,6 +23,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 pub use catalog::{Entry, catalog, find};
+pub use detect::{DetectedImage, detect_image};
 pub use download::sha256_file;
 pub use error::Error;
 pub use import::import_image;
