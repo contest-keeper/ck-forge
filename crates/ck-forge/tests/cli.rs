@@ -156,6 +156,47 @@ fn an_unconfigured_image_is_explained() {
 }
 
 #[test]
+fn an_enrolment_image_shows_no_code_and_cannot_be_written_to_several_targets() {
+    let dir = TempDir::new().expect("temp dir");
+    let image = support::make_image_with_config(&dir, "enrolling.img");
+    let code = "ABCD-EFGH-JKLM-NPQR-STUV";
+    let config = serde_json::json!({
+        "schema": ck_protocol::ENROLMENT_SCHEMA,
+        "stick_id": "enrolling-stick",
+        "created_at": "2026-11-19T11:08:13",
+        "enrolment_code": code,
+    });
+    ck_image::write_config_file(&image, "config.json", config.to_string().as_bytes())
+        .expect("write enrolling config");
+    let shown = forge(&["image", "show", "enrolling.img"], dir.path());
+    assert!(shown.status.success(), "{}", text(&shown.stderr));
+    let details = text(&shown.stdout);
+    assert!(details.contains("enrolling-stick"));
+    assert!(details.contains("first-boot enrolment"));
+    assert!(!details.contains(code));
+
+    let refused = forge(
+        &[
+            "stick",
+            "write",
+            "enrolling.img",
+            "--to",
+            "one.img",
+            "--to",
+            "two.img",
+            "--yes",
+        ],
+        dir.path(),
+    );
+    assert!(!refused.status.success());
+    let details = text(&refused.stderr);
+    assert!(details.contains("enrolling-stick"));
+    assert!(!details.contains(code));
+    assert!(!dir.path().join("one.img").exists());
+    assert!(!dir.path().join("two.img").exists());
+}
+
+#[test]
 fn a_wrong_command_is_a_usage_error() {
     let dir = TempDir::new().expect("temp dir");
     assert_eq!(forge(&["bogus"], dir.path()).status.code(), Some(2));

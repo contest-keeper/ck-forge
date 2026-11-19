@@ -38,6 +38,15 @@ pub struct RegistryEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Registry {
     sticks: Vec<RegistryEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    enrolments: Vec<EnrolmentReservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EnrolmentReservation {
+    stick_id: StickId,
+    contest: String,
+    machine_number: u32,
 }
 
 impl Registry {
@@ -52,7 +61,7 @@ impl Registry {
 
     /// Refuses a stick whose id is already there.
     pub fn add(&mut self, entry: RegistryEntry) -> Result<(), Error> {
-        if self.find(&entry.stick_id).is_some() {
+        if self.contains(&entry.stick_id) {
             return Err(Error::DuplicateStick(entry.stick_id));
         }
         self.sticks.push(entry);
@@ -66,6 +75,29 @@ impl Registry {
         let mut registry = Self::load(path)?;
         registry.add(entry)?;
         registry.save(path)
+    }
+
+    pub(crate) fn reserve_enrolment(
+        path: &Path,
+        stick_id: &StickId,
+        contest: &str,
+    ) -> Result<u32, Error> {
+        let _lock = Lock::acquire(path)?;
+        let mut registry = Self::load(path)?;
+        if registry.contains(stick_id) {
+            return Err(Error::DuplicateStick(stick_id.clone()));
+        }
+        let machine_number = registry.next_machine_number(contest);
+        if i32::try_from(machine_number).is_err() {
+            return Err(Error::EnrolmentNumbersExhausted);
+        }
+        registry.enrolments.push(EnrolmentReservation {
+            stick_id: stick_id.clone(),
+            contest: contest.to_owned(),
+            machine_number,
+        });
+        registry.save(path)?;
+        Ok(machine_number)
     }
 
     /// Updates the team, site and contest of a stick that is already in the registry file, for
@@ -99,11 +131,22 @@ impl Registry {
     pub fn next_machine_number(&self, contest: &str) -> u32 {
         let mut count = 0_u32;
         let mut highest = 0_u32;
-        for entry in self.sticks.iter().filter(|e| e.contest == contest) {
+        let old_numbers = self
+            .sticks
+            .iter()
+            .map(|entry| (entry.contest.as_str(), entry.machine_number.unwrap_or(0)));
+        let enrolment_numbers = self
+            .enrolments
+            .iter()
+            .map(|entry| (entry.contest.as_str(), entry.machine_number));
+        for (name, number) in old_numbers.chain(enrolment_numbers) {
+            if name != contest {
+                continue;
+            }
             count += 1;
-            highest = highest.max(entry.machine_number.unwrap_or(0));
+            highest = highest.max(number);
         }
-        count.max(highest) + 1
+        count.max(highest).saturating_add(1)
     }
 
     #[must_use]
@@ -114,5 +157,45 @@ impl Registry {
     #[must_use]
     pub fn find(&self, id: &StickId) -> Option<&RegistryEntry> {
         self.sticks.iter().find(|entry| &entry.stick_id == id)
+    }
+
+    fn contains(&self, id: &StickId) -> bool {
+        self.find(id).is_some() || self.enrolments.iter().any(|entry| &entry.stick_id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enrolment_reservations_number_each_machine_without_storing_a_credential() {
+        let folder = tempfile::tempdir().expect("temp folder");
+        let path = folder.path().join("registry.json");
+        let first = StickId::parse("first").expect("stick id");
+        let second = StickId::parse("second").expect("stick id");
+        let mut numbers = std::thread::scope(|scope| {
+            let a = scope.spawn(|| Registry::reserve_enrolment(&path, &first, "Contest"));
+            let b = scope.spawn(|| Registry::reserve_enrolment(&path, &second, "Contest"));
+            [
+                a.join().expect("first thread").expect("first number"),
+                b.join().expect("second thread").expect("second number"),
+            ]
+        });
+        numbers.sort_unstable();
+        assert_eq!(numbers, [1, 2]);
+        assert_eq!(
+            Registry::load(&path)
+                .expect("registry")
+                .next_machine_number("Contest"),
+            3
+        );
+        assert!(matches!(
+            Registry::reserve_enrolment(&path, &first, "Contest"),
+            Err(Error::DuplicateStick(_))
+        ));
+        let document = std::fs::read_to_string(&path).expect("registry JSON");
+        assert!(!document.contains("token"));
+        assert!(!document.contains("code"));
     }
 }

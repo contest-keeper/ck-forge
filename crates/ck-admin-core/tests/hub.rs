@@ -201,6 +201,116 @@ mod hub_images {
     }
 }
 
+mod enrolment {
+    use ck_admin_core::{
+        CredentialScope, HubSession, mint_enrolment_code, push_registry_signed_in,
+    };
+    use ck_protocol::Settings;
+    use serde_json::{Value, json};
+    use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+    use super::{fake_hub, reply};
+
+    fn session() -> HubSession {
+        HubSession::restore(
+            "fixture-admin-session".to_owned(),
+            "admin@example.test".to_owned(),
+        )
+    }
+
+    fn utc(text: &str) -> OffsetDateTime {
+        OffsetDateTime::parse(text, &Rfc3339).expect("UTC time")
+    }
+
+    #[test]
+    fn mints_one_code_with_the_allocated_machine_and_contest_scope() {
+        let fixture_code = "ABCD-EFGH-JKLM-NPQR-STUV";
+        let (hub, requests) = fake_hub(vec![reply(
+            "201 Created",
+            "Cache-Control: no-store\r\n",
+            &json!({"code": fixture_code, "expires_at": "2026-11-19T23:00:00Z"}).to_string(),
+        )]);
+        let settings = Settings {
+            team: "Team A".to_owned(),
+            site: "Lab B".to_owned(),
+            contest: ck_protocol::Contest {
+                name: "Regional Finals".to_owned(),
+                ..ck_protocol::Contest::default()
+            },
+            ..Settings::default()
+        };
+        let scope = CredentialScope {
+            contest_id: "regional-2026".to_owned(),
+            valid_from: utc("2026-11-19T22:00:00Z"),
+            valid_until: utc("2026-11-20T04:00:00Z"),
+        };
+
+        let minted = mint_enrolment_code(&hub, &session(), &settings, 4, Some(&scope))
+            .expect("mint enrolment code");
+        assert_eq!(minted.code.expose(), fixture_code);
+        assert_eq!(minted.expires_at, utc("2026-11-19T23:00:00Z"));
+        assert!(!format!("{minted:?}").contains(fixture_code));
+        let requests = requests.join().expect("Hub requests");
+        let (headers, body) = requests[0].split_once("\r\n\r\n").expect("HTTP request");
+        assert!(headers.starts_with("POST /api/v1/enrolment-codes HTTP/1.1\r\n"));
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture-admin-session")
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(body).expect("mint request"),
+            json!({"team": "Team A", "site": "Lab B", "contest": "Regional Finals",
+                "machine_number": 4, "credential_scope": scope}),
+        );
+    }
+
+    #[test]
+    fn rejects_a_redirect_and_an_invalid_code_without_exposing_the_hub_body() {
+        let fixture = "fixture-secret-value";
+        for response in [
+            reply(
+                "307 Temporary Redirect",
+                &format!("Location: https://example.test/?secret={fixture}\r\n"),
+                "",
+            ),
+            reply(
+                "201 Created",
+                "",
+                &json!({"code": fixture, "expires_at": "2026-11-19T23:00:00Z"}).to_string(),
+            ),
+        ] {
+            let (hub, _) = fake_hub(vec![response]);
+            let error =
+                mint_enrolment_code(&hub, &session(), &Settings::default(), 1, None).unwrap_err();
+            assert!(!error.to_string().contains(fixture));
+        }
+    }
+
+    #[test]
+    fn only_registered_legacy_sticks_are_pushed_to_hub() {
+        let folder = tempfile::tempdir().expect("folder");
+        let path = folder.path().join("registry.json");
+        let legacy = json!({"sticks": [{"stick_id": "old", "token": "fixture-legacy-key"}]});
+        let mut local = legacy.clone();
+        local["enrolments"] =
+            json!([{ "stick_id": "new", "contest": "Contest", "machine_number": 2 }]);
+        std::fs::write(&path, local.to_string()).expect("write registry");
+        let (hub, requests) = fake_hub(vec![reply(
+            "200 OK",
+            "",
+            r#"{"added":1,"already_known":0,"conflicts":[]}"#,
+        )]);
+        push_registry_signed_in(&hub, &session(), &path).expect("push legacy registry");
+        let requests = requests.join().expect("hub requests");
+        let (_, body) = requests[0].split_once("\r\n\r\n").expect("HTTP request");
+        assert_eq!(
+            serde_json::from_str::<Value>(body).expect("old wire"),
+            legacy
+        );
+    }
+}
+
 fn registry_file(dir: &TempDir) -> std::path::PathBuf {
     let path = dir.path().join("ck-registry.json");
     std::fs::write(

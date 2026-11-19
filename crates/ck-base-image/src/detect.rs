@@ -90,7 +90,37 @@ fn identify(known: Option<&'static str>, disk: &mut File) -> Result<Identity, Er
     if let Some(name) = known {
         return Ok(Identity::Known(name));
     }
+    inspect_linux(disk, read_os_release)?.ok_or(Error::UnknownImage)
+}
 
+/// Checks the agent's capability marker on the Linux root without hashing or mounting the image.
+pub fn supports_enrolment_schema(path: &Path, schema: u32) -> Result<bool, Error> {
+    let mut disk = File::open(path).map_err(|error| Error::io("opening the image", error))?;
+    let expected = schema.to_string();
+    let found = inspect_linux(&mut disk, |fs| {
+        if read_os_release(fs)?.is_none() {
+            return Ok(None);
+        }
+        let file = match fs.open("/etc/ck/enrolment-schema") {
+            Ok(file) => file,
+            Err(Ext4Error::NotFound) => return Ok(Some(false)),
+            Err(error) => return Err(Error::DetectionFilesystem(error)),
+        };
+        let mut bytes = Vec::new();
+        file.take(17)
+            .read_to_end(&mut bytes)
+            .map_err(|error| Error::io("reading the enrolment capability", error))?;
+        let compatible = bytes.len() <= 16
+            && std::str::from_utf8(&bytes).is_ok_and(|text| text.trim() == expected);
+        Ok(Some(compatible))
+    })?;
+    Ok(found.unwrap_or(false))
+}
+
+fn inspect_linux<T>(
+    disk: &mut File,
+    mut inspect: impl FnMut(&Ext4) -> Result<Option<T>, Error>,
+) -> Result<Option<T>, Error> {
     let disk_size = disk
         .metadata()
         .map_err(|e| Error::io("reading image size", e))?
@@ -128,11 +158,11 @@ fn identify(known: Option<&'static str>, disk: &mut File) -> Result<Identity, Er
         }
         check_geometry(&header, len)?;
         let fs = Ext4::load(Box::new(reader)).map_err(Error::DetectionFilesystem)?;
-        if let Some(identity) = read_os_release(&fs)? {
-            return Ok(identity);
+        if let Some(value) = inspect(&fs)? {
+            return Ok(Some(value));
         }
     }
-    Err(Error::UnknownImage)
+    Ok(None)
 }
 
 fn check_geometry(header: &[u8; SUPERBLOCK_PREFIX], len: u64) -> Result<(), Error> {

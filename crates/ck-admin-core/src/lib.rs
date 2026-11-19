@@ -19,16 +19,19 @@ pub use ck_base_image::{
 pub use error::Error;
 pub use file::folder_of;
 pub use hub::{
-    HubProfile, HubSession, ProfileSummary, Pushed, fetch_profile, list_profiles, new_profile_id,
-    new_state, push_registry, push_registry_signed_in, retire_stick_credential, sign_in_url,
-    sign_in_with_code, sign_out, upload_profile, wait_for_code,
+    HubProfile, HubSession, MintedEnrolmentCode, ProfileSummary, Pushed, fetch_profile,
+    list_profiles, mint_enrolment_code, new_profile_id, new_state, push_registry,
+    push_registry_signed_in, retire_stick_credential, sign_in_url, sign_in_with_code, sign_out,
+    upload_profile, wait_for_code,
 };
 pub use hub_images::{
     HubImage, HubImageDownload, HubImageStep, download_hub_image, list_hub_images,
     prepare_hub_image_download,
 };
 pub use image::{
-    Built, build_image, build_thin_image, check_one_stick, configure_image, show_image,
+    Built, EnrolmentBuild, ImageConfiguration, build_enrolment_image, build_image,
+    build_thin_image, check_one_stick, configure_image, image_configuration, show_image,
+    supports_enrolment,
 };
 pub use profile::{Profile, StickKeyWindow};
 pub use registry::{CredentialScope, Registry, RegistryEntry};
