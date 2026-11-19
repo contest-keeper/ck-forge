@@ -97,6 +97,29 @@ pub fn write_image_to_all(
 /// calling thread.
 pub fn write_images(
     jobs: &[(PathBuf, PathBuf)],
+    progress: impl FnMut(usize, Phase, u64, u64),
+) -> Result<Vec<Result<Written, Error>>, Error> {
+    write_targets(jobs, None, progress)
+}
+
+/// Writes images to the physical disks already checked and prepared by the caller.
+pub fn write_disk_images(
+    jobs: &[(PathBuf, PathBuf)],
+    disks: &[crate::Disk],
+    progress: impl FnMut(usize, Phase, u64, u64),
+) -> Result<Vec<Result<Written, Error>>, Error> {
+    if jobs.len() != disks.len() {
+        return Err(Error::io(
+            "matching images with the prepared disks",
+            io::ErrorKind::InvalidInput.into(),
+        ));
+    }
+    write_targets(jobs, Some(disks), progress)
+}
+
+fn write_targets(
+    jobs: &[(PathBuf, PathBuf)],
+    disks: Option<&[crate::Disk]>,
     mut progress: impl FnMut(usize, Phase, u64, u64),
 ) -> Result<Vec<Result<Written, Error>>, Error> {
     let images: Vec<&Path> = jobs.iter().map(|(image, _)| image.as_path()).collect();
@@ -111,10 +134,21 @@ pub fn write_images(
     let mut writers = Vec::new();
     for (index, parts) in parts.into_iter().enumerate() {
         let (image, target) = (&jobs[index].0, &jobs[index].1);
+        if let Some(disks) = disks {
+            let disk = &disks[index];
+            if *target != disk_path(disk.number) {
+                return Err(Error::Prepare {
+                    number: disk.number,
+                    detail: "the write path does not match the prepared disk".to_owned(),
+                });
+            }
+            disk.recheck_identity()?;
+        }
+        // Windows opens physical drives with OPEN_EXISTING. Only file targets may be created.
         match OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
+            .create(disks.is_none())
             .truncate(false)
             .open(target)
         {
