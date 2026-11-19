@@ -11,6 +11,10 @@
   let allowVirtual = $state(false);
   let typed = $state('');
   let testFile = $state('');
+  let archive = $state('');
+  let sha256 = $state('');
+  let importing = $state(false);
+  let importFailure = $state('');
   let wifiPassword = $state('');
   let busy = $state(false);
   let progress = $state<api.Progress | null>(null);
@@ -33,9 +37,44 @@
   async function chooseBase() {
     const path = await api.chooseImageToOpen();
     if (!path) return;
+    archive = '';
+    importFailure = '';
+    selectBase(path);
+  }
+
+  function selectBase(path: string) {
     setBasePath(path);
     chosen = [];
     disks = [];
+    typed = '';
+  }
+
+  async function chooseArchive() {
+    const path = await api.chooseImageArchive();
+    if (!path) return;
+    archive = path;
+    sha256 = '';
+    importFailure = '';
+  }
+
+  async function importDownload() {
+    const out = await api.chooseBaseToSave();
+    if (!out) return;
+    busy = true;
+    importing = true;
+    importFailure = '';
+    progress = null;
+    try {
+      await api.importBaseImage(archive, out, sha256.trim());
+      selectBase(out);
+      archive = '';
+    } catch (error) {
+      importFailure = describeError(error);
+    } finally {
+      busy = false;
+      importing = false;
+      progress = null;
+    }
   }
 
   async function refresh() {
@@ -87,8 +126,8 @@
   <div class="card">
     <h2>Base image</h2>
     <p class="hint">
-      The disk image every stick starts from. It is only read, never changed, and must stay where it
-      is. Chosen once; it is remembered.
+      Import the .img.zst you downloaded from Keeper Hub, or choose a raw .img you already have.
+      Keep the raw image in place until all sticks are written.
     </p>
     <div class="path">
       <div class="grow">
@@ -96,9 +135,31 @@
         {#if app.basePath}<div class="p">{app.basePath}</div>{/if}
       </div>
       <button type="button" class="btn sm" onclick={chooseBase} disabled={busy}>
-        {app.basePath ? 'Change…' : 'Choose…'}
+        Choose raw image…
+      </button>
+      <button type="button" class="btn sm" onclick={chooseArchive} disabled={busy}>
+        Import download…
       </button>
     </div>
+    {#if archive}
+      <div class="path">
+        <label class="grow">
+          <span class="n">SHA-256 for {fileName(archive)}</span>
+          <input type="text" bind:value={sha256} spellcheck="false" disabled={busy} />
+          <span class="p">Copy the 64 characters shown beside this download on Keeper Hub.</span>
+        </label>
+        <button
+          type="button"
+          class="btn sm"
+          onclick={importDownload}
+          disabled={busy || !/^[a-f0-9]{64}$/i.test(sha256.trim())}
+        >
+          Verify and save raw image…
+        </button>
+      </div>
+    {/if}
+    {#if importing}<ProgressBar {progress} />{/if}
+    {#if importFailure}<p class="note error" role="alert">{importFailure}</p>{/if}
   </div>
 
   <BaseImageCreator disabled={busy} />
@@ -121,9 +182,9 @@
   <div class="card">
     <h2>Choose the sticks to erase</h2>
     <p class="hint">
-      A stick of at least 32 GB is needed. Everything on it is erased. Tick several sticks to write
-      them at the same time: each gets its own identity, made in a second from the saved profile and
-      the base image. Windows asks for administrator permission when the write starts.
+      Forge checks that each stick is large enough for the base image. Everything on the selected
+      sticks is erased. You can write several at once, each with its own identity. Windows asks for
+      administrator permission when the write starts.
     </p>
     <div class="row">
       <button type="button" class="btn sm" onclick={refresh} disabled={busy || !ready}>
@@ -198,7 +259,7 @@
     </div>
   {/if}
 
-  <ProgressBar {progress} />
+  {#if !importing}<ProgressBar {progress} />{/if}
   {#if failure}<p class="note error" role="alert">{failure}</p>{/if}
   {#if hash}
     <p class="note ok">

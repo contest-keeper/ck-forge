@@ -25,7 +25,7 @@ export type DiskView = {
 export type Progress = {
   done: number;
   total: number;
-  phase: 'building' | 'writing' | 'checking';
+  phase: 'importing' | 'building' | 'writing' | 'checking';
   /** How far the stick is checked; the checking goes on while the writing does. */
   checked: number;
 };
@@ -46,6 +46,9 @@ export const checkProfile = (profile: Profile) => invoke<Checked>('check_profile
 
 export const listDisks = (base: string, allowVirtual: boolean) =>
   invoke<DiskView[]>('list_disks', { base, allowVirtual });
+
+export const importBaseImage = (archive: string, out: string, sha256: string) =>
+  invoke<null>('import_base_image', { archive, out, sha256 });
 
 /**
  * Writes to disks (all at the same time, with one Windows permission prompt) or, for a test
@@ -93,6 +96,9 @@ export const chooseProfileToOpen = () => open({ filters: JSON_FILES });
 export const chooseProfileToSave = () =>
   save({ filters: JSON_FILES, defaultPath: 'contest-profile.json' });
 export const chooseImageToOpen = () => open({ filters: IMAGE_FILES });
+export const chooseImageArchive = () =>
+  open({ filters: [{ name: 'Keeper OS download', extensions: ['zst'] }] });
+export const chooseBaseToSave = () => save({ filters: IMAGE_FILES, defaultPath: 'keeper-os.img' });
 export const choosePatchToOpen = () =>
   open({ filters: [{ name: 'Keeper OS patch', extensions: ['gz'] }] });
 export const chooseImageToSave = () => save({ filters: IMAGE_FILES, defaultPath: 'stick.img' });

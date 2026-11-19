@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use ck_admin_core::{Profile, Wallpaper, build_thin_image as build, folder_of, local_now};
+use ck_admin_core::{
+    Profile, Wallpaper, build_thin_image as build, folder_of, import_image, local_now,
+};
 use ck_protocol::WifiPassword;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -16,10 +18,39 @@ use crate::profiles::{message, registry_of};
 struct Progress {
     done: u64,
     total: u64,
-    /// What is going on: `building`, `writing` or `checking`.
+    /// What is going on: `importing`, `building`, `writing` or `checking`.
     phase: &'static str,
     /// How far the stick is checked. The checking goes on while the writing does.
     checked: u64,
+}
+
+#[tauri::command]
+pub async fn import_base_image(
+    app: AppHandle,
+    archive: PathBuf,
+    out: PathBuf,
+    sha256: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut last = Instant::now();
+        import_image(&archive, &out, &sha256, |done, total| {
+            if done == total || last.elapsed() >= Duration::from_millis(250) {
+                last = Instant::now();
+                let _ = app.emit(
+                    "progress",
+                    Progress {
+                        done,
+                        total,
+                        phase: "importing",
+                        checked: 0,
+                    },
+                );
+            }
+        })
+        .map_err(|error| message(&error.into()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[derive(Serialize)]

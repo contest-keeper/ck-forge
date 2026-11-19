@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use ck_admin_core::{
     CreateOptions, CreateStep, Error, Profile, Registry, Wallpaper, build_image, build_thin_image,
-    catalog, check_one_stick, configure_image, create_base_image, folder_of, local_now, show_image,
+    catalog, check_one_stick, configure_image, create_base_image, folder_of, import_image,
+    local_now, show_image,
 };
 use ck_protocol::{StickConfig, Wifi, WifiPassword};
 use clap::{Args, Parser, Subcommand};
@@ -94,11 +95,22 @@ enum ProfileCommand {
 
 #[derive(Subcommand)]
 enum ImageCommand {
+    /// Verify a downloaded Keeper OS .img.zst archive and expand it to a raw base image
+    Import {
+        /// The downloaded archive
+        archive: PathBuf,
+        /// The SHA-256 shown beside the download on Keeper Hub
+        #[arg(long)]
+        sha256: String,
+        /// Where to save the raw .img (must not exist)
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Make the image of a stick: the base image with its own identity and the profile's settings.
-    /// By default the new image holds only the start of the base (through its EFI partition) and
+    /// By default the new image holds only the start of the base (through its settings partition) and
     /// `stick write` takes the rest from the base, which takes a second instead of minutes
     Build {
-        /// The base image (only read, never changed)
+        /// The raw base image (expand an .img.zst download with `image import` first)
         #[arg(long)]
         base: PathBuf,
         /// The new image to create (must not exist)
@@ -269,6 +281,11 @@ fn run(command: Command) -> Result<String, Error> {
     match command {
         Command::Profile(ProfileCommand::New { file }) => profile_new(&file),
         Command::Profile(ProfileCommand::Check { file }) => profile_check(&file),
+        Command::Image(ImageCommand::Import {
+            archive,
+            sha256,
+            out,
+        }) => image_import(&archive, &out, &sha256),
         Command::Image(ImageCommand::Build {
             base,
             out,
@@ -363,6 +380,17 @@ fn default_cache() -> PathBuf {
         Some(base) => PathBuf::from(base).join("ck-forge").join("cache"),
         None => PathBuf::from("ck-forge-cache"),
     }
+}
+
+fn image_import(archive: &Path, out: &Path, sha256: &str) -> Result<String, Error> {
+    let bar = ProgressBar::new(0);
+    bar.set_message("Verifying and expanding the download");
+    import_image(archive, out, sha256, |done, total| {
+        bar.set_length(total);
+        bar.set_position(done);
+    })?;
+    bar.finish_and_clear();
+    Ok(format!("Verified base image saved to {}\n", out.display()))
 }
 
 fn image_create(options: &CreateOptions) -> Result<String, Error> {

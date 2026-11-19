@@ -12,8 +12,14 @@ pub enum Error {
     UnknownDistro(String),
     #[error("downloading {url}: {detail}")]
     Download { url: String, detail: String },
-    #[error("the download does not match the catalog: expected SHA-256 {expected}, got {actual}")]
+    #[error("the download's SHA-256 does not match: expected {expected}, got {actual}")]
     Checksum { expected: String, actual: String },
+    #[error("enter the 64-character SHA-256 from the image download page")]
+    InvalidChecksum,
+    #[error("the archive contains an empty image")]
+    EmptyArchive,
+    #[error("the expanded image exceeds the 32 GiB limit")]
+    ImageTooLarge,
     #[error("{tool} failed: {detail}")]
     Tool { tool: String, detail: String },
     #[error("the provisioning machine failed: {0}")]
