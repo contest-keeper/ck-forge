@@ -62,6 +62,8 @@ export const importBaseImage = (archive: string, out: string, sha256: string) =>
 export const listHubImages = () => invoke<HubImage[]>('list_hub_images');
 export const downloadHubImage = (id: string, out: string) =>
   invoke<null>('download_hub_image', { id, out });
+export const enrolmentSupported = (base: string) =>
+  invoke<boolean>('enrolment_supported', { base });
 
 /**
  * Writes to disks (all at the same time, with one Windows permission prompt) or, for a test
@@ -73,6 +75,7 @@ export const writeStick = (
   target: { disks: number[] } | { file: string },
   allowVirtual: boolean,
   wifiPassword: string,
+  firstBootEnrolment: boolean,
 ) =>
   invoke<string>('write_stick', {
     base,
@@ -81,6 +84,7 @@ export const writeStick = (
     toFile: 'file' in target ? target.file : null,
     allowVirtual,
     wifiPassword: wifiPassword === '' ? null : wifiPassword,
+    firstBootEnrolment,
   });
 
 export const listCatalog = () => invoke<CatalogItem[]>('list_catalog');
