@@ -20,6 +20,10 @@ pub enum Error {
     Prepare { number: u32, detail: String },
     #[error("the image is empty")]
     EmptyImage,
+    #[error(
+        "this is a compressed download; import it in Forge or use `ck-forge image import` first"
+    )]
+    CompressedImage,
     #[error("{0}")]
     Thin(String),
     #[error(

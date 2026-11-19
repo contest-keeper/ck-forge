@@ -4,6 +4,22 @@ use std::path::{Path, PathBuf};
 use ck_writer::{Error, Phase, disk_path, thin, write_image, write_image_to_all, write_images};
 use tempfile::tempdir;
 
+#[test]
+fn a_zstd_archive_is_refused_before_the_target_is_touched() {
+    let dir = tempdir().expect("temp folder");
+    let archive = dir.path().join("download-renamed.img");
+    let target = dir.path().join("stick.img");
+    fs::write(&archive, [0x28, 0xb5, 0x2f, 0xfd, 0x20, 0]).expect("write archive header");
+    fs::write(&target, b"existing target").expect("write target");
+
+    let error = write_image(&archive, &target, |_, _, _| {}).expect_err("unsafe source");
+    assert!(matches!(error, Error::CompressedImage));
+    assert_eq!(
+        fs::read(&target).expect("untouched target"),
+        b"existing target"
+    );
+}
+
 fn image(dir: &Path, size: usize) -> PathBuf {
     let path = dir.join("image.img");
     let bytes: Vec<u8> = (0..size)
