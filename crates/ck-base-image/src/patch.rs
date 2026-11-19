@@ -6,12 +6,16 @@ use std::process::Command;
 use crate::Error;
 use crate::tools::run;
 
-// Unpack the release's patch (apply-to-image.sh and ck-agent at its top) and run it on the image.
+// Releases wrap the patch in ck-os-patch. Accept flat archives made by local development tools.
 const SCRIPT: &str = r#"set -euo pipefail
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 tar -xzf "$1" -C "$work"
-bash "$work/apply-to-image.sh" --in-place "$2" --agent "$work/ck-agent"
+patch_root=$work
+if [[ -d "$work/ck-os-patch" ]]; then
+  patch_root="$work/ck-os-patch"
+fi
+bash "$patch_root/apply-to-image.sh" --in-place "$2" --agent "$patch_root/ck-agent"
 "#;
 
 pub fn apply(image: &Path, patch: &Path) -> Result<(), Error> {
@@ -36,4 +40,58 @@ fn wsl_path(path: &Path) -> Result<String, Error> {
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[test]
+    fn runs_the_patch_from_flat_and_release_archives() {
+        for release in [false, true] {
+            let dir = tempfile::tempdir().expect("test folder");
+            let source = dir.path().join("source");
+            let files = if release {
+                source.join("ck-os-patch")
+            } else {
+                source.clone()
+            };
+            fs::create_dir_all(&files).expect("patch folder");
+            fs::write(
+                files.join("apply-to-image.sh"),
+                "set -eu\n[ \"$1\" = --in-place ] && [ \"$3\" = --agent ] && [ -f \"$4\" ]\ncat \"$2\"\n",
+            )
+            .expect("patch script");
+            fs::write(files.join("ck-agent"), b"fixture agent").expect("fixture agent");
+            let archive = dir.path().join("patch.tar.gz");
+            let member = if release { "ck-os-patch" } else { "." };
+            assert!(
+                Command::new("tar")
+                    .arg("-czf")
+                    .arg(&archive)
+                    .arg("-C")
+                    .arg(&source)
+                    .arg(member)
+                    .status()
+                    .expect("make patch archive")
+                    .success()
+            );
+            let image = dir.path().join("image.img");
+            fs::write(&image, b"fixture image").expect("fake image");
+            let result = Command::new("bash")
+                .args(["-c", SCRIPT, "bash"])
+                .arg(&archive)
+                .arg(&image)
+                .output()
+                .expect("run patch wrapper");
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(result.stdout, b"fixture image");
+        }
+    }
 }
