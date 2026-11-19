@@ -97,6 +97,7 @@ export const hubSignIn = (profilePath: string | null) =>
   invoke<SignedIn>('hub_sign_in', { profilePath });
 export const hubSignOut = () => invoke<null>('hub_sign_out');
 export const hubStatus = () => invoke<string | null>('hub_status');
+export const hubRetireStick = (id: string) => invoke<null>('hub_retire_stick', { id });
 
 export function onProgress(handler: (progress: Progress) => void): Promise<() => void> {
   return listen<Progress>('progress', (event) => handler(event.payload));

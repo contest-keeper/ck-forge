@@ -38,6 +38,7 @@ fn main() {
             hub::hub_load_profile,
             hub::hub_save_profile,
             hub::hub_status,
+            hub::hub_retire_stick,
         ])
         .run(tauri::generate_context!())
         .expect("the Keeper Forge window failed to start");
