@@ -10,7 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-ck-image = { git = "https://github.com/contest-keeper/ck-protocol", rev = "a4dc883d88305ebba65392f906ec4b86f4cc9798", version = "0.1.0" }
+ck-image = { git = "https://github.com/contest-keeper/ck-protocol", rev = "293131bab0de9c55d508d04f446b3803420f1ec0", version = "0.1.0" }
 ext4-view = { version = "1.0.0", features = ["std"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

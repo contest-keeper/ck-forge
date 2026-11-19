@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 ck-admin-core = { path = "../ck-admin-core", version = "0.1.0" }
-ck-protocol = { git = "https://github.com/contest-keeper/ck-protocol", rev = "a4dc883d88305ebba65392f906ec4b86f4cc9798", version = "0.1.0" }
+ck-protocol = { git = "https://github.com/contest-keeper/ck-protocol", rev = "293131bab0de9c55d508d04f446b3803420f1ec0", version = "0.1.0" }
 ck-writer = { path = "../ck-writer", version = "0.1.0" }
 clap = { version = "4.5.51", features = ["derive"] }
 serde_json = "1.0.154"
@@ -20,7 +20,7 @@ indicatif = "0.18.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"
-ck-image = { git = "https://github.com/contest-keeper/ck-protocol", rev = "a4dc883d88305ebba65392f906ec4b86f4cc9798", version = "0.1.0" }
+ck-image = { git = "https://github.com/contest-keeper/ck-protocol", rev = "293131bab0de9c55d508d04f446b3803420f1ec0", version = "0.1.0" }
 crc32fast = "1.5.5"
 fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
 fscommon = "0.1.1"
