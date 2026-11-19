@@ -2,9 +2,12 @@ use std::path::Path;
 
 use ck_protocol::{Bookmark, Platform, Settings, WifiPassword};
 use serde::{Deserialize, Serialize};
+use time::format_description::well_known::Rfc3339;
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::error::Error;
 use crate::file::{read_json, write_json_atomically};
+use crate::registry::CredentialScope;
 
 const DEFAULT_BOOKMARKS: [(&str, &str); 2] = [
     ("Codeforces", "https://codeforces.com"),
@@ -18,6 +21,13 @@ fn is_codeforces_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_digit())
 }
 
+/// Explicit UTC dates keep a saved contest independent of the organizer's time zone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StickKeyWindow {
+    pub valid_from: String,
+    pub valid_until: String,
+}
+
 /// The admin's settings for one contest, saved as a JSON file.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Profile {
@@ -26,6 +36,8 @@ pub struct Profile {
     /// The id of this profile on the Hub, once it was saved there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stick_key_window: Option<StickKeyWindow>,
 }
 
 impl Profile {
@@ -49,7 +61,33 @@ impl Profile {
             name: "My contest".to_owned(),
             settings,
             hub_id: None,
+            stick_key_window: None,
         }
+    }
+
+    pub fn credential_scope(&self) -> Result<Option<CredentialScope>, Error> {
+        let Some(window) = &self.stick_key_window else {
+            return Ok(None);
+        };
+        let contest_id = self.settings.contest.contest_id.trim();
+        if contest_id.is_empty()
+            || contest_id.len() > 200
+            || contest_id.chars().any(char::is_control)
+        {
+            return Err(Error::InvalidStickKeyWindow("enter a contest ID"));
+        }
+        let valid_from = parse_utc(&window.valid_from)?;
+        let valid_until = parse_utc(&window.valid_until)?;
+        if valid_from >= valid_until {
+            return Err(Error::InvalidStickKeyWindow(
+                "the end must be after the start",
+            ));
+        }
+        Ok(Some(CredentialScope {
+            contest_id: contest_id.to_owned(),
+            valid_from,
+            valid_until,
+        }))
     }
 
     /// The settings to put on a stick. The profile's name becomes the contest name unless the
@@ -140,9 +178,19 @@ impl Profile {
     fn check(&self) -> Result<(), Error> {
         let problems = self.problems();
         if problems.is_empty() {
+            self.credential_scope()?;
             Ok(())
         } else {
             Err(Error::InvalidProfile(problems))
         }
     }
+}
+
+fn parse_utc(value: &str) -> Result<OffsetDateTime, Error> {
+    OffsetDateTime::parse(value.trim(), &Rfc3339)
+        .ok()
+        .filter(|timestamp| timestamp.offset() == UtcOffset::UTC)
+        .ok_or(Error::InvalidStickKeyWindow(
+            "enter dates in UTC, for example 2026-11-19T08:00:00Z",
+        ))
 }

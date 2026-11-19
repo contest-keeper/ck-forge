@@ -48,7 +48,14 @@ export type Settings = {
   wifi?: Wifi | undefined;
 };
 
-export type Profile = { name: string; settings: Settings; hub_id?: string | undefined };
+export type StickKeyWindow = { valid_from: string; valid_until: string };
+
+export type Profile = {
+  name: string;
+  settings: Settings;
+  hub_id?: string | undefined;
+  stick_key_window?: StickKeyWindow | undefined;
+};
 
 export const PLATFORMS: Platform[] = ['kilonova', 'codeforces', 'vjudge', 'other'];
 export const RECORDING_MODES: RecordingMode[] = ['off', 'snapshots', 'low', 'standard'];

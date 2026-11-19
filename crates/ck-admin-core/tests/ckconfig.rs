@@ -113,3 +113,57 @@ fn a_thin_image_reaches_the_end_of_the_config_partition() {
     ck_writer::write_image(&out, &target, |_, _, _| {}).expect("write");
     assert_eq!(show_image(&target).expect("show"), built.config);
 }
+
+#[test]
+fn changing_the_contest_window_requires_a_fresh_stick_key() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image_with_config(&dir, "base.img");
+    let first_image = dir.path().join("first.img");
+    let second_image = dir.path().join("second.img");
+    let registry = dir.path().join("r.json");
+    let scoped = |contest_id: &str| -> Profile {
+        serde_json::from_value(serde_json::json!({
+            "name": "Scoped Contest",
+            "settings": {"contest": {"platform": "codeforces", "contest_id": contest_id}},
+            "stick_key_window": {
+                "valid_from": "2026-11-19T08:00:00Z",
+                "valid_until": "2026-11-19T13:00:00Z"
+            }
+        }))
+        .expect("scoped profile")
+    };
+
+    let first = build_thin_image(
+        &base,
+        &first_image,
+        &scoped("4"),
+        None,
+        &registry,
+        time(),
+        |_, _| {},
+    )
+    .expect("first key");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry).expect("registry"))
+            .expect("valid registry JSON");
+    assert_eq!(saved["sticks"][0]["credential_scope"]["contest_id"], "4");
+    assert_eq!(
+        saved["sticks"][0]["credential_scope"]["valid_until"],
+        "2026-11-19T13:00:00Z"
+    );
+    assert!(configure_image(&first_image, &scoped("5"), None, &registry).is_err());
+    assert_eq!(show_image(&first_image).expect("unchanged"), first.config);
+
+    let next = build_thin_image(
+        &base,
+        &second_image,
+        &scoped("5"),
+        None,
+        &registry,
+        time(),
+        |_, _| {},
+    )
+    .expect("new key");
+    assert_ne!(first.config.stick_id, next.config.stick_id);
+    assert_ne!(first.config.token, next.config.token);
+}
