@@ -1,6 +1,6 @@
 <script lang="ts">
   import Field from '../components/Field.svelte';
-  import type { Settings } from '../core/profile';
+  import { optionalText, type Settings } from '../core/profile';
 
   type Props = { settings: Settings };
   let { settings = $bindable() }: Props = $props();
@@ -14,6 +14,14 @@
     </Field>
     <Field label="Codeforces contest ID" hint="The number in codeforces.com/contest/…">
       <input bind:value={settings.contest.contest_id} />
+    </Field>
+    <Field label="Contest end" hint="Use the stick's local time for uploads after the contest.">
+      <input
+        type="datetime-local"
+        bind:value={
+          () => settings.contest.end ?? '', (value) => (settings.contest.end = optionalText(value))
+        }
+      />
     </Field>
   </div>
 </section>

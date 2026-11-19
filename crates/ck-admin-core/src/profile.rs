@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use ck_protocol::{Bookmark, Platform, Settings, WifiPassword};
+use ck_protocol::{Bookmark, Platform, Settings, UploadMode, WifiPassword};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
@@ -149,6 +149,12 @@ impl Profile {
                 "no server address (api.url) is set, so sticks made from this profile cannot report to a Hub"
                     .to_owned(),
             );
+        }
+        if self.settings.recording.upload == UploadMode::AfterContest
+            && self.settings.contest.end.is_none()
+        {
+            warnings
+                .push("set the contest end time to upload recordings after the contest".to_owned());
         }
         warnings
     }
