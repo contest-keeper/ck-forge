@@ -105,10 +105,19 @@ pub fn provision(
 }
 
 fn check_log(log: &str, path: &Path) -> Result<(), Error> {
-    if log.contains(OK) {
+    let mut succeeded = false;
+    let mut failed = false;
+    for line in log.lines().map(str::trim) {
+        match cloud_init_message(line).unwrap_or(line) {
+            OK => succeeded = true,
+            FAILED => failed = true,
+            _ => {}
+        }
+    }
+    if succeeded && !failed {
         return Ok(());
     }
-    let reason = if log.contains(FAILED) {
+    let reason = if failed {
         "the script failed"
     } else {
         "the machine stopped before the script finished"
@@ -117,6 +126,17 @@ fn check_log(log: &str, path: &Path) -> Result<(), Error> {
         "{reason}; the log is {}",
         path.display()
     )))
+}
+
+fn cloud_init_message(line: &str) -> Option<&str> {
+    // Cloud-init can forward the guest's exact line with a kernel timestamp and its PID.
+    let (time, rest) = line.strip_prefix('[')?.split_once("] cloud-init[")?;
+    let (seconds, fraction) = time.trim().split_once('.')?;
+    let (pid, message) = rest.split_once("]: ")?;
+    seconds.parse::<u64>().ok()?;
+    fraction.parse::<u32>().ok()?;
+    pid.parse::<u32>().ok()?;
+    Some(message)
 }
 
 #[cfg(test)]
@@ -129,5 +149,40 @@ mod tests {
         assert!(check_log("boot\nCK-PROVISION-OK\n", path).is_ok());
         assert!(check_log("CK-PROVISION-FAILED", path).is_err());
         assert!(check_log("", path).is_err());
+        assert!(check_log("boot printed CK-PROVISION-OK as an example\n", path).is_err());
+        assert!(check_log("CK-PROVISION-OK\nCK-PROVISION-FAILED\n", path).is_err());
+        assert!(check_log("[  365.110898] cloud-init[1105]: CK-PROVISION-OK\n", path).is_ok());
+        assert!(check_log("[bad] cloud-init[1105]: CK-PROVISION-OK\n", path).is_err());
+        assert!(
+            check_log(
+                "[  365.110898] cloud-init[1105]: echo CK-PROVISION-OK\n",
+                path
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_guest_command_reports_failure() {
+        let script = include_str!("../data/ubuntu-24.04.sh");
+        let (_, function) = script
+            .split_once("\nprovision() {\n")
+            .expect("guest function");
+        let (body, footer) = function.split_once("\n}\n").expect("guest footer");
+        let (setup, _) = body.split_once("\n  apt-get update").expect("guest setup");
+        // Run the actual setup and footer with a controlled guest command and inert shutdown.
+        for (command, marker) in [(":", OK), ("false", FAILED)] {
+            let fixture = format!(
+                "sync() {{ :; }}\npoweroff() {{ :; }}\nprovision() {{\n{setup}\n  {command}\n  :\n}}\n{footer}"
+            );
+            let output = Command::new("bash")
+                .args(["-c", &fixture])
+                .output()
+                .expect("run shell fixture");
+            assert!(output.status.success());
+            let log = String::from_utf8(output.stdout).expect("serial output");
+            assert_eq!(log.trim(), marker);
+        }
     }
 }
