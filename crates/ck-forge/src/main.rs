@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use ck_admin_core::{
     CreateOptions, CreateStep, Error, Profile, Registry, Wallpaper, build_image, build_thin_image,
-    catalog, check_one_stick, configure_image, create_base_image, folder_of, import_image,
-    local_now, show_image,
+    catalog, check_one_stick, configure_image, create_base_image, detect_image, folder_of,
+    import_image, local_now, show_image,
 };
 use ck_protocol::{StickConfig, Wifi, WifiPassword};
 use clap::{Args, Parser, Subcommand};
@@ -105,6 +105,11 @@ enum ImageCommand {
         /// Where to save the raw .img (must not exist)
         #[arg(long)]
         out: PathBuf,
+    },
+    /// Identify a raw image by SHA-256 or by os-release on its Linux filesystem
+    Detect {
+        /// Raw disk image to inspect
+        image: PathBuf,
     },
     /// Make the image of a stick: the base image with its own identity and the profile's settings.
     /// By default the new image holds only the start of the base (through its settings partition) and
@@ -319,6 +324,9 @@ fn run(command: Command) -> Result<String, Error> {
             ))
         }
         Command::Image(ImageCommand::Catalog) => image_catalog(),
+        Command::Image(ImageCommand::Detect { image }) => {
+            Ok(format!("{}\n", detect_image(&image)?))
+        }
         Command::Image(ImageCommand::Create {
             distro,
             out,

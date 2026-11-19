@@ -20,6 +20,18 @@ pub enum Error {
     EmptyArchive,
     #[error("the expanded image exceeds the 32 GiB limit")]
     ImageTooLarge,
+    #[error("the image is not a supported GPT disk: {0}")]
+    DetectionLayout(#[source] ck_image::Error),
+    #[error("the image has no supported Linux filesystem with an os-release file")]
+    UnknownImage,
+    #[error("cannot read the Linux filesystem: {0}")]
+    DetectionFilesystem(#[source] ext4_view::Ext4Error),
+    #[error(
+        "the Linux filesystem geometry exceeds the partition or the supported block group limit"
+    )]
+    DetectionGeometry,
+    #[error("invalid os-release: {0}")]
+    OsRelease(&'static str),
     #[error("{tool} failed: {detail}")]
     Tool { tool: String, detail: String },
     #[error("the provisioning machine failed: {0}")]
