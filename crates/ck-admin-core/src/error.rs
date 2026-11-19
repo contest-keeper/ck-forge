@@ -44,6 +44,14 @@ pub enum Error {
     ImageNotConfigured,
     #[error("the settings on the image are not valid: {0}")]
     ImageSettingsUnreadable(serde_json::Error),
+    #[error("this base image does not support first-boot enrolment")]
+    EnrolmentUnsupported,
+    #[error("this image uses first-boot enrolment. Build a fresh image to change its settings")]
+    EnrolmentImage,
+    #[error("the contest has no more enrolment machine numbers")]
+    EnrolmentNumbersExhausted,
+    #[error("the image has conflicting enrolment settings")]
+    AmbiguousImageConfig,
     #[error(
         "this image is the stick {0}: written to several sticks they would all share its id and          secret and the Hub could not tell them apart. Make one image per stick, or write a plain          base image to several sticks"
     )]

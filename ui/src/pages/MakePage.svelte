@@ -26,6 +26,8 @@
   let previousStick = $state('');
   let retirementStatus = $state('');
   let retirementError = $state('');
+  let enrolmentSupported = $state(false);
+  let firstBootEnrolment = $state(false);
 
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
   const ready = $derived(app.profilePath !== null && app.basePath !== null);
@@ -37,6 +39,26 @@
       if (busy) progress = p;
     });
     return () => void stop.then((unlisten) => unlisten());
+  });
+
+  $effect(() => {
+    const base = app.basePath;
+    const signedIn = app.hubEmail !== null;
+    enrolmentSupported = false;
+    firstBootEnrolment = false;
+    if (!base || !signedIn) return;
+    let current = true;
+    void api
+      .enrolmentSupported(base)
+      .then((supported) => {
+        if (current) enrolmentSupported = supported;
+      })
+      .catch(() => {
+        /* A base that cannot be checked must use the existing credential flow. */
+      });
+    return () => {
+      current = false;
+    };
   });
 
   async function chooseBase() {
@@ -145,6 +167,7 @@
         target,
         allowVirtual,
         wifiPassword,
+        enrolmentSupported && firstBootEnrolment,
       );
       written = 'disks' in target ? target.disks.length : 1;
       app.written = true;
@@ -155,6 +178,7 @@
       progress = null;
       typed = '';
       wifiPassword = '';
+      firstBootEnrolment = false;
     }
   }
 </script>
@@ -254,6 +278,15 @@
       sticks is erased. You can write several at once, each with its own identity. Windows asks for
       administrator permission when the write starts.
     </p>
+    {#if enrolmentSupported}
+      <label class="check">
+        <input type="checkbox" bind:checked={firstBootEnrolment} disabled={busy} />
+        <span>Enrol sticks at first boot</span>
+      </label>
+      {#if firstBootEnrolment}
+        <p class="hint">Connect each stick to Keeper Hub and boot it within one hour.</p>
+      {/if}
+    {/if}
     <div class="row">
       <button type="button" class="btn sm" onclick={refresh} disabled={busy || !ready}>
         Find sticks

@@ -13,12 +13,15 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use ck_protocol::{Settings, StickId};
-use serde::Deserialize;
+use ck_protocol::{EnrolmentCode, Settings, StickId};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use time::OffsetDateTime;
+use ureq::http::{HeaderValue, header::AUTHORIZATION};
 
 use crate::error::Error;
 use crate::profile::StickKeyWindow;
+use crate::registry::CredentialScope;
 use crate::wallpaper::{MAX_WALLPAPER_BYTES, Wallpaper};
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -44,8 +47,7 @@ pub fn push_registry(
             "{base} is not https, so the password would cross the network in the clear; use an https address"
         )));
     }
-    let body = std::fs::read_to_string(registry)
-        .map_err(|e| Error::io(format!("reading {}", registry.display()), e))?;
+    let body = registry_payload(registry)?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         // A redirect would resend the password body to wherever it points.
@@ -79,6 +81,17 @@ pub fn push_registry(
         .ok_or_else(|| Error::Hub("the Hub did not start a session".into()))?;
 
     post_registry(&agent, base, ("cookie", &cookie), body)
+}
+
+fn registry_payload(registry: &Path) -> Result<String, Error> {
+    let body = std::fs::read_to_string(registry)
+        .map_err(|error| Error::io(format!("reading {}", registry.display()), error))?;
+    if let Ok(serde_json::Value::Object(mut fields)) = serde_json::from_str(&body)
+        && fields.remove("enrolments").is_some()
+    {
+        return Ok(serde_json::Value::Object(fields).to_string());
+    }
+    Ok(body)
 }
 
 /// Sends the registry text with one request header that says who is sending it.
@@ -298,10 +311,67 @@ pub fn push_registry_signed_in(
     registry: &Path,
 ) -> Result<Pushed, Error> {
     let base = checked_base(hub)?;
-    let body = std::fs::read_to_string(registry)
-        .map_err(|e| Error::io(format!("reading {}", registry.display()), e))?;
+    let body = registry_payload(registry)?;
     let bearer = format!("Bearer {}", session.token);
     post_registry(&agent(), base, ("authorization", &bearer), body)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MintedEnrolmentCode {
+    pub code: EnrolmentCode,
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
+}
+
+#[derive(Serialize)]
+struct EnrolmentRequest<'a> {
+    team: &'a str,
+    site: &'a str,
+    contest: &'a str,
+    machine_number: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_scope: Option<&'a CredentialScope>,
+}
+
+pub fn mint_enrolment_code(
+    hub: &str,
+    session: &HubSession,
+    settings: &Settings,
+    machine_number: u32,
+    credential_scope: Option<&CredentialScope>,
+) -> Result<MintedEnrolmentCode, Error> {
+    let hub = checked_base(hub)?;
+    let mut bearer = HeaderValue::from_str(&session.bearer())
+        .map_err(|_| Error::Hub("sign in to the Hub again".into()))?;
+    bearer.set_sensitive(true);
+    let request = EnrolmentRequest {
+        team: settings.team.trim(),
+        site: settings.site.trim(),
+        contest: &settings.contest.name,
+        machine_number,
+        credential_scope,
+    };
+    let mut answer = agent()
+        .post(format!("{hub}/api/v1/enrolment-codes"))
+        .header(AUTHORIZATION, bearer)
+        .send_json(&request)
+        .map_err(|_| Error::Hub("cannot reach the Hub to make an enrolment code".into()))?;
+    let message = match answer.status().as_u16() {
+        201 => {
+            return answer
+                .body_mut()
+                .with_config()
+                .limit(4096)
+                .read_json()
+                .map_err(|_| Error::Hub("the Hub returned an invalid enrolment code".into()));
+        }
+        401 => "sign in to the Hub again".into(),
+        403 => "this account cannot make enrolment codes".into(),
+        409 => "making enrolment codes in Forge requires a sign-in with one organization".into(),
+        429 => "too many enrolment codes requested. Try again in a minute".into(),
+        status => format!("the Hub returned HTTP {status} while making an enrolment code"),
+    };
+    Err(Error::Hub(message))
 }
 
 /// Retires a previous stick key without removing its history from the Hub.

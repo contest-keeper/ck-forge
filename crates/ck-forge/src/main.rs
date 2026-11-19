@@ -8,11 +8,13 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    CreateOptions, CreateStep, Error, Profile, Registry, Wallpaper, build_image, build_thin_image,
-    catalog, check_one_stick, configure_image, create_base_image, detect_image, folder_of,
-    import_image, local_now, show_image,
+    CreateOptions, CreateStep, Error, ImageConfiguration, Profile, Registry, Wallpaper,
+    build_image, build_thin_image, catalog, check_one_stick, configure_image, create_base_image,
+    detect_image, folder_of, image_configuration, import_image, local_now,
 };
-use ck_protocol::{StickConfig, Wifi, WifiPassword};
+use ck_protocol::{
+    LocalDateTime, Settings, StickConfig, StickId, Wifi, WifiPassword, render_computer_name,
+};
 use clap::{Args, Parser, Subcommand};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde_json::json;
@@ -345,7 +347,7 @@ fn run(command: Command) -> Result<String, Error> {
             timeout: Duration::from_secs(timeout_minutes * 60),
             patch,
         }),
-        Command::Image(ImageCommand::Show { image }) => Ok(config_text(&show_image(&image)?)),
+        Command::Image(ImageCommand::Show { image }) => show_config(&image),
         Command::Registry(RegistryCommand::List { registry }) => registry_list(&registry.registry),
         Command::Registry(RegistryCommand::Push {
             hub,
@@ -503,15 +505,42 @@ fn image_build(
 
 /// The settings of a stick for the admin to read. The secret is never part of it.
 fn config_text(config: &StickConfig) -> String {
-    let s = &config.settings;
-    let mut text = format!(
-        "Stick:    {}\nCreated:  {}\nContest:  {} ({:?})\nComputer: {} (machine {})\n",
-        config.stick_id,
+    describe_config(
+        &config.stick_id,
         config.created_at,
-        s.contest.name,
-        s.contest.platform,
-        config.computer_name(),
-        config.machine_number.unwrap_or(1)
+        config.machine_number,
+        &config.settings,
+    )
+}
+
+fn show_config(image: &Path) -> Result<String, Error> {
+    let text = match image_configuration(image)? {
+        ImageConfiguration::Registered(config) => config_text(&config),
+        ImageConfiguration::Enrolment(config) => {
+            let mut text = describe_config(
+                &config.stick_id,
+                config.created_at,
+                config.machine_number,
+                &config.settings,
+            );
+            text.push_str("Provisioning: first-boot enrolment\n");
+            text
+        }
+    };
+    Ok(text)
+}
+
+fn describe_config(
+    id: &StickId,
+    created: LocalDateTime,
+    number: Option<u32>,
+    s: &Settings,
+) -> String {
+    let number = number.unwrap_or(1);
+    let name = render_computer_name(&s.branding.computer_name_pattern, &s.team, &s.site, number);
+    let mut text = format!(
+        "Stick:    {id}\nCreated:  {created}\nContest:  {} ({:?})\nComputer: {name} (machine {number})\n",
+        s.contest.name, s.contest.platform,
     );
     if let Some(wallpaper) = &s.branding.wallpaper {
         let _ = writeln!(text, "Wallpaper: {wallpaper}");

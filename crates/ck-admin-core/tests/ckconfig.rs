@@ -3,10 +3,14 @@
 
 mod support;
 
+use std::io::{Seek, SeekFrom, Write};
+
 use ck_admin_core::{
-    Profile, Wallpaper, build_image, build_thin_image, configure_image, show_image,
+    EnrolmentBuild, Error, ImageConfiguration, Profile, Wallpaper, build_enrolment_image,
+    build_image, build_thin_image, check_one_stick, configure_image, image_configuration,
+    show_image, supports_enrolment,
 };
-use ck_protocol::LocalDateTime;
+use ck_protocol::{ENROLMENT_SCHEMA, EnrolmentCode, LocalDateTime};
 use tempfile::TempDir;
 
 fn time() -> LocalDateTime {
@@ -24,6 +28,83 @@ fn picture(bytes: Vec<u8>) -> Wallpaper {
         name: "wall.png".to_owned(),
         bytes,
     }
+}
+
+#[test]
+fn enrolment_requires_a_compatible_base_and_only_writes_the_code_to_ckconfig() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image_with_config(&dir, "base.img");
+    let out = dir.path().join("enrolling.img");
+    let registry = dir.path().join("registry.json");
+    let mut profile = profile();
+    profile.settings.api.url = "https://hub.example.test".to_owned();
+    let wallpaper = picture(vec![7; 500]);
+    let options = EnrolmentBuild {
+        base: &base,
+        out: &out,
+        profile: &profile,
+        wallpaper: Some(&wallpaper),
+        registry: &registry,
+        now: time(),
+    };
+    assert!(!supports_enrolment(&base).expect("old image"));
+    assert!(matches!(
+        build_enrolment_image(&options, |_, _, _| panic!("must not mint"), |_, _| {}),
+        Err(Error::EnrolmentUnsupported)
+    ));
+    assert!(!registry.exists() && !out.exists());
+
+    let mut disk = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&base)
+        .expect("disk");
+    disk.seek(SeekFrom::Start(support::CONFIG_END))
+        .expect("root");
+    disk.write_all(include_bytes!("fixtures/enrolment.ext2"))
+        .expect("ext filesystem");
+    drop(disk);
+    assert!(supports_enrolment(&base).expect("marker"));
+    let fixture_code = "ABCD-EFGH-JKLM-NPQR-STUV";
+    let built = build_enrolment_image(
+        &options,
+        |settings, number, scope| {
+            assert_eq!(settings.team, profile.settings.team);
+            assert_eq!(number, 1);
+            assert!(scope.is_none());
+            Ok(EnrolmentCode::parse(fixture_code).expect("fixture code"))
+        },
+        |_, _| {},
+    )
+    .expect("build");
+    let bytes = ck_image::read_config_file(&out, "config.json").expect("config partition");
+    let mut json: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+    assert_eq!(json["schema"], ENROLMENT_SCHEMA);
+    assert_eq!(json["stick_id"], built.stick_id.as_str());
+    assert_eq!(json["enrolment_code"], fixture_code);
+    assert!(json.get("token").is_none());
+    assert!(ck_image::read_file(&out, "ck/config.json").is_err());
+    let registry_json = std::fs::read_to_string(registry).expect("registry");
+    assert!(!registry_json.contains(fixture_code));
+    assert!(!registry_json.contains("token"));
+    assert!(matches!(
+        image_configuration(&out),
+        Ok(ImageConfiguration::Enrolment(_))
+    ));
+    assert!(matches!(
+        check_one_stick(&out, 2),
+        Err(Error::ImageForOneStick(_))
+    ));
+
+    json["token"] = serde_json::json!("fixture-legacy-token");
+    ck_image::write_config_file(
+        &out,
+        "config.json",
+        &serde_json::to_vec(&json).expect("JSON"),
+    )
+    .expect("ambiguous config");
+    let error = check_one_stick(&out, 2).unwrap_err().to_string();
+    assert!(!error.contains("fixture-legacy-token"));
+    assert!(!error.contains(fixture_code));
 }
 
 #[test]

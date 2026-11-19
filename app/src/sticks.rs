@@ -5,8 +5,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    HubImage, HubImageStep, Profile, Wallpaper, build_thin_image as build, folder_of, import_image,
-    local_now,
+    EnrolmentBuild, HubImage, HubImageStep, Profile, Wallpaper, build_enrolment_image,
+    build_thin_image, folder_of, import_image, local_now, mint_enrolment_code, supports_enrolment,
 };
 use ck_protocol::WifiPassword;
 use serde::{Deserialize, Serialize};
@@ -93,26 +93,22 @@ fn base_progress(app: &AppHandle) -> impl FnMut(&'static str, u64, u64) + '_ {
     }
 }
 
-#[derive(Serialize)]
-pub struct Built {
-    stick_id: String,
-    computer_name: String,
-    team: String,
-    registry: String,
-    /// What happened when the registry was sent to the Hub; nothing when nobody is signed in.
-    hub: Option<String>,
+#[tauri::command]
+pub async fn enrolment_supported(base: PathBuf) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || supports_enrolment(&base).map_err(|e| message(&e)))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
-/// Makes the image of one stick, from the profile at `profile_path`, and registers the stick. When
-/// the admin is signed in to the Hub the stick reports to it and the registry is sent; otherwise the
-/// stick has no server address and keeps its events on the stick.
+/// Makes one stick image. First-boot enrolment keeps the signing key on the stick from birth.
 fn build_stick(
     app: &AppHandle,
     base: &Path,
     out: &Path,
     profile_path: &Path,
     wifi_password: Option<&WifiPassword>,
-) -> Result<Built, String> {
+    first_boot_enrolment: bool,
+) -> Result<(), String> {
     let mut profile = Profile::load(profile_path).map_err(|e| message(&e))?;
     // Typed in the window for this write only: it is not in the profile file.
     profile.set_wifi_password(wifi_password.cloned());
@@ -127,42 +123,47 @@ fn build_stick(
         .map_err(|e| message(&e))?;
     let registry = registry_of(profile_path);
     let now = local_now();
-    let mut last = Instant::now();
-    let built = build(
+    let mut emit = base_progress(app);
+    let progress = |done, total| emit("building", done, total);
+    if first_boot_enrolment {
+        if !hub.signed_in() {
+            return Err("sign in to the Hub to use first-boot enrolment".to_owned());
+        }
+        let options = EnrolmentBuild {
+            base,
+            out,
+            profile: &profile,
+            wallpaper: wallpaper.as_ref(),
+            registry: &registry,
+            now,
+        };
+        build_enrolment_image(
+            &options,
+            |settings, machine_number, scope| {
+                hub.as_admin(|session| {
+                    mint_enrolment_code(HUB_URL, session, settings, machine_number, scope)
+                })
+                .map(|minted| minted.code)
+                .map_err(ck_admin_core::Error::Hub)
+            },
+            progress,
+        )
+        .map_err(|e| message(&e))?;
+        return Ok(());
+    }
+    build_thin_image(
         base,
         out,
         &profile,
         wallpaper.as_ref(),
         &registry,
         now,
-        |done, total| {
-            if done == total || last.elapsed() >= Duration::from_millis(250) {
-                last = Instant::now();
-                let _ = app.emit(
-                    "progress",
-                    Progress {
-                        done,
-                        total,
-                        phase: "building",
-                        checked: 0,
-                    },
-                );
-            }
-        },
+        progress,
     )
     .map_err(|e| message(&e))?;
-    let hub = hub.push(&registry).map(|sent| match sent {
-        Ok(text) => format!("Sent to the Hub: {text}"),
-        // The stick is made either way; the next registry that is sent includes it.
-        Err(why) => format!("The registry was not sent to the Hub: {why}"),
-    });
-    Ok(Built {
-        stick_id: built.config.stick_id.to_string(),
-        computer_name: built.config.computer_name(),
-        team: built.config.settings.team.clone(),
-        registry: registry.display().to_string(),
-        hub,
-    })
+    // The next successful push includes this stick if the Hub is unavailable now.
+    let _ = hub.push(&registry);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -256,6 +257,7 @@ fn quote(path: &Path) -> Result<String, String> {
 ///
 /// Returns the SHA-256 of what was written and read back.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn write_stick(
     app: AppHandle,
     base: PathBuf,
@@ -264,6 +266,7 @@ pub async fn write_stick(
     to_file: Option<PathBuf>,
     allow_virtual: bool,
     wifi_password: Option<String>,
+    first_boot_enrolment: Option<bool>,
 ) -> Result<String, String> {
     let wifi_password = wifi_password
         .filter(|text| !text.is_empty())
@@ -283,6 +286,7 @@ pub async fn write_stick(
             to_file: to_file.as_deref(),
             allow_virtual,
             wifi_password: wifi_password.as_ref(),
+            first_boot_enrolment: first_boot_enrolment.unwrap_or(false),
         };
         let result = make_and_write(&app, &base, &profile_path, &work, &target);
         let _ = std::fs::remove_dir_all(&work);
@@ -298,6 +302,7 @@ struct Target<'a> {
     to_file: Option<&'a Path>,
     allow_virtual: bool,
     wifi_password: Option<&'a WifiPassword>,
+    first_boot_enrolment: bool,
 }
 
 /// Builds one image per stick in `work`, then writes them to the disks, or the first to a file.
@@ -313,11 +318,19 @@ fn make_and_write(
         to_file,
         allow_virtual,
         wifi_password,
+        first_boot_enrolment,
     } = *target;
     let mut images = Vec::new();
     for n in 1..=disks.len().max(1) {
         let image = work.join(format!("stick-{n}.img"));
-        build_stick(app, base, &image, profile_path, wifi_password)?;
+        build_stick(
+            app,
+            base,
+            &image,
+            profile_path,
+            wifi_password,
+            first_boot_enrolment,
+        )?;
         images.push(image);
     }
     // A file needs no administrator rights, so it is written here: a test without a stick.
