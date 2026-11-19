@@ -28,6 +28,8 @@ fn main() {
             base_image::list_catalog,
             base_image::make_base_image,
             sticks::import_base_image,
+            sticks::list_hub_images,
+            sticks::download_hub_image,
             sticks::list_disks,
             sticks::write_stick,
             hub::hub_sign_in,

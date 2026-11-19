@@ -6,6 +6,7 @@
   let { progress }: Props = $props();
 
   const labels = {
+    downloading: 'Downloading Keeper OS',
     importing: 'Verifying and expanding the download',
     building: 'Copying the image',
     writing: 'Writing',

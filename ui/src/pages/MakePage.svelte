@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import BaseImageCreator from '../components/BaseImageCreator.svelte';
+  import HubImagePicker from '../components/HubImagePicker.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
   import { describeError, eraseConfirmation } from '../core/format';
   import * as api from '../lib/api';
@@ -77,6 +78,26 @@
     }
   }
 
+  async function downloadFromHub(id: string) {
+    busy = true;
+    importFailure = '';
+    progress = null;
+    try {
+      const out = await api.chooseBaseToSave();
+      if (!out) return;
+      importing = true;
+      await api.downloadHubImage(id, out);
+      selectBase(out);
+      archive = '';
+    } catch (error) {
+      importFailure = describeError(error);
+    } finally {
+      busy = false;
+      importing = false;
+      progress = null;
+    }
+  }
+
   async function refresh() {
     failure = '';
     chosen = [];
@@ -125,14 +146,18 @@
   {/if}
   <div class="card">
     <h2>Base image</h2>
-    <p class="hint">
-      Import the .img.zst you downloaded from Keeper Hub, or choose a raw .img you already have.
-      Keep the raw image in place until all sticks are written.
-    </p>
+    {#if app.hubEmail}
+      <HubImagePicker disabled={busy} onDownload={downloadFromHub} />
+    {:else}
+      <p class="hint">Sign in to Keeper Hub to download Keeper OS here.</p>
+    {/if}
     <div class="path">
       <div class="grow">
         <div class="n">{app.basePath ? fileName(app.basePath) : 'none chosen'}</div>
-        {#if app.basePath}<div class="p">{app.basePath}</div>{/if}
+        {#if app.basePath}
+          <div class="p">{app.basePath}</div>
+          <div class="p">Keep this file in place until all sticks are written.</div>
+        {/if}
       </div>
       <button type="button" class="btn sm" onclick={chooseBase} disabled={busy}>
         Choose raw image…

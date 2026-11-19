@@ -25,12 +25,21 @@ export type DiskView = {
 export type Progress = {
   done: number;
   total: number;
-  phase: 'importing' | 'building' | 'writing' | 'checking';
+  phase: 'downloading' | 'importing' | 'building' | 'writing' | 'checking';
   /** How far the stick is checked; the checking goes on while the writing does. */
   checked: number;
 };
 
 export type CatalogItem = { id: string; label: string; disk_gb: number };
+
+export type HubImage = {
+  id: string;
+  name: string;
+  version: string;
+  profile: string;
+  size: number;
+  filename: string | null;
+};
 
 export type BaseProgress = {
   step: 'download' | 'convert' | 'provision' | 'patch' | 'hash';
@@ -49,6 +58,10 @@ export const listDisks = (base: string, allowVirtual: boolean) =>
 
 export const importBaseImage = (archive: string, out: string, sha256: string) =>
   invoke<null>('import_base_image', { archive, out, sha256 });
+
+export const listHubImages = () => invoke<HubImage[]>('list_hub_images');
+export const downloadHubImage = (id: string, out: string) =>
+  invoke<null>('download_hub_image', { id, out });
 
 /**
  * Writes to disks (all at the same time, with one Windows permission prompt) or, for a test

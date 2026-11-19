@@ -5,6 +5,7 @@
 mod error;
 mod file;
 mod hub;
+mod hub_images;
 mod image;
 mod profile;
 mod registry;
@@ -21,6 +22,10 @@ pub use hub::{
     HubProfile, HubSession, ProfileSummary, Pushed, fetch_profile, list_profiles, new_profile_id,
     new_state, push_registry, push_registry_signed_in, sign_in_url, sign_in_with_code, sign_out,
     upload_profile, wait_for_code,
+};
+pub use hub_images::{
+    HubImage, HubImageDownload, HubImageStep, download_hub_image, list_hub_images,
+    prepare_hub_image_download,
 };
 pub use image::{
     Built, build_image, build_thin_image, check_one_stick, configure_image, show_image,

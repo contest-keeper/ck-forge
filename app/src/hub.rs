@@ -156,7 +156,7 @@ pub async fn hub_sign_out(state: State<'_, HubState>) -> Result<(), String> {
 
 impl HubState {
     /// Runs a Hub request as the signed-in admin, or says to sign in.
-    fn as_admin<T>(
+    pub(crate) fn as_admin<T>(
         &self,
         request: impl FnOnce(&HubSession) -> Result<T, ck_admin_core::Error>,
     ) -> Result<T, String> {
