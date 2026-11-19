@@ -20,8 +20,8 @@ pub use error::Error;
 pub use file::folder_of;
 pub use hub::{
     HubProfile, HubSession, ProfileSummary, Pushed, fetch_profile, list_profiles, new_profile_id,
-    new_state, push_registry, push_registry_signed_in, sign_in_url, sign_in_with_code, sign_out,
-    upload_profile, wait_for_code,
+    new_state, push_registry, push_registry_signed_in, retire_stick_credential, sign_in_url,
+    sign_in_with_code, sign_out, upload_profile, wait_for_code,
 };
 pub use hub_images::{
     HubImage, HubImageDownload, HubImageStep, download_hub_image, list_hub_images,
@@ -30,7 +30,7 @@ pub use hub_images::{
 pub use image::{
     Built, build_image, build_thin_image, check_one_stick, configure_image, show_image,
 };
-pub use profile::Profile;
-pub use registry::{Registry, RegistryEntry};
+pub use profile::{Profile, StickKeyWindow};
+pub use registry::{CredentialScope, Registry, RegistryEntry};
 pub use stick::{local_now, make_stick_config};
 pub use wallpaper::{MAX_WALLPAPER_BYTES, Wallpaper};

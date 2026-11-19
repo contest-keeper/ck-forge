@@ -2,9 +2,20 @@ use std::path::Path;
 
 use ck_protocol::{LocalDateTime, StickId, Token};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
 use crate::error::Error;
 use crate::file::{Lock, read_json, write_json_atomically};
+
+/// The contest and UTC validity interval of a newly assigned stick key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialScope {
+    pub contest_id: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub valid_from: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub valid_until: OffsetDateTime,
+}
 
 /// One stick the admin has made. The Hub checks signatures with its token.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +30,8 @@ pub struct RegistryEntry {
     /// The stick's number among the machines of its contest. Older entries have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_scope: Option<CredentialScope>,
 }
 
 /// Every stick made so far. It holds the sticks' secrets, so the file must be kept private.

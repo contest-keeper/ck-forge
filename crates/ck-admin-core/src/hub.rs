@@ -13,11 +13,12 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use ck_protocol::Settings;
+use ck_protocol::{Settings, StickId};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::error::Error;
+use crate::profile::StickKeyWindow;
 use crate::wallpaper::{MAX_WALLPAPER_BYTES, Wallpaper};
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -303,6 +304,30 @@ pub fn push_registry_signed_in(
     post_registry(&agent(), base, ("authorization", &bearer), body)
 }
 
+/// Retires a previous stick key without removing its history from the Hub.
+pub fn retire_stick_credential(hub: &str, session: &HubSession, id: &str) -> Result<(), Error> {
+    let id = StickId::parse(id.trim()).map_err(|_| Error::Hub("enter a valid stick ID".into()))?;
+    let base = checked_base(hub)?;
+    let answer = agent()
+        .delete(format!("{base}/api/v1/sticks/{id}/credential"))
+        .header("authorization", &session.bearer())
+        .call()
+        .map_err(|e| unreachable_hub(base, &e))?;
+    let status = answer.status().as_u16();
+    match status {
+        204 => Ok(()),
+        401 => Err(Error::Hub("sign in again to retire the stick key".into())),
+        403 => Err(Error::Hub("this account cannot retire stick keys".into())),
+        404 => Err(Error::Hub("this organization has no such stick".into())),
+        409 => Err(Error::Hub(
+            "retiring this key in Forge requires a sign-in with one organization".into(),
+        )),
+        _ => Err(Error::Hub(format!(
+            "the Hub answered {status} while retiring the stick key"
+        ))),
+    }
+}
+
 #[derive(Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 pub struct ProfileSummary {
     pub id: String,
@@ -314,6 +339,7 @@ pub struct ProfileSummary {
 pub struct HubProfile {
     pub name: String,
     pub settings: Settings,
+    pub stick_key_window: Option<StickKeyWindow>,
     pub wallpaper: Option<Wallpaper>,
 }
 
@@ -358,6 +384,14 @@ pub fn fetch_profile(hub: &str, session: &HubSession, id: &str) -> Result<HubPro
         .body_mut()
         .read_json()
         .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}")))?;
+    let stick_key_window = serde_json::from_value(
+        profile
+            .settings
+            .get("stick_key_window")
+            .cloned()
+            .unwrap_or_default(),
+    )
+    .map_err(|e| Error::Hub(format!("the Hub has an unreadable stick key window: {e}")))?;
     let settings = serde_json::from_value(profile.settings).map_err(|e| {
         Error::Hub(format!(
             "the Hub has settings this version cannot read: {e}"
@@ -384,6 +418,7 @@ pub fn fetch_profile(hub: &str, session: &HubSession, id: &str) -> Result<HubPro
     Ok(HubProfile {
         name: profile.name,
         settings,
+        stick_key_window,
         wallpaper,
     })
 }
@@ -404,8 +439,11 @@ pub fn upload_profile(
     if let Some(wifi) = &mut shared.wifi {
         wifi.password = None;
     }
-    let settings = serde_json::to_value(&shared)
+    let mut settings = serde_json::to_value(&shared)
         .map_err(|e| Error::Hub(format!("settings cannot be sent: {e}")))?;
+    if let Some(window) = &profile.stick_key_window {
+        settings["stick_key_window"] = json!(window);
+    }
     let mut answer = agent()
         .put(format!("{base}/api/v1/profiles/{id}"))
         .header("authorization", &session.bearer())

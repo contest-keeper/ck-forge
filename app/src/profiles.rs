@@ -50,8 +50,12 @@ pub fn save_profile(path: PathBuf, profile: Profile) -> Result<(), String> {
 pub fn check_profile(mut profile: Profile) -> Checked {
     // The server address is not set in the window: a stick gets it when the admin is signed in.
     crate::hub::HUB_URL.clone_into(&mut profile.settings.api.url);
+    let mut problems: Vec<_> = profile.problems().iter().map(ToString::to_string).collect();
+    if let Err(error) = profile.credential_scope() {
+        problems.push(message(&error));
+    }
     Checked {
-        problems: profile.problems().iter().map(ToString::to_string).collect(),
+        problems,
         warnings: profile.warnings(),
     }
 }

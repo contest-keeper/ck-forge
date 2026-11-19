@@ -143,6 +143,7 @@ fn build(
     copy: Copy,
     progress: impl FnMut(u64, u64),
 ) -> Result<Built, Error> {
+    let credential_scope = profile.credential_scope()?;
     let settings = profile.stick_settings();
     check_wallpaper(&settings, wallpaper)?;
     // Counted before the copy, so a profile that cannot be used stops before anything is written.
@@ -171,6 +172,7 @@ fn build(
                         .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
                     created_at: config.created_at,
                     machine_number: config.machine_number,
+                    credential_scope,
                 },
             )
         });
@@ -203,6 +205,13 @@ pub fn configure_image(
     registry: &Path,
 ) -> Result<StickConfig, Error> {
     let mut config = show_image(image)?;
+    let registry_entry = Registry::load(registry)?;
+    let existing_scope = registry_entry
+        .find(&config.stick_id)
+        .and_then(|entry| entry.credential_scope.as_ref());
+    if existing_scope != profile.credential_scope()?.as_ref() {
+        return Err(Error::StickRekeyRequired);
+    }
     config.settings = profile.stick_settings();
     // The whole file is checked, not only the settings: a name pattern can be fine on its own and
     // still give this stick an empty computer name, which the agent refuses.

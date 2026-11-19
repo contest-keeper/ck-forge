@@ -1,4 +1,4 @@
-use ck_admin_core::{Error, Profile, Registry, RegistryEntry, make_stick_config};
+use ck_admin_core::{Error, Profile, Registry, RegistryEntry, StickKeyWindow, make_stick_config};
 use ck_protocol::{LocalDateTime, Problem, UploadMode};
 use tempfile::TempDir;
 
@@ -43,6 +43,31 @@ fn every_stick_gets_its_own_id_and_secret() {
     assert_ne!(first.stick_id, second.stick_id);
     assert_ne!(first.token, second.token);
     assert_eq!(first.settings, profile.settings);
+}
+
+#[test]
+fn a_stick_key_window_needs_a_contest_and_ordered_utc_dates() {
+    let mut profile = Profile::template();
+    assert_eq!(profile.credential_scope().expect("legacy"), None);
+    profile.stick_key_window = Some(StickKeyWindow {
+        valid_from: "2026-11-19T08:00:00Z".to_owned(),
+        valid_until: "2026-11-19T07:00:00Z".to_owned(),
+    });
+    assert!(
+        profile.credential_scope().is_err(),
+        "a contest ID is required"
+    );
+    profile.settings.contest.contest_id = "4".to_owned();
+    assert!(
+        profile.credential_scope().is_err(),
+        "the end must be after the start"
+    );
+    let window = profile.stick_key_window.as_mut().expect("window");
+    window.valid_until = "2026-11-19T15:00:00+02:00".to_owned();
+    assert!(
+        profile.credential_scope().is_err(),
+        "the window must be in UTC"
+    );
 }
 
 #[test]
@@ -106,6 +131,7 @@ fn entry(name: &str) -> RegistryEntry {
         image: format!("{name}.img"),
         created_at: config.created_at,
         machine_number: config.machine_number,
+        credential_scope: None,
     }
 }
 

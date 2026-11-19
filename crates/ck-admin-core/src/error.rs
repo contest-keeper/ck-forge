@@ -20,6 +20,10 @@ pub enum Error {
     ProfileMissing(String),
     #[error("the profile has problems: {}", join(.0))]
     InvalidProfile(Vec<Problem>),
+    #[error("the stick key window cannot be used: {0}")]
+    InvalidStickKeyWindow(&'static str),
+    #[error("make a new stick image to change the key's contest or validity window")]
+    StickRekeyRequired,
     #[error("stick {0} is already in the registry")]
     DuplicateStick(StickId),
     #[error("{0}")]
