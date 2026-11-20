@@ -349,6 +349,46 @@ fn hardware_of(disks: &[u32], to_file: bool) -> Vec<Option<HardwareId>> {
         .collect()
 }
 
+/// The images made for one write, and the sticks that already have an id with the disk each goes
+/// to. The Hub is told about those disks once the write has finished.
+struct Made {
+    images: Vec<PathBuf>,
+    written: Vec<(StickId, HardwareId)>,
+}
+
+/// Builds one image per stick in `work`.
+fn build_images(
+    app: &AppHandle,
+    base: &Path,
+    profile_path: &Path,
+    work: &Path,
+    target: &Target<'_>,
+) -> Result<Made, String> {
+    let hardware = hardware_of(target.disks, target.to_file.is_some());
+    let mut made = Made {
+        images: Vec::new(),
+        written: Vec::new(),
+    };
+    for n in 1..=target.disks.len().max(1) {
+        let image = work.join(format!("stick-{n}.img"));
+        let disk = hardware.get(n - 1).and_then(Option::as_ref);
+        let stick = build_stick(
+            app,
+            base,
+            &image,
+            profile_path,
+            target.wifi_password,
+            target.first_boot_enrolment,
+            disk,
+        )?;
+        if let (Some(stick), Some(disk)) = (stick, disk) {
+            made.written.push((stick, disk.clone()));
+        }
+        made.images.push(image);
+    }
+    Ok(made)
+}
+
 /// Builds one image per stick in `work`, then writes them to the disks, or the first to a file.
 fn make_and_write(
     app: &AppHandle,
@@ -361,29 +401,9 @@ fn make_and_write(
         disks,
         to_file,
         allow_virtual,
-        wifi_password,
-        first_boot_enrolment,
+        ..
     } = *target;
-    let hardware = hardware_of(disks, to_file.is_some());
-    let mut images = Vec::new();
-    let mut written = Vec::new();
-    for n in 1..=disks.len().max(1) {
-        let image = work.join(format!("stick-{n}.img"));
-        let disk = hardware.get(n - 1).and_then(Option::as_ref);
-        let stick = build_stick(
-            app,
-            base,
-            &image,
-            profile_path,
-            wifi_password,
-            first_boot_enrolment,
-            disk,
-        )?;
-        if let (Some(stick), Some(disk)) = (stick, disk) {
-            written.push((stick, disk.clone()));
-        }
-        images.push(image);
-    }
+    let Made { images, written } = build_images(app, base, profile_path, work, target)?;
     // A file needs no administrator rights, so it is written here: a test without a stick.
     if let Some(file) = to_file {
         return write_to_file(app, &images[0], file);
