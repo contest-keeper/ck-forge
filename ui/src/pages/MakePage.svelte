@@ -22,6 +22,8 @@
   let firstBootEnrolment = $state(false);
   // Whether the base image has been asked yet, so "cannot enrol" is not said while it is still unknown.
   let enrolmentKnown = $state(false);
+  // An image that carries public keys only accepts settings the Hub signed.
+  let signatureRequired = $state(false);
   // What the Hub knows about each disk, from the sticks written to it before.
   let earlier = $state<Record<number, api.HubStick>>({});
   let lookupNote = $state('');
@@ -37,6 +39,7 @@
   const confirmed = $derived(chosen.length > 0 && typed.trim() === eraseConfirmation(chosen));
   const names = $derived([...chosen].sort((a, b) => a - b).join(', '));
   const wifiName = $derived(app.profile?.settings.wifi?.ssid);
+  const mustSignIn = $derived(signatureRequired && app.hubEmail === null);
   // The sticks the Hub has from this account on the chosen disks: the ones a write replaces.
   const replaced = $derived(
     chosen.map((number) => earlier[number]).filter((stick) => stick !== undefined),
@@ -70,6 +73,24 @@
       .catch(() => {
         /* A base that cannot be checked must use the existing credential flow. */
         if (current) enrolmentKnown = true;
+      });
+    return () => {
+      current = false;
+    };
+  });
+
+  $effect(() => {
+    const base = app.basePath;
+    signatureRequired = false;
+    if (!base) return;
+    let current = true;
+    void api
+      .signatureRequired(base)
+      .then((needed) => {
+        if (current) signatureRequired = needed;
+      })
+      .catch(() => {
+        /* An image that cannot be checked here is checked again when the sticks are built. */
       });
     return () => {
       current = false;
@@ -229,6 +250,18 @@
       </label>
     {/if}
 
+    {#if mustSignIn}
+      <p class="note error">
+        This image only accepts settings the Hub signed, so you have to be signed in to the Hub to
+        write sticks from it. Sign in at the bottom left.
+      </p>
+    {:else if signatureRequired}
+      <p class="hint">
+        This image only accepts settings the Hub signed. Forge gets each stick's settings signed
+        when it writes, so edits made to the CKCONFIG drive on another PC are refused by the stick.
+      </p>
+    {/if}
+
     {#if enrolmentSupported}
       <label class="check">
         <input type="checkbox" bind:checked={firstBootEnrolment} disabled={app.busy} />
@@ -343,7 +376,12 @@
           autocomplete="off"
           disabled={app.busy}
         />
-        <button type="button" class="btn dng" onclick={begin} disabled={app.busy || !confirmed}>
+        <button
+          type="button"
+          class="btn dng"
+          onclick={begin}
+          disabled={app.busy || !confirmed || mustSignIn}
+        >
           {app.busy
             ? 'Writing…'
             : chosen.length > 1
@@ -388,7 +426,7 @@
           type="button"
           class="btn sm"
           onclick={() => write({ file: testFile })}
-          disabled={app.busy || !ready || !testFile}
+          disabled={app.busy || !ready || !testFile || mustSignIn}
         >
           Write the file
         </button>

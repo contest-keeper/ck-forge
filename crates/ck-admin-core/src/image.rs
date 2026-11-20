@@ -1,3 +1,4 @@
+use ck_crypto::CONFIG_SIGNATURE_FILE;
 use std::fs;
 use std::path::Path;
 
@@ -25,6 +26,10 @@ pub struct Built {
     pub base_sha256: Option<String>,
 }
 
+/// Signs the exact bytes of a settings file and returns the text of its signature file. The Hub does
+/// it; Forge gives it to the builders so they can write the signature next to the settings.
+pub type SignSettings<'a> = &'a dyn Fn(&[u8]) -> Result<String, Error>;
+
 pub struct EnrolmentBuild<'a> {
     pub base: &'a Path,
     pub out: &'a Path,
@@ -32,6 +37,61 @@ pub struct EnrolmentBuild<'a> {
     pub wallpaper: Option<&'a Wallpaper>,
     pub registry: &'a Path,
     pub now: LocalDateTime,
+    /// Needed when the base image only accepts settings the Hub signed.
+    pub sign: Option<SignSettings<'a>>,
+}
+
+/// Whether sticks made from this image only accept settings the Hub signed.
+pub fn requires_signed_settings(image: &Path) -> Result<bool, Error> {
+    Ok(ck_base_image::requires_signed_settings(image)?)
+}
+
+/// Whether the settings written for a stick of `image` need a signature: when the image carries the
+/// key list, or when a stick image that holds only the start of a base (a thin image) already has
+/// one. Stops early, before anything is made or a code is minted, when a signature is needed and no
+/// signer was given.
+fn signature_needed(image: &Path, sign: Option<SignSettings<'_>>) -> Result<bool, Error> {
+    require_signer(requires_signed_settings(image)?, sign)
+}
+
+/// The same for a stick image that may hold only the start of its base: there the key list is not
+/// there to be read, but a signature file next to the settings says the image is a signed one.
+fn signature_needed_for_stick_image(
+    image: &Path,
+    sign: Option<SignSettings<'_>>,
+) -> Result<bool, Error> {
+    let signed_before = read_config_file(image, CONFIG_SIGNATURE_FILE).is_ok();
+    let needed = signed_before || requires_signed_settings(image).unwrap_or(false);
+    require_signer(needed, sign)
+}
+
+fn require_signer(needed: bool, sign: Option<SignSettings<'_>>) -> Result<bool, Error> {
+    if needed && sign.is_none() {
+        return Err(Error::SignedSettingsRequired);
+    }
+    Ok(needed)
+}
+
+/// The signature file for the settings bytes, when one is needed.
+fn signature_of(
+    needed: bool,
+    sign: Option<SignSettings<'_>>,
+    bytes: &[u8],
+) -> Result<Option<String>, Error> {
+    match (needed, sign) {
+        (true, Some(sign)) => sign(bytes).map(Some),
+        (true, None) => Err(Error::SignedSettingsRequired),
+        (false, _) => Ok(None),
+    }
+}
+
+/// Writes the settings file and, when there is one, its signature, next to each other.
+fn write_settings(image: &Path, bytes: &[u8], signature: Option<&str>) -> Result<(), Error> {
+    write_beside_settings(image, CONFIG_FILE, bytes)?;
+    if let Some(signature) = signature {
+        write_beside_settings(image, CONFIG_SIGNATURE_FILE, signature.as_bytes())?;
+    }
+    Ok(())
 }
 
 pub enum ImageConfiguration {
@@ -136,6 +196,7 @@ pub fn build_image(
         registry,
         now,
         Copy::Full,
+        None,
         progress,
     )
 }
@@ -155,6 +216,21 @@ pub fn build_thin_image(
     now: LocalDateTime,
     progress: impl FnMut(u64, u64),
 ) -> Result<Built, Error> {
+    build_thin_image_signed(base, out, profile, wallpaper, registry, now, None, progress)
+}
+
+/// Like [`build_thin_image`], and signs the settings when the base image only accepts signed ones.
+#[allow(clippy::too_many_arguments)]
+pub fn build_thin_image_signed(
+    base: &Path,
+    out: &Path,
+    profile: &Profile,
+    wallpaper: Option<&Wallpaper>,
+    registry: &Path,
+    now: LocalDateTime,
+    sign: Option<SignSettings<'_>>,
+    progress: impl FnMut(u64, u64),
+) -> Result<Built, Error> {
     build(
         base,
         out,
@@ -163,6 +239,7 @@ pub fn build_thin_image(
         registry,
         now,
         Copy::Thin,
+        sign,
         progress,
     )
 }
@@ -182,6 +259,7 @@ pub fn build_enrolment_image(
     if !supports_enrolment(options.base)? {
         return Err(Error::EnrolmentUnsupported);
     }
+    let signed = signature_needed(options.base, options.sign)?;
     if options.out.exists() {
         return Err(ck_base_image::Error::Exists(options.out.display().to_string()).into());
     }
@@ -211,9 +289,9 @@ pub fn build_enrolment_image(
     let code = mint(&settings, machine_number, scope.as_ref())?;
     let config = EnrolmentConfig::new(id, options.now, Some(machine_number), code, settings);
     let bytes = enrolment_json(&config);
+    let signature = signature_of(signed, options.sign, &bytes)?;
     ck_writer::thin::create(options.base, options.out, end, progress)?;
-    let result = write_config_file(options.out, CONFIG_FILE, &bytes)
-        .map_err(Error::from)
+    let result = write_settings(options.out, &bytes, signature.as_deref())
         .and_then(|()| write_wallpaper(options.out, options.wallpaper));
     if let Err(error) = result {
         ck_writer::thin::remove(options.out);
@@ -231,8 +309,10 @@ fn build(
     registry: &Path,
     now: LocalDateTime,
     copy: Copy,
+    sign: Option<SignSettings<'_>>,
     progress: impl FnMut(u64, u64),
 ) -> Result<Built, Error> {
+    let signed = signature_needed(base, sign)?;
     let credential_scope = profile.credential_scope()?;
     let settings = profile.stick_settings();
     check_wallpaper(&settings, wallpaper)?;
@@ -241,6 +321,8 @@ fn build(
     let mut entries = Registry::load(registry)?;
     let number = entries.next_machine_number(&settings.contest.name);
     let config = make_stick_config(&settings, number, now)?;
+    let bytes = to_json(&config);
+    let signature = signature_of(signed, sign, &bytes)?;
     let base_sha256 = match copy {
         Copy::Full => Some(copy_image(base, out, progress)?),
         Copy::Thin => {
@@ -248,7 +330,7 @@ fn build(
             None
         }
     };
-    let result = write_beside_settings(out, CONFIG_FILE, &to_json(&config))
+    let result = write_settings(out, &bytes, signature.as_deref())
         .and_then(|()| write_wallpaper(out, wallpaper))
         .and_then(|()| {
             entries.add(RegistryEntry {
@@ -294,6 +376,18 @@ pub fn configure_image(
     wallpaper: Option<&Wallpaper>,
     registry: &Path,
 ) -> Result<StickConfig, Error> {
+    configure_image_signed(image, profile, wallpaper, registry, None)
+}
+
+/// Like [`configure_image`], and signs the new settings when the image only accepts signed ones.
+pub fn configure_image_signed(
+    image: &Path,
+    profile: &Profile,
+    wallpaper: Option<&Wallpaper>,
+    registry: &Path,
+    sign: Option<SignSettings<'_>>,
+) -> Result<StickConfig, Error> {
+    let signed = signature_needed_for_stick_image(image, sign)?;
     let mut config = show_image(image)?;
     let registry_entry = Registry::load(registry)?;
     let existing_scope = registry_entry
@@ -310,8 +404,10 @@ pub fn configure_image(
         return Err(Error::InvalidProfile(problems));
     }
     check_wallpaper(&config.settings, wallpaper)?;
+    let bytes = to_json(&config);
+    let signature = signature_of(signed, sign, &bytes)?;
     write_wallpaper(image, wallpaper)?;
-    write_beside_settings(image, CONFIG_FILE, &to_json(&config))?;
+    write_settings(image, &bytes, signature.as_deref())?;
     Registry::update_labels(
         registry,
         &config.stick_id,

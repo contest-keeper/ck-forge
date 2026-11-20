@@ -86,6 +86,8 @@ export const downloadHubImage = (id: string, out: string) =>
   invoke<null>('download_hub_image', { id, out });
 export const enrolmentSupported = (base: string) =>
   invoke<boolean>('enrolment_supported', { base });
+/** Whether sticks made from this base image only accept settings the Hub signed. */
+export const signatureRequired = (base: string) => invoke<boolean>('signature_required', { base });
 
 /**
  * Writes to disks (all at the same time, with one Windows permission prompt) or, for a test

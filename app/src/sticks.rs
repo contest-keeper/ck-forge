@@ -5,10 +5,10 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    EnrolmentBuild, HardwareId, HubImage, HubImageStep, Profile, Wallpaper, build_enrolment_image,
-    build_thin_image, enrolment_config_sha256, folder_of, import_image, local_now,
-    mint_enrolment_code, record_config_hash, record_stick_write, stick_config_sha256,
-    supports_enrolment,
+    EnrolmentBuild, HardwareId, HubImage, HubImageStep, Profile, SignSettings, Wallpaper,
+    build_enrolment_image, build_thin_image_signed, enrolment_config_sha256, folder_of,
+    import_image, local_now, mint_enrolment_code, record_config_hash, record_stick_write,
+    requires_signed_settings, sign_settings, stick_config_sha256, supports_enrolment,
 };
 use ck_protocol::{StickId, WifiPassword};
 use serde::{Deserialize, Serialize};
@@ -95,6 +95,17 @@ fn base_progress(app: &AppHandle) -> impl FnMut(&'static str, u64, u64) + '_ {
     }
 }
 
+/// Whether sticks made from this base image only accept settings the Hub signed, so the admin has
+/// to be signed in to the Hub to write them.
+#[tauri::command]
+pub async fn signature_required(base: PathBuf) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        requires_signed_settings(&base).map_err(|e| message(&e))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub async fn enrolment_supported(base: PathBuf) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || supports_enrolment(&base).map_err(|e| message(&e)))
@@ -139,6 +150,12 @@ fn build_stick(
     let now = local_now();
     let mut emit = base_progress(app);
     let progress = |done, total| emit("building", done, total);
+    // An image that only accepts settings the Hub signed gets them signed, by the signed-in admin.
+    let signer = |bytes: &[u8]| {
+        hub.as_admin(|session| sign_settings(HUB_URL, session, bytes))
+            .map_err(ck_admin_core::Error::Hub)
+    };
+    let sign: Option<SignSettings<'_>> = hub.signed_in().then_some(&signer);
     if first_boot_enrolment {
         if !hub.signed_in() {
             return Err("sign in to the Hub to use first-boot enrolment".to_owned());
@@ -150,6 +167,7 @@ fn build_stick(
             wallpaper: wallpaper.as_ref(),
             registry: &registry,
             now,
+            sign,
         };
         let config = build_enrolment_image(
             &options,
@@ -176,13 +194,14 @@ fn build_stick(
             disk: None,
         });
     }
-    let built = build_thin_image(
+    let built = build_thin_image_signed(
         base,
         out,
         &profile,
         wallpaper.as_ref(),
         &registry,
         now,
+        sign,
         progress,
     )
     .map_err(|e| message(&e))?;
