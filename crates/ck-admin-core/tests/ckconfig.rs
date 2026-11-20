@@ -77,6 +77,11 @@ fn enrolment_requires_a_compatible_base_and_only_writes_the_code_to_ckconfig() {
     )
     .expect("build");
     let bytes = ck_image::read_config_file(&out, "config.json").expect("config partition");
+    // The hash Forge gives the Hub is the hash of the file that is on the stick.
+    assert_eq!(
+        ck_admin_core::enrolment_config_sha256(&built),
+        ck_crypto::sha256_hex(&bytes)
+    );
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
     assert_eq!(json["schema"], ENROLMENT_SCHEMA);
     assert_eq!(json["stick_id"], built.stick_id.as_str());
@@ -187,6 +192,11 @@ fn a_thin_image_reaches_the_end_of_the_config_partition() {
 
     let head = std::fs::metadata(&out).expect("thin").len();
     assert_eq!(head, support::CONFIG_END, "the head ends with CKCONFIG");
+    let on_stick = ck_image::read_config_file(&out, "config.json").expect("settings file");
+    assert_eq!(
+        ck_admin_core::stick_config_sha256(&built.config),
+        ck_crypto::sha256_hex(&on_stick)
+    );
     assert_eq!(show_image(&out).expect("show"), built.config);
 
     // Written out, the thin image is the whole stick with the settings on it.

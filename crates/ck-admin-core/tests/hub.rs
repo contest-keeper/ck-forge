@@ -204,6 +204,7 @@ mod hub_images {
 mod enrolment {
     use ck_admin_core::{
         CredentialScope, HardwareId, HubSession, mint_enrolment_code, push_registry_signed_in,
+        record_config_hash,
     };
     use ck_protocol::Settings;
     use serde_json::{Value, json};
@@ -220,6 +221,25 @@ mod enrolment {
 
     fn utc(text: &str) -> OffsetDateTime {
         OffsetDateTime::parse(text, &Rfc3339).expect("UTC time")
+    }
+
+    #[test]
+    fn tells_the_hub_the_hash_of_the_settings_it_wrote() {
+        let (hub, requests) = fake_hub(vec![reply("204 No Content", "", "")]);
+        let stick = ck_protocol::StickId::parse("03c9f556").expect("stick id");
+        record_config_hash(&hub, &session(), &stick, &"ab".repeat(32)).expect("recorded");
+        let requests = requests.join().expect("Hub requests");
+        let (headers, body) = requests[0].split_once("\r\n\r\n").expect("HTTP request");
+        assert!(headers.starts_with("POST /api/v1/config-hashes HTTP/1.1\r\n"));
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture-admin-session")
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(body).expect("request"),
+            json!({"stick_id": "03c9f556", "sha256": "ab".repeat(32)}),
+        );
     }
 
     #[test]
@@ -265,7 +285,7 @@ mod enrolment {
         assert_eq!(
             serde_json::from_str::<Value>(body).expect("mint request"),
             json!({"team": "Team A", "site": "Lab B", "contest": "Regional Finals",
-                "machine_number": 4, "credential_scope": scope,
+                "machine_number": 4, "credential_scope": scope, "lifetime_minutes": 1440,
                 "hardware": {"fingerprint": "ab".repeat(32), "serial_hint": "1234"}}),
         );
     }

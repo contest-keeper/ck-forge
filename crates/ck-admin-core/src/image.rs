@@ -93,6 +93,24 @@ fn to_json(config: &StickConfig) -> Vec<u8> {
     serde_json::to_vec_pretty(config).expect("a stick config always serializes")
 }
 
+fn enrolment_json(config: &EnrolmentConfig) -> Vec<u8> {
+    serde_json::to_vec_pretty(config).expect("an enrolment config always serializes")
+}
+
+/// The SHA-256 of the settings file Forge writes for a stick, the exact bytes that go on the config
+/// partition. The stick reports the hash of the file it read, so the Hub can tell the file was
+/// changed. The picture is not part of it.
+#[must_use]
+pub fn stick_config_sha256(config: &StickConfig) -> String {
+    ck_crypto::sha256_hex(&to_json(config))
+}
+
+/// Like [`stick_config_sha256`], for a stick that enrols at its first boot.
+#[must_use]
+pub fn enrolment_config_sha256(config: &EnrolmentConfig) -> String {
+    ck_crypto::sha256_hex(&enrolment_json(config))
+}
+
 /// Copies `base` to `out`, gives the copy a new stick identity and the profile's settings, and
 /// adds the stick to the registry file at `registry`.
 ///
@@ -192,7 +210,7 @@ pub fn build_enrolment_image(
         Registry::reserve_enrolment(options.registry, &id, &settings.contest.name)?;
     let code = mint(&settings, machine_number, scope.as_ref())?;
     let config = EnrolmentConfig::new(id, options.now, Some(machine_number), code, settings);
-    let bytes = serde_json::to_vec_pretty(&config).expect("an enrolment config always serializes");
+    let bytes = enrolment_json(&config);
     ck_writer::thin::create(options.base, options.out, end, progress)?;
     let result = write_config_file(options.out, CONFIG_FILE, &bytes)
         .map_err(Error::from)

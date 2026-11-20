@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use ck_admin_core::{
     EnrolmentBuild, HardwareId, HubImage, HubImageStep, Profile, Wallpaper, build_enrolment_image,
-    build_thin_image, folder_of, import_image, local_now, mint_enrolment_code, record_stick_write,
+    build_thin_image, enrolment_config_sha256, folder_of, import_image, local_now,
+    mint_enrolment_code, record_config_hash, record_stick_write, stick_config_sha256,
     supports_enrolment,
 };
 use ck_protocol::{StickId, WifiPassword};
@@ -101,11 +102,18 @@ pub async fn enrolment_supported(base: PathBuf) -> Result<bool, String> {
         .map_err(|error| error.to_string())?
 }
 
+/// A stick Forge made: what the Hub is told about it once its write is finished.
+struct MadeStick {
+    id: StickId,
+    /// The SHA-256 of the settings file on the stick.
+    config_sha256: String,
+    /// The disk it goes to, for a stick that already has its key. A stick that enrols learns its
+    /// disk at the Hub when it trades its code.
+    disk: Option<HardwareId>,
+}
+
 /// Makes one stick image. First-boot enrolment keeps the signing key on the stick from birth.
 /// `hardware` is the disk the image goes to, when it is known, so the Hub can count rewrites.
-///
-/// Returns the id of a stick that already has one (not first-boot enrolment), so the caller can
-/// tell the Hub which disk it went to once the write has finished.
 fn build_stick(
     app: &AppHandle,
     base: &Path,
@@ -114,7 +122,7 @@ fn build_stick(
     wifi_password: Option<&WifiPassword>,
     first_boot_enrolment: bool,
     hardware: Option<&HardwareId>,
-) -> Result<Option<StickId>, String> {
+) -> Result<MadeStick, String> {
     let mut profile = Profile::load(profile_path).map_err(|e| message(&e))?;
     // Typed in the window for this write only: it is not in the profile file.
     profile.set_wifi_password(wifi_password.cloned());
@@ -143,7 +151,7 @@ fn build_stick(
             registry: &registry,
             now,
         };
-        build_enrolment_image(
+        let config = build_enrolment_image(
             &options,
             |settings, machine_number, scope| {
                 hub.as_admin(|session| {
@@ -162,7 +170,11 @@ fn build_stick(
             progress,
         )
         .map_err(|e| message(&e))?;
-        return Ok(None);
+        return Ok(MadeStick {
+            config_sha256: enrolment_config_sha256(&config),
+            id: config.stick_id,
+            disk: None,
+        });
     }
     let built = build_thin_image(
         base,
@@ -176,17 +188,27 @@ fn build_stick(
     .map_err(|e| message(&e))?;
     // The next successful push includes this stick if the Hub is unavailable now.
     let _ = hub.push(&registry);
-    Ok(Some(built.config.stick_id))
+    Ok(MadeStick {
+        config_sha256: stick_config_sha256(&built.config),
+        id: built.config.stick_id,
+        disk: hardware.cloned(),
+    })
 }
 
-/// Tells the Hub which disk each stick that already had its id was written to. This runs only after
-/// the writer reports that everything was written and checked, so a cancelled permission prompt or
-/// a failed disk never counts as a write. Not recording one never changes what was written: that
-/// stick is then only not counted as rewritten.
-fn record_written(app: &AppHandle, written: &[(StickId, HardwareId)]) {
+/// Tells the Hub the settings hash of each stick written, and which disk the sticks that already
+/// had their key were written to. This runs only after the writer reports that everything was
+/// written and checked, so a cancelled permission prompt or a failed disk never counts. Not telling
+/// the Hub never changes what was written: that stick is then only not checked, or not counted as
+/// rewritten.
+fn record_written(app: &AppHandle, written: &[MadeStick]) {
     let hub = app.state::<HubState>();
-    for (stick, hardware) in written {
-        let _ = hub.as_admin(|session| record_stick_write(HUB_URL, session, stick, hardware));
+    for stick in written {
+        let _ = hub.as_admin(|session| {
+            record_config_hash(HUB_URL, session, &stick.id, &stick.config_sha256)
+        });
+        if let Some(disk) = &stick.disk {
+            let _ = hub.as_admin(|session| record_stick_write(HUB_URL, session, &stick.id, disk));
+        }
     }
 }
 
@@ -353,11 +375,11 @@ fn hardware_of(disks: &[u32], to_file: bool) -> Vec<Option<HardwareId>> {
         .collect()
 }
 
-/// The images made for one write, and the sticks that already have an id with the disk each goes
-/// to. The Hub is told about those disks once the write has finished.
+/// The images made for one write, and the sticks they hold. The Hub is told about those sticks once
+/// the write has finished.
 struct Made {
     images: Vec<PathBuf>,
-    written: Vec<(StickId, HardwareId)>,
+    written: Vec<MadeStick>,
 }
 
 /// Builds one image per stick in `work`.
@@ -385,9 +407,7 @@ fn build_images(
             target.first_boot_enrolment,
             disk,
         )?;
-        if let (Some(stick), Some(disk)) = (stick, disk) {
-            made.written.push((stick, disk.clone()));
-        }
+        made.written.push(stick);
         made.images.push(image);
     }
     Ok(made)
