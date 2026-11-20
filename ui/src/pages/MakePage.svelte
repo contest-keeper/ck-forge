@@ -20,6 +20,8 @@
   let failure = $state('');
   let enrolmentSupported = $state(false);
   let firstBootEnrolment = $state(false);
+  // Whether the base image has been asked yet, so "cannot enrol" is not said while it is still unknown.
+  let enrolmentKnown = $state(false);
   // What the Hub knows about each disk, from the sticks written to it before.
   let earlier = $state<Record<number, api.HubStick>>({});
   let lookupNote = $state('');
@@ -53,15 +55,21 @@
     const signedIn = app.hubEmail !== null;
     enrolmentSupported = false;
     firstBootEnrolment = false;
+    enrolmentKnown = false;
     if (!base || !signedIn) return;
     let current = true;
     void api
       .enrolmentSupported(base)
       .then((supported) => {
-        if (current) enrolmentSupported = supported;
+        if (!current) return;
+        enrolmentSupported = supported;
+        // The recommended way is the default whenever the image can do it.
+        firstBootEnrolment = supported;
+        enrolmentKnown = true;
       })
       .catch(() => {
         /* A base that cannot be checked must use the existing credential flow. */
+        if (current) enrolmentKnown = true;
       });
     return () => {
       current = false;
@@ -179,7 +187,7 @@
       progress = null;
       typed = '';
       wifiPassword = '';
-      firstBootEnrolment = false;
+      firstBootEnrolment = enrolmentSupported;
     }
   }
 </script>
@@ -224,11 +232,31 @@
     {#if enrolmentSupported}
       <label class="check">
         <input type="checkbox" bind:checked={firstBootEnrolment} disabled={app.busy} />
-        <span>Enrol sticks at first boot</span>
+        <span><b>Create each stick's key at its first boot</b> (recommended)</span>
       </label>
       {#if firstBootEnrolment}
-        <p class="hint">Connect each stick to Keeper Hub and boot it within one hour.</p>
+        <p class="hint">
+          The key is made on the stick and is never written to the CKCONFIG drive, which any PC can
+          read. Boot each stick once, online (cable, or the Wi-Fi in the profile), within 24 hours
+          of writing it. After that the code on the stick is useless.
+        </p>
+      {:else}
+        <p class="note error">
+          Without this, the stick's secret key is written in the settings file on the CKCONFIG
+          drive. Anyone with the stick can read it on a PC and copy it.
+        </p>
       {/if}
+    {:else if app.hubEmail === null}
+      <p class="note error">
+        Not signed in to the Hub, so the sticks cannot create their key at first boot. Each stick's
+        secret key is written in the settings file on the CKCONFIG drive, where anyone with the
+        stick can read it. Sign in to the Hub to avoid that.
+      </p>
+    {:else if enrolmentKnown && app.basePath}
+      <p class="note error">
+        This base image cannot create keys at first boot, so each stick's secret key is written in
+        the settings file on the CKCONFIG drive. A newer Keeper OS image can.
+      </p>
     {/if}
 
     <div class="row">

@@ -324,6 +324,10 @@ pub struct MintedEnrolmentCode {
     pub expires_at: OffsetDateTime,
 }
 
+/// How long an enrolment code works. Sticks are usually written a day before they are first
+/// booted, so the Hub's one hour is too short; this is the longest the Hub allows.
+const ENROLMENT_CODE_MINUTES: i64 = 24 * 60;
+
 #[derive(Serialize)]
 struct EnrolmentRequest<'a> {
     team: &'a str,
@@ -335,6 +339,7 @@ struct EnrolmentRequest<'a> {
     /// The disk the stick is written to. The Hub counts a second write of it as a rewrite.
     #[serde(skip_serializing_if = "Option::is_none")]
     hardware: Option<&'a HardwareId>,
+    lifetime_minutes: i64,
 }
 
 pub fn mint_enrolment_code(
@@ -356,6 +361,7 @@ pub fn mint_enrolment_code(
         machine_number,
         credential_scope,
         hardware,
+        lifetime_minutes: ENROLMENT_CODE_MINUTES,
     };
     let mut answer = agent()
         .post(format!("{hub}/api/v1/enrolment-codes"))
@@ -467,6 +473,40 @@ pub fn list_sticks(hub: &str, session: &HubSession) -> Result<Vec<HubStick>, Err
         )),
         status => Err(Error::Hub(format!(
             "the Hub answered {status} while listing the sticks"
+        ))),
+    }
+}
+
+#[derive(Serialize)]
+struct ConfigHashRequest<'a> {
+    stick_id: &'a StickId,
+    sha256: &'a str,
+}
+
+/// Tells the Hub the SHA-256 of the settings file written for a stick, so it can warn when the stick
+/// later reports another one. Not telling it never changes what was written: that stick is then
+/// only not checked.
+pub fn record_config_hash(
+    hub: &str,
+    session: &HubSession,
+    stick_id: &StickId,
+    sha256: &str,
+) -> Result<(), Error> {
+    let base = checked_base(hub)?;
+    let mut bearer = HeaderValue::from_str(&session.bearer())
+        .map_err(|_| Error::Hub("sign in to the Hub again".into()))?;
+    bearer.set_sensitive(true);
+    let answer = agent()
+        .post(format!("{base}/api/v1/config-hashes"))
+        .header(AUTHORIZATION, bearer)
+        .send_json(&ConfigHashRequest { stick_id, sha256 })
+        .map_err(|e| unreachable_hub(base, &e))?;
+    match answer.status().as_u16() {
+        204 => Ok(()),
+        401 => Err(Error::Hub("sign in again to record the settings".into())),
+        403 => Err(Error::Hub("this account cannot record settings".into())),
+        status => Err(Error::Hub(format!(
+            "the Hub answered {status} while recording the settings"
         ))),
     }
 }

@@ -23,8 +23,9 @@ pub use hardware::HardwareId;
 pub use hub::{
     HubProfile, HubSession, HubStick, HubStickDisk, MintedEnrolmentCode, ProfileSummary, Pushed,
     fetch_profile, list_profiles, list_sticks, mint_enrolment_code, new_profile_id, new_state,
-    push_registry, push_registry_signed_in, record_stick_write, retire_stick_credential,
-    sign_in_url, sign_in_with_code, sign_out, upload_profile, wait_for_code,
+    push_registry, push_registry_signed_in, record_config_hash, record_stick_write,
+    retire_stick_credential, sign_in_url, sign_in_with_code, sign_out, upload_profile,
+    wait_for_code,
 };
 pub use hub_images::{
     HubImage, HubImageDownload, HubImageStep, download_hub_image, list_hub_images,
@@ -32,8 +33,8 @@ pub use hub_images::{
 };
 pub use image::{
     Built, EnrolmentBuild, ImageConfiguration, build_enrolment_image, build_image,
-    build_thin_image, check_one_stick, configure_image, image_configuration, show_image,
-    supports_enrolment,
+    build_thin_image, check_one_stick, configure_image, enrolment_config_sha256,
+    image_configuration, show_image, stick_config_sha256, supports_enrolment,
 };
 pub use profile::{Profile, StickKeyWindow};
 pub use registry::{CredentialScope, Registry, RegistryEntry};
