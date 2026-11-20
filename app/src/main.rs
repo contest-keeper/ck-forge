@@ -34,6 +34,7 @@ fn main() {
             sticks::list_hub_images,
             sticks::download_hub_image,
             sticks::enrolment_supported,
+            sticks::signature_required,
             sticks::list_disks,
             sticks::write_stick,
             hub::hub_sign_in,

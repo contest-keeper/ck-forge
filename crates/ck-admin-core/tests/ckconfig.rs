@@ -46,6 +46,7 @@ fn enrolment_requires_a_compatible_base_and_only_writes_the_code_to_ckconfig() {
         wallpaper: Some(&wallpaper),
         registry: &registry,
         now: time(),
+        sign: None,
     };
     assert!(!supports_enrolment(&base).expect("old image"));
     assert!(matches!(

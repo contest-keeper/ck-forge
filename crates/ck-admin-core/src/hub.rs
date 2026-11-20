@@ -478,6 +478,60 @@ pub fn list_sticks(hub: &str, session: &HubSession) -> Result<Vec<HubStick>, Err
 }
 
 #[derive(Serialize)]
+struct SignRequest {
+    config: String,
+}
+
+#[derive(Deserialize)]
+struct SignAnswer {
+    signature: String,
+}
+
+/// Asks the Hub to sign the exact bytes of a stick's settings file and returns the text of the
+/// signature file that goes next to it. The Hub signs only for an admin, and only settings of a
+/// stick that is not another organization's.
+pub fn sign_settings(hub: &str, session: &HubSession, settings: &[u8]) -> Result<String, Error> {
+    let base = checked_base(hub)?;
+    let mut bearer = HeaderValue::from_str(&session.bearer())
+        .map_err(|_| Error::Hub("sign in to the Hub again".into()))?;
+    bearer.set_sensitive(true);
+    let request = SignRequest {
+        config: base64::engine::general_purpose::STANDARD.encode(settings),
+    };
+    let mut answer = agent()
+        .post(format!("{base}/api/v1/config-signatures"))
+        .header(AUTHORIZATION, bearer)
+        .send_json(&request)
+        .map_err(|e| unreachable_hub(base, &e))?;
+    match answer.status().as_u16() {
+        200 => answer
+            .body_mut()
+            .with_config()
+            .limit(4096)
+            .read_json::<SignAnswer>()
+            .map(|answer| answer.signature)
+            .map_err(|_| Error::Hub("the Hub returned an unreadable signature".into())),
+        401 => Err(Error::Hub(
+            "sign in again to get the settings signed".into(),
+        )),
+        403 => Err(Error::Hub("this account cannot get settings signed".into())),
+        409 => Err(Error::Hub(
+            "the Hub will not sign settings for a stick id that belongs to another organization"
+                .into(),
+        )),
+        429 => Err(Error::Hub(
+            "too many settings signed in a minute. Try again shortly".into(),
+        )),
+        503 => Err(Error::Hub(
+            "this Hub has no settings signing key yet, so it cannot sign settings".into(),
+        )),
+        status => Err(Error::Hub(format!(
+            "the Hub answered {status} while signing the settings"
+        ))),
+    }
+}
+
+#[derive(Serialize)]
 struct ConfigHashRequest<'a> {
     stick_id: &'a StickId,
     sha256: &'a str,

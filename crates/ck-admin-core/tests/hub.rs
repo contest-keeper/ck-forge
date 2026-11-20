@@ -204,7 +204,7 @@ mod hub_images {
 mod enrolment {
     use ck_admin_core::{
         CredentialScope, HardwareId, HubSession, mint_enrolment_code, push_registry_signed_in,
-        record_config_hash,
+        record_config_hash, sign_settings,
     };
     use ck_protocol::Settings;
     use serde_json::{Value, json};
@@ -221,6 +221,54 @@ mod enrolment {
 
     fn utc(text: &str) -> OffsetDateTime {
         OffsetDateTime::parse(text, &Rfc3339).expect("UTC time")
+    }
+
+    #[test]
+    fn asks_the_hub_to_sign_the_exact_bytes_of_the_settings() {
+        let signature = "ck-settings-signature-v1 0123456789abcdef c2ln\n";
+        let (hub, requests) = fake_hub(vec![reply(
+            "200 OK",
+            "",
+            &json!({"signature": signature, "key_id": "0123456789abcdef"}).to_string(),
+        )]);
+        let settings = b"{\"schema\": 3,\n  \"stick_id\": \"03c9f556\"}";
+        let answer = sign_settings(&hub, &session(), settings).expect("signed");
+        assert_eq!(answer, signature);
+        let requests = requests.join().expect("Hub requests");
+        let (headers, body) = requests[0].split_once("\r\n\r\n").expect("HTTP request");
+        assert!(headers.starts_with("POST /api/v1/config-signatures HTTP/1.1\r\n"));
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture-admin-session")
+        );
+        let sent: Value = serde_json::from_str(body).expect("request");
+        let bytes = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            sent["config"].as_str().expect("base64"),
+        )
+        .expect("base64");
+        assert_eq!(
+            bytes, settings,
+            "the Hub gets exactly the bytes that will be written"
+        );
+    }
+
+    #[test]
+    fn says_why_the_hub_would_not_sign_without_echoing_what_it_answered() {
+        for (status, words) in [
+            ("503 Service Unavailable", "no settings signing key"),
+            ("409 Conflict", "another organization"),
+            ("429 Too Many Requests", "too many"),
+            ("403 Forbidden", "cannot get settings signed"),
+        ] {
+            let (hub, _requests) = fake_hub(vec![reply(status, "", "fixture-secret-body")]);
+            let error = sign_settings(&hub, &session(), b"{}")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(words), "{status}: {error}");
+            assert!(!error.contains("fixture-secret-body"));
+        }
     }
 
     #[test]

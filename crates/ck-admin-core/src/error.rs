@@ -46,6 +46,12 @@ pub enum Error {
     ImageSettingsUnreadable(serde_json::Error),
     #[error("this base image does not support first-boot enrolment")]
     EnrolmentUnsupported,
+    #[error(
+        "this image only accepts settings the Hub signed. Sign in to the Hub in Keeper Forge to write sticks from it"
+    )]
+    SignedSettingsRequired,
+    #[error("the Hub could not sign the settings: {0}")]
+    Signing(String),
     #[error("this image uses first-boot enrolment. Build a fresh image to change its settings")]
     EnrolmentImage,
     #[error("the contest has no more enrolment machine numbers")]

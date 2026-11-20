@@ -117,6 +117,27 @@ pub fn supports_enrolment_schema(path: &Path, schema: u32) -> Result<bool, Error
     Ok(found.unwrap_or(false))
 }
 
+/// Where an image lists the public keys that may sign stick settings (`CONFIG_PUBLIC_KEYS_PATH` in
+/// ck-protocol). An image that has the file refuses settings the Hub did not sign.
+const SETTINGS_KEYS_PATH: &str = "/etc/ck/config-public-keys";
+
+/// Whether sticks made from this image only accept settings the Hub signed, so the settings Forge
+/// writes have to be signed. An image with no Linux system, or with no key list, says no.
+pub fn requires_signed_settings(path: &Path) -> Result<bool, Error> {
+    let mut disk = File::open(path).map_err(|error| Error::io("opening the image", error))?;
+    let found = inspect_linux(&mut disk, |fs| {
+        if read_os_release(fs)?.is_none() {
+            return Ok(None);
+        }
+        match fs.open(SETTINGS_KEYS_PATH) {
+            Ok(_) => Ok(Some(true)),
+            Err(Ext4Error::NotFound) => Ok(Some(false)),
+            Err(error) => Err(Error::DetectionFilesystem(error)),
+        }
+    })?;
+    Ok(found.unwrap_or(false))
+}
+
 fn inspect_linux<T>(
     disk: &mut File,
     mut inspect: impl FnMut(&Ext4) -> Result<Option<T>, Error>,
