@@ -195,6 +195,8 @@ pub struct DiskView {
     number: u32,
     name: String,
     serial: String,
+    /// The start of the disk's fingerprint, the same id the Hub shows for a stick written to it.
+    hardware_id: Option<String>,
     size: String,
     bus: String,
     /// Why this disk is never written, or nothing when it may be.
@@ -217,6 +219,8 @@ pub async fn list_disks(base: PathBuf, allow_virtual: bool) -> Result<Vec<DiskVi
                     .unwrap_or_default()
                     .trim()
                     .to_owned(),
+                hardware_id: HardwareId::of(disk)
+                    .map(|id| id.fingerprint.chars().take(8).collect()),
                 size: disk.size_text(),
                 bus: disk.bus_type.clone(),
                 refused: disk.check(size, allow_virtual).err().map(|e| e.to_string()),
@@ -429,7 +433,8 @@ fn make_and_write(
     }
     // The program and its arguments go in environment variables, so nothing chosen in the
     // window is ever part of the PowerShell command text.
-    let mut child = Command::new("powershell.exe")
+    let mut powershell = Command::new("powershell.exe");
+    powershell
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -438,7 +443,9 @@ fn make_and_write(
                  -WindowStyle Hidden -Wait",
         ])
         .env("CK_EXE", &exe)
-        .env("CK_ARGS", arguments.join(" "))
+        .env("CK_ARGS", arguments.join(" "));
+    // The elevated helper starts hidden, but PowerShell itself would still show a console.
+    let mut child = ck_writer::without_console_window(&mut powershell)
         .spawn()
         .map_err(|e| format!("could not start the writer: {e}"))?;
     let status = loop {

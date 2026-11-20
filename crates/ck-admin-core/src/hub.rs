@@ -415,6 +415,62 @@ pub fn record_stick_write(
     }
 }
 
+/// A stick as the Hub lists it, with only what Forge needs to recognise a disk it wrote before.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct HubStick {
+    pub stick_id: String,
+    #[serde(default)]
+    pub team: String,
+    #[serde(default)]
+    pub site: String,
+    #[serde(default)]
+    pub contest: String,
+    #[serde(default)]
+    pub machine_number: Option<u32>,
+    /// Set when the key is already retired.
+    #[serde(default)]
+    pub retired_at: Option<String>,
+    /// Set while the stick is archived.
+    #[serde(default)]
+    pub archived_at: Option<String>,
+    /// The disk this stick was written to, when Forge reported it.
+    #[serde(default)]
+    pub hardware: Option<HubStickDisk>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct HubStickDisk {
+    /// The first 8 hex digits of the disk's fingerprint.
+    pub id: String,
+    pub write_count: u32,
+}
+
+/// Every stick of the organization the admin is signed in to.
+pub fn list_sticks(hub: &str, session: &HubSession) -> Result<Vec<HubStick>, Error> {
+    let base = checked_base(hub)?;
+    let mut answer = agent()
+        .get(format!("{base}/api/v1/sticks"))
+        .header("authorization", &session.bearer())
+        .call()
+        .map_err(|e| unreachable_hub(base, &e))?;
+    match answer.status().as_u16() {
+        200 => answer
+            .body_mut()
+            .with_config()
+            .limit(8 * 1024 * 1024)
+            .read_json()
+            .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}"))),
+        401 => Err(Error::Hub("sign in again to see the sticks".into())),
+        403 => Err(Error::Hub("this account cannot see the sticks".into())),
+        409 => Err(Error::Hub(
+            "listing sticks in Forge requires a sign-in with one organization".into(),
+        )),
+        status => Err(Error::Hub(format!(
+            "the Hub answered {status} while listing the sticks"
+        ))),
+    }
+}
+
 /// Retires a previous stick key without removing its history from the Hub.
 pub fn retire_stick_credential(hub: &str, session: &HubSession, id: &str) -> Result<(), Error> {
     let id = StickId::parse(id.trim()).map_err(|_| Error::Hub("enter a valid stick ID".into()))?;

@@ -4,7 +4,7 @@
   import * as api from '../lib/api';
   import { setBasePath } from '../state.svelte';
 
-  let { disabled = false }: { disabled?: boolean } = $props();
+  let { disabled = false, onMade }: { disabled?: boolean; onMade?: () => void } = $props();
 
   let catalog = $state<api.CatalogItem[]>([]);
   let distro = $state('');
@@ -54,6 +54,7 @@
     try {
       hash = await api.makeBaseImage(distro, out, patch || null);
       setBasePath(out);
+      onMade?.();
     } catch (error) {
       failure = describeError(error);
     } finally {
@@ -67,12 +68,12 @@
   );
 </script>
 
-<div class="card">
-  <h2>No base image? Make one</h2>
+<div class="inner">
+  <h3>Build a base image</h3>
   <p class="hint">
     Downloads an official image, installs a desktop and the contest tools in a virtual machine, and
     adds the Keeper OS patch. Needs about 30 GB free, QEMU, and 15 to 40 minutes. The new image is
-    then used as the base image.
+    then used as the base image. Most admins download one instead.
   </p>
   <div class="path">
     <label class="grow">

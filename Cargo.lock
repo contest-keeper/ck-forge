@@ -165,6 +165,7 @@ name = "ck-base-image"
 version = "0.1.0"
 dependencies = [
  "ck-image",
+ "ck-writer",
  "ext4-view",
  "serde",
  "serde_json",

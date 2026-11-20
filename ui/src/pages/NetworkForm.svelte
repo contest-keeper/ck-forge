@@ -2,9 +2,11 @@
   import Field from '../components/Field.svelte';
   import {
     RECORDING_MODES,
+    RECORDING_MODE_LABELS,
     linesToList,
     optionalCount,
     optionalText,
+    recordingFields,
     wholeNumber,
     type RecordingUpload,
     type Settings,
@@ -12,6 +14,8 @@
 
   type Props = { settings: Settings };
   let { settings = $bindable() }: Props = $props();
+
+  const fields = $derived(recordingFields(settings.recording.mode));
 </script>
 
 <section>
@@ -53,7 +57,7 @@
   <div class="grid">
     <Field
       label="Wi-Fi name (SSID)"
-      hint="Sticks join this network at boot. Empty means none. The password is asked on the Make page and is never saved in the profile."
+      hint="Sticks join this network by themselves at every boot, with no login on the stick. It works for a network with a WPA2 password or an open one, not for a network that asks for a user name or a web page login. Empty means none. The password is asked on the Make page and is never saved in the profile."
     >
       <input
         type="text"
@@ -70,57 +74,68 @@
 <section>
   <h3>Screen recording</h3>
   <div class="grid">
-    <Field label="Mode">
+    <Field label="Mode" hint={RECORDING_MODE_LABELS[settings.recording.mode]}>
       <select bind:value={settings.recording.mode}>
-        {#each RECORDING_MODES as mode (mode)}<option value={mode}>{mode}</option>{/each}
+        {#each RECORDING_MODES as mode (mode)}
+          <option value={mode}>{mode.charAt(0).toUpperCase() + mode.slice(1)}</option>
+        {/each}
       </select>
     </Field>
-    <Field label="Start after (seconds)" hint="Keeps boot and login fast.">
-      <input
-        type="number"
-        min="0"
-        bind:value={
-          () => settings.recording.start_delay_s,
-          (v) => (settings.recording.start_delay_s = wholeNumber(v, 0))
-        }
-      />
-    </Field>
-    <Field label="Snapshot every (seconds)" hint="Empty uses 10.">
-      <input
-        type="number"
-        min="1"
-        bind:value={
-          () => settings.recording.snapshot_interval_s ?? '',
-          (v) => (settings.recording.snapshot_interval_s = optionalCount(String(v)))
-        }
-      />
-    </Field>
-    <Field label="Recording upload">
-      <select
-        bind:value={
-          () => settings.recording.upload ?? 'keep',
-          (value: RecordingUpload) => (settings.recording.upload = value)
-        }
+    {#if fields.timing}
+      <Field label="Start after (seconds)" hint="Keeps boot and login fast.">
+        <input
+          type="number"
+          min="0"
+          bind:value={
+            () => settings.recording.start_delay_s,
+            (v) => (settings.recording.start_delay_s = wholeNumber(v, 0))
+          }
+        />
+      </Field>
+    {/if}
+    {#if fields.snapshotInterval}
+      <Field label="Snapshot every (seconds)" hint="Empty uses 10.">
+        <input
+          type="number"
+          min="1"
+          bind:value={
+            () => settings.recording.snapshot_interval_s ?? '',
+            (v) => (settings.recording.snapshot_interval_s = optionalCount(String(v)))
+          }
+        />
+      </Field>
+    {/if}
+    {#if fields.keeping}
+      <Field label="Recording upload">
+        <select
+          bind:value={
+            () => settings.recording.upload ?? 'keep',
+            (value: RecordingUpload) => (settings.recording.upload = value)
+          }
+        >
+          <option value="keep">Keep on the stick</option>
+          <option value="after_contest">Upload after the contest</option>
+          <option value="during_contest">Upload during the contest</option>
+        </select>
+      </Field>
+      <Field
+        label="Keep on the stick (days)"
+        hint="Leave empty to keep recordings until you collect them."
       >
-        <option value="keep">Keep on the stick</option>
-        <option value="after_contest">Upload after the contest</option>
-        <option value="during_contest">Upload during the contest</option>
-      </select>
-    </Field>
-    <Field
-      label="Keep on the stick (days)"
-      hint="Leave empty to keep recordings until you collect them."
-    >
-      <input
-        type="number"
-        min="1"
-        bind:value={
-          () => settings.recording.retention_days ?? '',
-          (value) => (settings.recording.retention_days = optionalCount(String(value)))
-        }
-      />
-    </Field>
+        <input
+          type="number"
+          min="1"
+          bind:value={
+            () => settings.recording.retention_days ?? '',
+            (value) => (settings.recording.retention_days = optionalCount(String(value)))
+          }
+        />
+      </Field>
+    {/if}
   </div>
+  {#if !fields.timing}
+    <p class="hint">Nothing is recorded, so there is nothing else to set.</p>
+  {/if}
 </section>
 
 <style>

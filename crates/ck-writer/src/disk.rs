@@ -174,7 +174,7 @@ fn powershell(script: &str, chosen: Option<&Disk>) -> Result<String, String> {
             serde_json::to_string(disk).map_err(|e| format!("encoding disk identity: {e}"))?;
         command.env("CK_FORGE_SELECTED_DISK", expected);
     }
-    let output = command
+    let output = crate::process::without_console_window(&mut command)
         .output()
         .map_err(|e| format!("could not start PowerShell: {e}"))?;
     if output.status.success() {

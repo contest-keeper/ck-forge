@@ -28,9 +28,9 @@ pub fn apply(image: &Path, patch: &Path) -> Result<(), Error> {
 }
 
 fn wsl_path(path: &Path) -> Result<String, Error> {
-    let output = Command::new("wsl")
-        .args(["-e", "wslpath", "-a"])
-        .arg(path)
+    let mut command = Command::new("wsl");
+    command.args(["-e", "wslpath", "-a"]).arg(path);
+    let output = ck_writer::without_console_window(&mut command)
         .output()
         .map_err(|e| Error::io("starting WSL", e))?;
     if !output.status.success() {

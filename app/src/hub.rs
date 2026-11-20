@@ -154,6 +154,14 @@ pub async fn hub_sign_out(state: State<'_, HubState>) -> Result<(), String> {
     Ok(())
 }
 
+/// The Hub's sticks, so a disk about to be written can be matched with the stick it held before.
+#[tauri::command]
+pub async fn hub_list_sticks(
+    state: State<'_, HubState>,
+) -> Result<Vec<ck_admin_core::HubStick>, String> {
+    state.as_admin(|session| ck_admin_core::list_sticks(HUB_URL, session))
+}
+
 #[tauri::command]
 pub async fn hub_retire_stick(state: State<'_, HubState>, id: String) -> Result<(), String> {
     state.as_admin(|session| ck_admin_core::retire_stick_credential(HUB_URL, session, &id))

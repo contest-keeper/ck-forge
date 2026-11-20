@@ -33,6 +33,7 @@ tauri-build = { version = "2", features = [] }
 ck-admin-core = { path = "../crates/ck-admin-core" }
 ck-writer = { path = "../crates/ck-writer" }
 ck-protocol = { git = "https://github.com/contest-keeper/ck-protocol", rev = "293131bab0de9c55d508d04f446b3803420f1ec0" }
+base64 = "0.22.1"
 open = "5"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
