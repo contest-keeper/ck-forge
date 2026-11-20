@@ -42,9 +42,11 @@ To build the installer yourself: `tools/build-installer.ps1`.
 
 ## The window
 
-The window has four steps: edit and save a contest **profile**, make a stick **image** from the base
-image, **write** it to a USB stick, and tell the **Hub** about the sticks. Writing a stick opens the
-Windows permission prompt; the window itself runs without administrator rights.
+Download the Keeper OS `.img.zst` from Keeper Hub and copy the SHA-256 shown beside it. In Forge,
+save a contest profile, then open the **Make sticks** page. Under **Base image**, choose **Import
+download…**, paste the SHA-256, and save the verified raw `.img` to a drive with space for it. Forge
+selects the raw image automatically. Choose your USB stick by its disk number and confirm the erase.
+Windows asks for administrator permission when the write starts.
 
 Build and run it on Windows (needs the toolchain in `ck-os/docs/dev-setup.md`, and Node with pnpm):
 
@@ -61,22 +63,20 @@ For work on the page itself, run `pnpm dev` in `ui/` and `cargo run` in `app/`.
 
 ```sh
 ck-forge profile new p.json                  # then edit it, and: ck-forge profile check p.json
-ck-forge image catalog                       # the base images Keeper can make for you
-ck-forge image create --distro ubuntu-24.04 --out base.img --patch ck-os-patch.tar.gz
+ck-forge image import keeper-os.img.zst --sha256 <sha256-from-hub> --out base.img
 ck-forge image build --base base.img --out stick.img --profile p.json
 ck-forge stick list                          # disks, and which ones may be written
 ck-forge stick write stick.img --disk 3      # in an administrator terminal; erases the stick
 ck-forge registry push --hub https://hub.example.org --user ana
 ```
 
-`image create` is for an admin with no contest image: it downloads the official Ubuntu cloud image
-(checked against the hash in the catalog), boots it once in QEMU to install a desktop and the contest
-tools, and applies the Keeper OS patch (needs WSL). It takes 15 to 40 minutes, needs QEMU and 30 GB
-free, and writes `base.img.base.json` with what the image was made from. The window does the same in
-the image step ("No base image? Make one"). Use the result as `--base` below.
+For versions of Forge without import, compare the published SHA-256 with
+`Get-FileHash -Algorithm SHA256 .\keeper-os.img.zst` in PowerShell. Once the hash matches, expand the
+download with `zstd -d keeper-os.img.zst -o base.img` and use `base.img` in the commands above.
+Use `ck-forge stick write stick.img --to test.img` to run the write and read-back check on a file.
 
-`image build` takes about a second. The settings of a stick sit in the EFI partition at the start of
-the image, so `stick.img` holds only that start (about 130 MB) and a manifest, `stick.img.thin.json`,
+`image build` puts the stick's settings in the CKCONFIG partition near the start of the image.
+`stick.img` holds only that start and a manifest, `stick.img.thin.json`,
 that names the base image. `stick write` reads the start from `stick.img` and the rest from the base,
 and refuses to write when the base is not the image `stick.img` was made from. Keep the base where
 it was. `--full-copy` makes a whole 30 GB image instead, which runs without the base. Several sticks
@@ -91,6 +91,9 @@ The base is read once for all of them. A stick that already holds the image, suc
 the last contest from the same base, is written only where it differs; every stick is read back and
 checked completely either way. Only a plain base image, with no stick identity, may be written
 to several sticks as one image.
+
+The developer-only `image create` command provisions a local test base using QEMU and WSL. Run
+`ck-forge image catalog` to see its supported distributions.
 
 A stick is written, read back and compared by SHA-256. Only USB disks are written, never the disk
 Windows runs from. To try the writer without a stick, see [docs/testing-the-writer.md](docs/testing-the-writer.md).
