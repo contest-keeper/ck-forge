@@ -122,10 +122,10 @@ $expected = ConvertFrom-Json $env:CK_FORGE_SELECTED_DISK
 function Read-SelectedDisk {
     # Storage can briefly stop reporting a disk while it is reprobed. A replacement fails immediately.
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
-        $matches = @(Get-Disk | Where-Object Number -eq $expected.Number)
-        if ($matches.Count -gt 0) {
-            $current = $matches[0]
-            if ($matches.Count -ne 1 -or [string]::IsNullOrWhiteSpace($expected.Path) -or
+        $listed = @(Get-Disk | Where-Object Number -eq $expected.Number)
+        if ($listed.Count -gt 0) {
+            $current = $listed[0]
+            if ($listed.Count -ne 1 -or [string]::IsNullOrWhiteSpace($expected.Path) -or
                 $current.Path -ne $expected.Path -or [string]$current.SerialNumber -cne [string]$expected.SerialNumber -or
                 $current.FriendlyName -cne $expected.FriendlyName -or $current.Size -ne $expected.Size -or
                 [string]$current.BusType -ne $expected.BusType -or $current.IsBoot -or $current.IsSystem) {
