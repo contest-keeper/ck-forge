@@ -5,10 +5,11 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    EnrolmentBuild, HubImage, HubImageStep, Profile, Wallpaper, build_enrolment_image,
-    build_thin_image, folder_of, import_image, local_now, mint_enrolment_code, supports_enrolment,
+    EnrolmentBuild, HardwareId, HubImage, HubImageStep, Profile, Wallpaper, build_enrolment_image,
+    build_thin_image, folder_of, import_image, local_now, mint_enrolment_code, record_stick_write,
+    supports_enrolment,
 };
-use ck_protocol::WifiPassword;
+use ck_protocol::{StickId, WifiPassword};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -101,6 +102,10 @@ pub async fn enrolment_supported(base: PathBuf) -> Result<bool, String> {
 }
 
 /// Makes one stick image. First-boot enrolment keeps the signing key on the stick from birth.
+/// `hardware` is the disk the image goes to, when it is known, so the Hub can count rewrites.
+///
+/// Returns the id of a stick that already has one (not first-boot enrolment), so the caller can
+/// tell the Hub which disk it went to once the write has finished.
 fn build_stick(
     app: &AppHandle,
     base: &Path,
@@ -108,7 +113,8 @@ fn build_stick(
     profile_path: &Path,
     wifi_password: Option<&WifiPassword>,
     first_boot_enrolment: bool,
-) -> Result<(), String> {
+    hardware: Option<&HardwareId>,
+) -> Result<Option<StickId>, String> {
     let mut profile = Profile::load(profile_path).map_err(|e| message(&e))?;
     // Typed in the window for this write only: it is not in the profile file.
     profile.set_wifi_password(wifi_password.cloned());
@@ -141,7 +147,14 @@ fn build_stick(
             &options,
             |settings, machine_number, scope| {
                 hub.as_admin(|session| {
-                    mint_enrolment_code(HUB_URL, session, settings, machine_number, scope)
+                    mint_enrolment_code(
+                        HUB_URL,
+                        session,
+                        settings,
+                        machine_number,
+                        scope,
+                        hardware,
+                    )
                 })
                 .map(|minted| minted.code)
                 .map_err(ck_admin_core::Error::Hub)
@@ -149,9 +162,9 @@ fn build_stick(
             progress,
         )
         .map_err(|e| message(&e))?;
-        return Ok(());
+        return Ok(None);
     }
-    build_thin_image(
+    let built = build_thin_image(
         base,
         out,
         &profile,
@@ -163,7 +176,18 @@ fn build_stick(
     .map_err(|e| message(&e))?;
     // The next successful push includes this stick if the Hub is unavailable now.
     let _ = hub.push(&registry);
-    Ok(())
+    Ok(Some(built.config.stick_id))
+}
+
+/// Tells the Hub which disk each stick that already had its id was written to. This runs only after
+/// the writer reports that everything was written and checked, so a cancelled permission prompt or
+/// a failed disk never counts as a write. Not recording one never changes what was written: that
+/// stick is then only not counted as rewritten.
+fn record_written(app: &AppHandle, written: &[(StickId, HardwareId)]) {
+    let hub = app.state::<HubState>();
+    for (stick, hardware) in written {
+        let _ = hub.as_admin(|session| record_stick_write(HUB_URL, session, stick, hardware));
+    }
 }
 
 #[derive(Serialize)]
@@ -305,6 +329,26 @@ struct Target<'a> {
     first_boot_enrolment: bool,
 }
 
+/// The id of each disk that is about to be written, in the order of `disks`. A disk whose id cannot
+/// be read, or all of them when the list cannot be read, give none: the stick is written as before.
+fn hardware_of(disks: &[u32], to_file: bool) -> Vec<Option<HardwareId>> {
+    if to_file || disks.is_empty() {
+        return Vec::new();
+    }
+    let Ok(listed) = ck_writer::list_disks() else {
+        return Vec::new();
+    };
+    disks
+        .iter()
+        .map(|number| {
+            listed
+                .iter()
+                .find(|disk| disk.number == *number)
+                .and_then(HardwareId::of)
+        })
+        .collect()
+}
+
 /// Builds one image per stick in `work`, then writes them to the disks, or the first to a file.
 fn make_and_write(
     app: &AppHandle,
@@ -320,17 +364,24 @@ fn make_and_write(
         wifi_password,
         first_boot_enrolment,
     } = *target;
+    let hardware = hardware_of(disks, to_file.is_some());
     let mut images = Vec::new();
+    let mut written = Vec::new();
     for n in 1..=disks.len().max(1) {
         let image = work.join(format!("stick-{n}.img"));
-        build_stick(
+        let disk = hardware.get(n - 1).and_then(Option::as_ref);
+        let stick = build_stick(
             app,
             base,
             &image,
             profile_path,
             wifi_password,
             first_boot_enrolment,
+            disk,
         )?;
+        if let (Some(stick), Some(disk)) = (stick, disk) {
+            written.push((stick, disk.clone()));
+        }
         images.push(image);
     }
     // A file needs no administrator rights, so it is written here: a test without a stick.
@@ -401,7 +452,10 @@ fn make_and_write(
             state,
             sha256: Some(hash),
             ..
-        }) if state == "done" => Ok(hash),
+        }) if state == "done" => {
+            record_written(app, &written);
+            Ok(hash)
+        }
         Some(HelperState {
             message: Some(why), ..
         }) => Err(why),

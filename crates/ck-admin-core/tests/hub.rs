@@ -203,7 +203,7 @@ mod hub_images {
 
 mod enrolment {
     use ck_admin_core::{
-        CredentialScope, HubSession, mint_enrolment_code, push_registry_signed_in,
+        CredentialScope, HardwareId, HubSession, mint_enrolment_code, push_registry_signed_in,
     };
     use ck_protocol::Settings;
     use serde_json::{Value, json};
@@ -245,7 +245,11 @@ mod enrolment {
             valid_until: utc("2026-11-20T04:00:00Z"),
         };
 
-        let minted = mint_enrolment_code(&hub, &session(), &settings, 4, Some(&scope))
+        let disk = HardwareId {
+            fingerprint: "ab".repeat(32),
+            serial_hint: "1234".to_owned(),
+        };
+        let minted = mint_enrolment_code(&hub, &session(), &settings, 4, Some(&scope), Some(&disk))
             .expect("mint enrolment code");
         assert_eq!(minted.code.expose(), fixture_code);
         assert_eq!(minted.expires_at, utc("2026-11-19T23:00:00Z"));
@@ -261,7 +265,8 @@ mod enrolment {
         assert_eq!(
             serde_json::from_str::<Value>(body).expect("mint request"),
             json!({"team": "Team A", "site": "Lab B", "contest": "Regional Finals",
-                "machine_number": 4, "credential_scope": scope}),
+                "machine_number": 4, "credential_scope": scope,
+                "hardware": {"fingerprint": "ab".repeat(32), "serial_hint": "1234"}}),
         );
     }
 
@@ -281,8 +286,8 @@ mod enrolment {
             ),
         ] {
             let (hub, _) = fake_hub(vec![response]);
-            let error =
-                mint_enrolment_code(&hub, &session(), &Settings::default(), 1, None).unwrap_err();
+            let error = mint_enrolment_code(&hub, &session(), &Settings::default(), 1, None, None)
+                .unwrap_err();
             assert!(!error.to_string().contains(fixture));
         }
     }
