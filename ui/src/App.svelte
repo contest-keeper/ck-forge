@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import HubSignIn from './components/HubSignIn.svelte';
+  import { describeError } from './core/format';
+  import * as api from './lib/api';
   import ContestPage from './pages/ContestPage.svelte';
   import MakePage from './pages/MakePage.svelte';
-  import { app } from './state.svelte';
+  import { app, saveProfile } from './state.svelte';
   import { look, setTheme } from './theme/theme.svelte';
 
   const tabs = [
@@ -24,8 +27,49 @@
   ] as const;
 
   let index = $state(0);
+  let leaving = $state(false);
+  let leaveFailure = $state('');
   const tab = $derived(tabs[index] ?? tabs[0]);
   const done = $derived([app.profilePath !== null, app.written]);
+
+  // A profile is ready to fill in from the start; the admin does not have to ask for one first.
+  onMount(() => {
+    if (app.profile) return;
+    api.newProfile().then(
+      (profile) => {
+        app.profile ??= profile;
+      },
+      (error: unknown) => (leaveFailure = describeError(error)),
+    );
+  });
+
+  /** Moves to the next step. Leaving the profile saves it, in Forge's own folder when it has no
+   * file yet; a profile with problems stays here, and the problems are shown. */
+  async function next() {
+    leaveFailure = '';
+    if (index === 0) {
+      leaving = true;
+      try {
+        await saveProfile();
+      } catch (error) {
+        leaveFailure = describeError(error);
+        return;
+      } finally {
+        leaving = false;
+      }
+    }
+    index++;
+  }
+
+  /** The sidebar steps go through the same rule as Continue. */
+  async function show(target: number) {
+    if (target > index) {
+      while (index < target && !leaveFailure) await next();
+      return;
+    }
+    leaveFailure = '';
+    index = target;
+  }
 </script>
 
 <div class="win">
@@ -42,7 +86,7 @@
           class:on={i === index}
           class:done={done[i]}
           aria-current={i === index ? 'step' : undefined}
-          onclick={() => (index = i)}
+          onclick={() => show(i)}
         >
           <span class="dot">
             {#if done[i]}
@@ -101,11 +145,18 @@
     </main>
     <footer class="foot">
       {#if index > 0}
-        <button type="button" class="btn" onclick={() => index--}>Back</button>
+        <button type="button" class="btn" onclick={() => show(index - 1)}>Back</button>
+      {/if}
+      {#if leaveFailure}
+        <p class="note error leave" role="alert">{leaveFailure}</p>
+      {:else if index === 0 && app.profilePath === null}
+        <span class="hint">Continue saves this profile in the Keeper Forge folder.</span>
       {/if}
       <span class="grow"></span>
       {#if index < tabs.length - 1}
-        <button type="button" class="btn pri" onclick={() => index++}>Continue</button>
+        <button type="button" class="btn pri" onclick={next} disabled={leaving || !app.profile}>
+          {leaving ? 'Saving…' : 'Save and continue'}
+        </button>
       {/if}
     </footer>
   </section>
@@ -115,5 +166,10 @@
   .sr-only {
     position: absolute;
     left: -9999px;
+  }
+  .leave {
+    margin: 0;
+    max-height: 120px;
+    overflow-y: auto;
   }
 </style>

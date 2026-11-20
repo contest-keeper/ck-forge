@@ -38,8 +38,8 @@ pub fn provision(
     let qemu_log = File::create(work.join("provision-qemu.err"))
         .map_err(|e| Error::io("creating the QEMU log", e))?;
 
-    let mut child = Command::new(machine.qemu.program("qemu-system-x86_64"))
-        .args(["-machine", "q35", "-accel", machine.accel, "-cpu", "qemu64"])
+    let mut qemu = Command::new(machine.qemu.program("qemu-system-x86_64"));
+    qemu.args(["-machine", "q35", "-accel", machine.accel, "-cpu", "qemu64"])
         .args(["-smp", "2", "-m", &machine.memory_mb.to_string()])
         .arg("-drive")
         .arg(format!(
@@ -68,7 +68,8 @@ pub fn provision(
         .args(["-display", "none", "-serial"])
         .arg(format!("file:{}", serial_log.display()))
         .stdout(Stdio::null())
-        .stderr(qemu_log)
+        .stderr(qemu_log);
+    let mut child = ck_writer::without_console_window(&mut qemu)
         .spawn()
         .map_err(|e| Error::io("starting QEMU", e))?;
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Field from '../components/Field.svelte';
+  import WallpaperPicker from '../components/WallpaperPicker.svelte';
   import { optionalText, type Settings } from '../core/profile';
 
   type Props = { settings: Settings };
@@ -25,14 +26,6 @@
     <Field label="USB label" hint="At most 11 characters.">
       <input bind:value={settings.branding.usb_label} maxlength="11" />
     </Field>
-    <Field label="Wallpaper file name" hint="A picture in the same folder as the profile.">
-      <input
-        bind:value={
-          () => settings.branding.wallpaper ?? '',
-          (v) => (settings.branding.wallpaper = optionalText(v))
-        }
-      />
-    </Field>
     <Field label="Home page">
       <input
         bind:value={
@@ -42,6 +35,7 @@
       />
     </Field>
   </div>
+  <WallpaperPicker bind:settings />
   <Field label="Welcome text" hint="Shown at login.">
     <textarea rows="3" bind:value={settings.branding.welcome_text}></textarea>
   </Field>

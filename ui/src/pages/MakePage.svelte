@@ -1,42 +1,49 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import BaseImageCreator from '../components/BaseImageCreator.svelte';
-  import HubImagePicker from '../components/HubImagePicker.svelte';
+  import BaseImageStep from '../components/BaseImageStep.svelte';
+  import ConfirmRetire from '../components/ConfirmRetire.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
-  import { describeError, eraseConfirmation } from '../core/format';
+  import RetireOldKeys from '../components/RetireOldKeys.svelte';
+  import { describeError, eraseConfirmation, formatDuration, stickLabel } from '../core/format';
   import * as api from '../lib/api';
-  import { app, setBasePath } from '../state.svelte';
+  import { app } from '../state.svelte';
 
   let disks = $state<api.DiskView[]>([]);
   let chosen = $state<number[]>([]);
   let allowVirtual = $state(false);
   let typed = $state('');
   let testFile = $state('');
-  let archive = $state('');
-  let sha256 = $state('');
-  let importing = $state(false);
-  let importFailure = $state('');
   let wifiPassword = $state('');
-  let busy = $state(false);
   let progress = $state<api.Progress | null>(null);
   let hash = $state('');
   let written = $state(0);
   let failure = $state('');
-  let retiring = $state(false);
-  let previousStick = $state('');
-  let retirementStatus = $state('');
-  let retirementError = $state('');
   let enrolmentSupported = $state(false);
   let firstBootEnrolment = $state(false);
+  // What the Hub knows about each disk, from the sticks written to it before.
+  let earlier = $state<Record<number, api.HubStick>>({});
+  let lookupNote = $state('');
+  // The sticks that were on the disks just written, kept for retiring their old keys.
+  let rewritten = $state<api.HubStick[]>([]);
+  let retired = $state<string[]>([]);
+  let retireFailure = $state('');
+  let asking = $state(false);
+  let took = $state('');
 
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
   const ready = $derived(app.profilePath !== null && app.basePath !== null);
   const confirmed = $derived(chosen.length > 0 && typed.trim() === eraseConfirmation(chosen));
   const names = $derived([...chosen].sort((a, b) => a - b).join(', '));
+  const wifiName = $derived(app.profile?.settings.wifi?.ssid);
+  // The sticks the Hub has from this account on the chosen disks: the ones a write replaces.
+  const replaced = $derived(
+    chosen.map((number) => earlier[number]).filter((stick) => stick !== undefined),
+  );
 
   onMount(() => {
+    // The write is the only thing here that shows its progress; the base image step has its own.
     const stop = api.onProgress((p) => {
-      if (busy) progress = p;
+      if (app.busy && p.phase !== 'downloading' && p.phase !== 'importing') progress = p;
     });
     return () => void stop.then((unlisten) => unlisten());
   });
@@ -61,66 +68,33 @@
     };
   });
 
-  async function chooseBase() {
-    const path = await api.chooseImageToOpen();
-    if (!path) return;
-    archive = '';
-    importFailure = '';
-    selectBase(path);
-  }
-
-  function selectBase(path: string) {
-    setBasePath(path);
+  /** A new base image means the sticks found so far were checked against the old one. */
+  function baseChanged() {
     chosen = [];
     disks = [];
     typed = '';
   }
 
-  async function chooseArchive() {
-    const path = await api.chooseImageArchive();
-    if (!path) return;
-    archive = path;
-    sha256 = '';
-    importFailure = '';
-  }
-
-  async function importDownload() {
-    const out = await api.chooseBaseToSave();
-    if (!out) return;
-    busy = true;
-    importing = true;
-    importFailure = '';
-    progress = null;
+  async function lookUpEarlier(found: api.DiskView[]) {
+    earlier = {};
+    lookupNote = '';
+    if (!app.hubEmail || !found.some((disk) => disk.hardware_id !== null)) return;
     try {
-      await api.importBaseImage(archive, out, sha256.trim());
-      selectBase(out);
-      archive = '';
+      const sticks = await api.hubListSticks();
+      const known: Record<number, api.HubStick> = {};
+      for (const disk of found) {
+        const stick = sticks.find(
+          (s) =>
+            disk.hardware_id !== null &&
+            s.hardware?.id === disk.hardware_id &&
+            s.retired_at === null &&
+            s.archived_at === null,
+        );
+        if (stick) known[disk.number] = stick;
+      }
+      earlier = known;
     } catch (error) {
-      importFailure = describeError(error);
-    } finally {
-      busy = false;
-      importing = false;
-      progress = null;
-    }
-  }
-
-  async function downloadFromHub(id: string) {
-    busy = true;
-    importFailure = '';
-    progress = null;
-    try {
-      const out = await api.chooseBaseToSave();
-      if (!out) return;
-      importing = true;
-      await api.downloadHubImage(id, out);
-      selectBase(out);
-      archive = '';
-    } catch (error) {
-      importFailure = describeError(error);
-    } finally {
-      busy = false;
-      importing = false;
-      progress = null;
+      lookupNote = `Forge could not check which sticks these disks held before: ${describeError(error)}`;
     }
   }
 
@@ -130,6 +104,7 @@
     typed = '';
     try {
       disks = await api.listDisks(app.basePath ?? '', allowVirtual);
+      await lookUpEarlier(disks);
     } catch (error) {
       failure = describeError(error);
     }
@@ -139,27 +114,48 @@
     testFile = (await api.chooseImageToSave()) ?? testFile;
   }
 
-  async function retirePreviousKey() {
-    retiring = true;
-    retirementStatus = '';
-    retirementError = '';
-    try {
-      await api.hubRetireStick(previousStick.trim());
-      previousStick = '';
-      retirementStatus = 'The previous stick key is retired. Its history stays in the Hub.';
-    } catch (error) {
-      retirementError = describeError(error);
-    } finally {
-      retiring = false;
+  /** Pressing the write button: when it replaces sticks the Hub knows, ask first. */
+  function begin() {
+    if (replaced.length > 0) asking = true;
+    else void write({ disks: [...chosen] }, false);
+  }
+
+  function decided(choice: 'retire' | 'keep' | 'cancel') {
+    asking = false;
+    if (choice !== 'cancel') void write({ disks: [...chosen] }, choice === 'retire');
+  }
+
+  /** Retires the old keys one by one; a key that fails is told, and the others still go. */
+  async function retireOld(sticks: api.HubStick[]) {
+    const failed: string[] = [];
+    for (const stick of sticks) {
+      try {
+        await api.hubRetireStick(stick.stick_id);
+        retired.push(stick.stick_id);
+      } catch (error) {
+        failed.push(`${stickLabel(stick)}: ${describeError(error)}`);
+      }
+    }
+    if (failed.length > 0) {
+      retireFailure = `The new sticks are written, but these old keys are still active:\n${failed.join('\n')}`;
     }
   }
 
-  async function write(target: { disks: number[] } | { file: string }) {
-    busy = true;
+  async function write(target: { disks: number[] } | { file: string }, retireAfter = false) {
+    if (!app.profilePath || !app.basePath) return;
+    app.busy = true;
     failure = '';
     hash = '';
+    took = '';
+    retired = [];
+    retireFailure = '';
     progress = null;
-    if (!app.profilePath || !app.basePath) return;
+    const started = Date.now();
+    // Taken before the write: afterwards the Hub points at the new stick.
+    const before =
+      'disks' in target
+        ? target.disks.map((number) => earlier[number]).filter((s) => s !== undefined)
+        : [];
     try {
       hash = await api.writeStick(
         app.basePath,
@@ -170,11 +166,16 @@
         enrolmentSupported && firstBootEnrolment,
       );
       written = 'disks' in target ? target.disks.length : 1;
+      rewritten = before;
+      earlier = {};
       app.written = true;
+      took = formatDuration((Date.now() - started) / 1000);
+      // Only now: the new sticks are written and read back, so the old keys are not needed.
+      if (retireAfter) await retireOld(before);
     } catch (error) {
       failure = describeError(error);
     } finally {
-      busy = false;
+      app.busy = false;
       progress = null;
       typed = '';
       wifiPassword = '';
@@ -185,117 +186,67 @@
 
 <div class="page">
   {#if !app.profilePath}
-    <p class="note error">Save a profile on the Contest profile page first.</p>
+    <p class="note error">Go back to the Contest profile step and continue to save the profile.</p>
   {/if}
-  <div class="card">
-    <h2>Base image</h2>
-    {#if app.hubEmail}
-      <HubImagePicker disabled={busy} onDownload={downloadFromHub} />
-    {:else}
-      <p class="hint">Sign in to Keeper Hub to download Keeper OS here.</p>
-    {/if}
-    <div class="path">
-      <div class="grow">
-        <div class="n">{app.basePath ? fileName(app.basePath) : 'none chosen'}</div>
-        {#if app.basePath}
-          <div class="p">{app.basePath}</div>
-          <div class="p">Keep this file in place until all sticks are written.</div>
-        {/if}
-      </div>
-      <button type="button" class="btn sm" onclick={chooseBase} disabled={busy}>
-        Choose raw image…
-      </button>
-      <button type="button" class="btn sm" onclick={chooseArchive} disabled={busy}>
-        Import download…
-      </button>
-    </div>
-    {#if archive}
-      <div class="path">
-        <label class="grow">
-          <span class="n">SHA-256 for {fileName(archive)}</span>
-          <input type="text" bind:value={sha256} spellcheck="false" disabled={busy} />
-          <span class="p">Copy the 64 characters shown beside this download on Keeper Hub.</span>
-        </label>
-        <button
-          type="button"
-          class="btn sm"
-          onclick={importDownload}
-          disabled={busy || !/^[a-f0-9]{64}$/i.test(sha256.trim())}
-        >
-          Verify and save raw image…
-        </button>
-      </div>
-    {/if}
-    {#if importing}<ProgressBar {progress} />{/if}
-    {#if importFailure}<p class="note error" role="alert">{importFailure}</p>{/if}
-  </div>
 
-  <BaseImageCreator disabled={busy} />
+  <BaseImageStep onBaseChanged={baseChanged} />
 
-  {#if app.hubEmail}
-    <details class="card">
-      <summary>Retire a previous stick key</summary>
-      <label class="grow">
-        <span class="n">Previous stick ID</span>
-        <input type="text" bind:value={previousStick} spellcheck="false" disabled={retiring} />
-        <span class="p"
-          >Retire the old key after verifying the replacement and finishing any uploads from the old
-          stick.</span
-        >
+  <section class="card">
+    <header class="stephead" class:done={chosen.length > 0}>
+      <span class="num">2</span>
+      <div>
+        <h2>Sticks to write</h2>
+        <p class="hint">
+          Plug in the sticks, then find them. Forge only offers USB sticks that are big enough for
+          the base image, and never the disk Windows runs from.
+        </p>
+      </div>
+    </header>
+
+    {#if wifiName}
+      <label class="wifi">
+        <span class="n">Wi-Fi password for “{wifiName}”</span>
+        <input
+          type="password"
+          autocomplete="off"
+          placeholder="Leave empty for an open network"
+          bind:value={wifiPassword}
+          disabled={app.busy}
+        />
+        <span class="hint">
+          The sticks join this network by themselves at every boot. The password is written on the
+          sticks and nowhere else: not in the profile, the Hub or any log. It is cleared after each
+          write.
+        </span>
       </label>
-      <button
-        type="button"
-        class="btn sm"
-        onclick={retirePreviousKey}
-        disabled={busy || retiring || !/^[a-z0-9-]{1,64}$/i.test(previousStick.trim())}
-      >
-        Retire previous key
-      </button>
-      {#if retirementStatus}<p class="note ok">{retirementStatus}</p>{/if}
-      {#if retirementError}<p class="note error" role="alert">{retirementError}</p>{/if}
-    </details>
-  {/if}
+    {/if}
 
-  <div class="card">
-    <h2>Wi-Fi password</h2>
-    <p class="hint">
-      Only needed when the profile has a Wi-Fi name. It is written on the sticks and nowhere else:
-      not in the profile, the Hub or any log. It is cleared after each write.
-    </p>
-    <input
-      type="password"
-      autocomplete="off"
-      placeholder="Leave empty for an open network"
-      bind:value={wifiPassword}
-      disabled={busy}
-    />
-  </div>
-
-  <div class="card">
-    <h2>Choose the sticks to erase</h2>
-    <p class="hint">
-      Forge checks that each stick is large enough for the base image. Everything on the selected
-      sticks is erased. You can write several at once, each with its own identity. Windows asks for
-      administrator permission when the write starts.
-    </p>
     {#if enrolmentSupported}
       <label class="check">
-        <input type="checkbox" bind:checked={firstBootEnrolment} disabled={busy} />
+        <input type="checkbox" bind:checked={firstBootEnrolment} disabled={app.busy} />
         <span>Enrol sticks at first boot</span>
       </label>
       {#if firstBootEnrolment}
         <p class="hint">Connect each stick to Keeper Hub and boot it within one hour.</p>
       {/if}
     {/if}
+
     <div class="row">
-      <button type="button" class="btn sm" onclick={refresh} disabled={busy || !ready}>
+      <button type="button" class="btn sm" onclick={refresh} disabled={app.busy || !ready}>
         Find sticks
       </button>
       <label class="check">
-        <input type="checkbox" bind:checked={allowVirtual} disabled={busy} />
+        <input type="checkbox" bind:checked={allowVirtual} disabled={app.busy} />
         <span>Also show virtual disks (for testing)</span>
       </label>
     </div>
+    {#if !ready}
+      <p class="hint">
+        Choose a base image first, so Forge can check that the sticks are big enough.
+      </p>
+    {/if}
+    {#if lookupNote}<p class="hint">{lookupNote}</p>{/if}
+
     <ul class="disks">
       {#each disks as disk (disk.number)}
         <li>
@@ -308,7 +259,7 @@
               type="checkbox"
               value={disk.number}
               bind:group={chosen}
-              disabled={busy || disk.refused !== null}
+              disabled={app.busy || disk.refused !== null}
             />
             <span class="grow">
               <span class="dn">Disk {disk.number} · {disk.name || 'unnamed'}</span>
@@ -316,9 +267,16 @@
                 {disk.size} · {disk.bus}{disk.serial ? ` · serial ${disk.serial}` : ''}
                 {#if disk.refused}· Not offered: {disk.refused}{/if}
               </span>
+              {#if earlier[disk.number]}
+                <span class="dm" style="display: block">
+                  Written before as {stickLabel(earlier[disk.number] as api.HubStick)}
+                </span>
+              {/if}
             </span>
             {#if disk.refused !== null}
               <span class="pill no">Protected</span>
+            {:else if earlier[disk.number]}
+              <span class="pill warn">Rewrite</span>
             {:else}
               <span class="pill ok">Safe to write</span>
             {/if}
@@ -326,72 +284,89 @@
         </li>
       {/each}
     </ul>
-  </div>
+  </section>
 
-  {#if chosen.length > 0}
-    <div class="danger">
-      <div class="grow">
-        <div class="dh">
-          Everything on {chosen.length === 1 ? 'disk' : 'disks'}
-          {names} will be erased
-        </div>
-        <div class="hint">
-          This cannot be undone. Type <strong>{eraseConfirmation(chosen)}</strong> to confirm.
-        </div>
+  <section class="card">
+    <header class="stephead" class:done={hash !== ''}>
+      <span class="num">3</span>
+      <div>
+        <h2>Erase and write</h2>
+        <p class="hint">
+          Everything on the chosen sticks is erased. Each stick gets its own identity from the saved
+          profile. Windows asks for administrator permission when the write starts.
+        </p>
       </div>
-      <input
-        aria-label="Type {eraseConfirmation(chosen)} to confirm"
-        bind:value={typed}
-        autocomplete="off"
-        disabled={busy}
-      />
-      <button
-        type="button"
-        class="btn dng"
-        onclick={() => write({ disks: [...chosen] })}
-        disabled={busy || !confirmed}
-      >
-        {busy
-          ? 'Writing…'
-          : chosen.length > 1
-            ? `Erase and write ${chosen.length} sticks`
-            : 'Erase and write'}
-      </button>
-    </div>
-  {/if}
+    </header>
 
-  {#if !importing}<ProgressBar {progress} />{/if}
-  {#if failure}<p class="note error" role="alert">{failure}</p>{/if}
-  {#if hash}
-    <p class="note ok">
-      Written and read back on {written === 1 ? 'the stick' : `${written} sticks`}. The check value
-      (SHA-256) is {hash}.
-    </p>
-  {/if}
-
-  <div class="card">
-    <h2>No stick at hand?</h2>
-    <p class="hint">
-      Do a dry run into a file instead. Same write, same check, and no permission prompt.
-    </p>
-    <div class="path">
-      <div class="grow">
-        <div class="n">{testFile ? fileName(testFile) : 'none chosen'}</div>
-        {#if testFile}<div class="p">{testFile}</div>{/if}
+    {#if chosen.length > 0}
+      <div class="danger">
+        <div class="grow">
+          <div class="dh">
+            Everything on {chosen.length === 1 ? 'disk' : 'disks'}
+            {names} will be erased
+          </div>
+          <div class="hint">
+            This cannot be undone. Type <strong>{eraseConfirmation(chosen)}</strong> to confirm.
+          </div>
+        </div>
+        <input
+          aria-label="Type {eraseConfirmation(chosen)} to confirm"
+          bind:value={typed}
+          autocomplete="off"
+          disabled={app.busy}
+        />
+        <button type="button" class="btn dng" onclick={begin} disabled={app.busy || !confirmed}>
+          {app.busy
+            ? 'Writing…'
+            : chosen.length > 1
+              ? `Erase and write ${chosen.length} sticks`
+              : 'Erase and write'}
+        </button>
       </div>
-      <button type="button" class="btn sm" onclick={chooseTestFile} disabled={busy}>
-        Target file…
-      </button>
-      <button
-        type="button"
-        class="btn sm"
-        onclick={() => write({ file: testFile })}
-        disabled={busy || !ready || !testFile}
-      >
-        Write the file
-      </button>
+    {:else}
+      <p class="hint">Choose at least one stick above.</p>
+    {/if}
+
+    <ProgressBar {progress} />
+    {#if failure}<p class="note error" role="alert">{failure}</p>{/if}
+    {#if hash}
+      <p class="note ok">
+        Written and read back on {written === 1 ? 'the stick' : `${written} sticks`} in {took}. The
+        check value (SHA-256) is {hash}.
+      </p>
+    {/if}
+  </section>
+
+  {#if retireFailure}<p class="note error" role="alert">{retireFailure}</p>{/if}
+  <RetireOldKeys previous={rewritten} bind:retired />
+
+  <ConfirmRetire open={asking} sticks={replaced} onChoose={decided} />
+
+  <details class="card">
+    <summary>No stick at hand? Test the write into a file</summary>
+    <div class="inner">
+      <p class="hint">
+        A dry run: the same write and the same check into a file, with no permission prompt.
+      </p>
+      <div class="path">
+        <div class="grow">
+          <div class="n">{testFile ? fileName(testFile) : 'none chosen'}</div>
+          {#if testFile}<div class="p">{testFile}</div>{/if}
+        </div>
+        <button type="button" class="btn sm" onclick={chooseTestFile} disabled={app.busy}>
+          Target file…
+        </button>
+        <button
+          type="button"
+          class="btn sm"
+          onclick={() => write({ file: testFile })}
+          disabled={app.busy || !ready || !testFile}
+        >
+          Write the file
+        </button>
+      </div>
     </div>
-  </div>
+  </details>
 </div>
 
 <style>
@@ -405,5 +380,22 @@
     gap: var(--gap);
     align-items: center;
     flex-wrap: wrap;
+  }
+  .wifi {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-width: 520px;
+  }
+  .wifi input {
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--input-bg);
+    color: var(--text);
+  }
+  .n {
+    font-weight: 600;
   }
 </style>

@@ -13,10 +13,24 @@ export type HubProfileItem = { id: string; name: string };
 
 export type LoadedProfile = { profile: Profile; path: string };
 
+/** A stick as the Hub lists it; the disk id is the start of the fingerprint of the disk it was
+ * written to. */
+export type HubStick = {
+  stick_id: string;
+  team: string;
+  site: string;
+  contest: string;
+  machine_number: number | null;
+  retired_at: string | null;
+  archived_at: string | null;
+  hardware: { id: string; write_count: number } | null;
+};
+
 export type DiskView = {
   number: number;
   name: string;
   serial: string;
+  hardware_id: string | null;
   size: string;
   bus: string;
   refused: string | null;
@@ -52,6 +66,14 @@ export const openProfile = (path: string) => invoke<Profile>('open_profile', { p
 export const saveProfile = (path: string, profile: Profile) =>
   invoke<null>('save_profile', { path, profile });
 export const checkProfile = (profile: Profile) => invoke<Checked>('check_profile', { profile });
+/** Saves a profile that has no file yet in Forge's own folder, and returns where. */
+export const saveProfileInForgeFolder = (profile: Profile) =>
+  invoke<string>('save_profile_in_forge_folder', { profile });
+/** Copies the picture into the profile's folder and returns the file name the profile uses. */
+export const addWallpaper = (profilePath: string, source: string) =>
+  invoke<string>('add_wallpaper', { profilePath, source });
+export const wallpaperPreview = (profilePath: string, name: string) =>
+  invoke<string | null>('wallpaper_preview', { profilePath, name });
 
 export const listDisks = (base: string, allowVirtual: boolean) =>
   invoke<DiskView[]>('list_disks', { base, allowVirtual });
@@ -102,6 +124,7 @@ export const hubSignIn = (profilePath: string | null) =>
 export const hubSignOut = () => invoke<null>('hub_sign_out');
 export const hubStatus = () => invoke<string | null>('hub_status');
 export const hubRetireStick = (id: string) => invoke<null>('hub_retire_stick', { id });
+export const hubListSticks = () => invoke<HubStick[]>('hub_list_sticks');
 
 export function onProgress(handler: (progress: Progress) => void): Promise<() => void> {
   return listen<Progress>('progress', (event) => handler(event.payload));
@@ -109,13 +132,19 @@ export function onProgress(handler: (progress: Progress) => void): Promise<() =>
 
 const JSON_FILES = [{ name: 'Contest profile', extensions: ['json'] }];
 const IMAGE_FILES = [{ name: 'Disk image', extensions: ['img'] }];
+const PICTURE_FILES = [{ name: 'Picture', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }];
 
 export const chooseProfileToOpen = () => open({ filters: JSON_FILES });
-export const chooseProfileToSave = () =>
-  save({ filters: JSON_FILES, defaultPath: 'contest-profile.json' });
-export const chooseImageToOpen = () => open({ filters: IMAGE_FILES });
-export const chooseImageArchive = () =>
-  open({ filters: [{ name: 'Keeper OS download', extensions: ['zst'] }] });
+export const choosePicture = () => open({ filters: PICTURE_FILES });
+/** One button for both kinds of image file: a raw `.img`, or the `.zst` download from the Hub. */
+export const chooseImageFile = () =>
+  open({
+    filters: [
+      { name: 'Keeper OS image or download', extensions: ['img', 'zst'] },
+      { name: 'Raw disk image', extensions: ['img'] },
+      { name: 'Keeper OS download', extensions: ['zst'] },
+    ],
+  });
 export const chooseBaseToSave = () => save({ filters: IMAGE_FILES, defaultPath: 'keeper-os.img' });
 export const choosePatchToOpen = () =>
   open({ filters: [{ name: 'Keeper OS patch', extensions: ['gz'] }] });

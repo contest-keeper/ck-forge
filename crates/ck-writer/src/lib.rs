@@ -5,11 +5,13 @@
 
 mod disk;
 mod error;
+mod process;
 pub mod thin;
 mod write;
 
 pub use disk::{Disk, list_disks, prepare_disk};
 pub use error::Error;
+pub use process::without_console_window;
 pub use write::{
     Phase, Written, check_images, disk_path, write_disk_images, write_image, write_image_to_all,
     write_images,

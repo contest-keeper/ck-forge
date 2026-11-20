@@ -62,7 +62,7 @@ impl Qemu {
 }
 
 pub fn run(command: &mut Command, name: &str) -> Result<(), Error> {
-    let output = command
+    let output = ck_writer::without_console_window(command)
         .output()
         .map_err(|e| Error::io(format!("starting {name}"), e))?;
     if output.status.success() {

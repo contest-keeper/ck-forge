@@ -25,6 +25,9 @@ fn main() {
             profiles::open_profile,
             profiles::save_profile,
             profiles::check_profile,
+            profiles::save_profile_in_forge_folder,
+            profiles::add_wallpaper,
+            profiles::wallpaper_preview,
             base_image::list_catalog,
             base_image::make_base_image,
             sticks::import_base_image,
@@ -39,6 +42,7 @@ fn main() {
             hub::hub_load_profile,
             hub::hub_save_profile,
             hub::hub_status,
+            hub::hub_list_sticks,
             hub::hub_retire_stick,
         ])
         .run(tauri::generate_context!())
