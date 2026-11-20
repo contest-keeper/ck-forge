@@ -20,6 +20,7 @@ use time::OffsetDateTime;
 use ureq::http::{HeaderValue, header::AUTHORIZATION};
 
 use crate::error::Error;
+use crate::hardware::HardwareId;
 use crate::profile::StickKeyWindow;
 use crate::registry::CredentialScope;
 use crate::wallpaper::{MAX_WALLPAPER_BYTES, Wallpaper};
@@ -331,6 +332,9 @@ struct EnrolmentRequest<'a> {
     machine_number: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_scope: Option<&'a CredentialScope>,
+    /// The disk the stick is written to. The Hub counts a second write of it as a rewrite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hardware: Option<&'a HardwareId>,
 }
 
 pub fn mint_enrolment_code(
@@ -339,6 +343,7 @@ pub fn mint_enrolment_code(
     settings: &Settings,
     machine_number: u32,
     credential_scope: Option<&CredentialScope>,
+    hardware: Option<&HardwareId>,
 ) -> Result<MintedEnrolmentCode, Error> {
     let hub = checked_base(hub)?;
     let mut bearer = HeaderValue::from_str(&session.bearer())
@@ -350,6 +355,7 @@ pub fn mint_enrolment_code(
         contest: &settings.contest.name,
         machine_number,
         credential_scope,
+        hardware,
     };
     let mut answer = agent()
         .post(format!("{hub}/api/v1/enrolment-codes"))
@@ -372,6 +378,41 @@ pub fn mint_enrolment_code(
         status => format!("the Hub returned HTTP {status} while making an enrolment code"),
     };
     Err(Error::Hub(message))
+}
+
+#[derive(Serialize)]
+struct HardwareWriteRequest<'a> {
+    stick_id: &'a StickId,
+    #[serde(flatten)]
+    hardware: &'a HardwareId,
+}
+
+/// Tells the Hub which disk a stick whose id is already known was written to, so it can show the
+/// stick as rewritten when the disk is written again. Only the count is kept; a failure here
+/// never changes what was written.
+pub fn record_stick_write(
+    hub: &str,
+    session: &HubSession,
+    stick_id: &StickId,
+    hardware: &HardwareId,
+) -> Result<(), Error> {
+    let base = checked_base(hub)?;
+    let mut bearer = HeaderValue::from_str(&session.bearer())
+        .map_err(|_| Error::Hub("sign in to the Hub again".into()))?;
+    bearer.set_sensitive(true);
+    let answer = agent()
+        .post(format!("{base}/api/v1/hardware-writes"))
+        .header(AUTHORIZATION, bearer)
+        .send_json(&HardwareWriteRequest { stick_id, hardware })
+        .map_err(|e| unreachable_hub(base, &e))?;
+    match answer.status().as_u16() {
+        200 => Ok(()),
+        401 => Err(Error::Hub("sign in again to record the disk".into())),
+        403 => Err(Error::Hub("this account cannot record disks".into())),
+        status => Err(Error::Hub(format!(
+            "the Hub answered {status} while recording the disk"
+        ))),
+    }
 }
 
 /// Retires a previous stick key without removing its history from the Hub.
