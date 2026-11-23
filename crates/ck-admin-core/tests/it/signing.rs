@@ -2,8 +2,6 @@
 //! Hub (through the signer they are given) to sign the exact bytes they write, and write the
 //! signature next to them.
 
-mod support;
-
 use std::cell::RefCell;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -15,7 +13,7 @@ use ck_admin_core::{
 use ck_protocol::{EnrolmentCode, LocalDateTime};
 use tempfile::TempDir;
 
-const SIGNED_BASE: &[u8] = include_bytes!("fixtures/signed.ext2");
+const SIGNED_BASE: &[u8] = include_bytes!("../fixtures/signed.ext2");
 const SIGNATURE_FILE: &str = "config.json.sig";
 
 fn time() -> LocalDateTime {
@@ -25,13 +23,13 @@ fn time() -> LocalDateTime {
 /// A base image with a `CKCONFIG` partition and, when `keys` is set, a Linux system that carries the
 /// key list (and supports first-boot enrolment).
 fn base(dir: &TempDir, keys: bool) -> PathBuf {
-    let base = support::make_image_with_config(dir, "base.img");
+    let base = crate::support::make_image_with_config(dir, "base.img");
     if keys {
         let mut disk = std::fs::OpenOptions::new()
             .write(true)
             .open(&base)
             .expect("disk");
-        disk.seek(SeekFrom::Start(support::CONFIG_END))
+        disk.seek(SeekFrom::Start(crate::support::CONFIG_END))
             .expect("root");
         disk.write_all(SIGNED_BASE).expect("ext filesystem");
     }
