@@ -9,8 +9,8 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use ck_admin_core::{
-    EnrolmentBuild, Error, Profile, build_enrolment_image, build_thin_image,
-    build_thin_image_signed, configure_image, configure_image_signed, requires_signed_settings,
+    EnrolmentBuild, Error, Profile, build_enrolment_image, build_thin_image, configure_image,
+    requires_signed_settings,
 };
 use ck_protocol::{EnrolmentCode, LocalDateTime};
 use tempfile::TempDir;
@@ -62,6 +62,7 @@ fn settings_for_such_an_image_cannot_be_made_without_a_signer() {
         None,
         &registry,
         time(),
+        None,
         |_, _| {},
     )
     .unwrap_err();
@@ -97,7 +98,7 @@ fn the_signature_is_made_over_the_exact_bytes_that_are_written() {
         seen.borrow_mut().push(bytes.to_vec());
         Ok("fixture-signature\n".to_owned())
     };
-    build_thin_image_signed(
+    build_thin_image(
         &base,
         &out,
         &Profile::template(),
@@ -142,7 +143,7 @@ fn a_hub_that_cannot_sign_leaves_nothing_behind() {
     let base = base(&dir, true);
     let (out, registry) = (dir.path().join("stick.img"), dir.path().join("r.json"));
     let refuse = |_: &[u8]| Err(Error::Hub("no signing key".to_owned()));
-    let error = build_thin_image_signed(
+    let error = build_thin_image(
         &base,
         &out,
         &Profile::template(),
@@ -163,7 +164,7 @@ fn an_image_without_keys_is_never_signed_and_the_signer_is_not_asked() {
     let base = base(&dir, false);
     let out = dir.path().join("stick.img");
     let never = |_: &[u8]| -> Result<String, Error> { panic!("a plain image needs no signature") };
-    build_thin_image_signed(
+    build_thin_image(
         &base,
         &out,
         &Profile::template(),
@@ -183,7 +184,7 @@ fn changing_the_settings_of_a_signed_image_signs_them_again() {
     let base = base(&dir, true);
     let (out, registry) = (dir.path().join("stick.img"), dir.path().join("r.json"));
     let first = |_: &[u8]| Ok("first-signature\n".to_owned());
-    build_thin_image_signed(
+    build_thin_image(
         &base,
         &out,
         &Profile::template(),
@@ -198,7 +199,7 @@ fn changing_the_settings_of_a_signed_image_signs_them_again() {
     // A thin image holds only the start of the base, yet its signature file shows it is a signed one.
     let mut changed = Profile::template();
     changed.settings.team = "Another team".to_owned();
-    let error = configure_image(&out, &changed, None, &registry).unwrap_err();
+    let error = configure_image(&out, &changed, None, &registry, None).unwrap_err();
     assert!(matches!(error, Error::SignedSettingsRequired), "{error}");
     assert_eq!(read(&out, SIGNATURE_FILE), b"first-signature\n");
 
@@ -207,7 +208,7 @@ fn changing_the_settings_of_a_signed_image_signs_them_again() {
         seen.borrow_mut().push(bytes.to_vec());
         Ok("second-signature\n".to_owned())
     };
-    configure_image_signed(&out, &changed, None, &registry, Some(&second)).expect("configured");
+    configure_image(&out, &changed, None, &registry, Some(&second)).expect("configured");
     assert_eq!(read(&out, "config.json"), seen.borrow()[0]);
     assert_eq!(read(&out, SIGNATURE_FILE), b"second-signature\n");
 }

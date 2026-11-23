@@ -49,6 +49,7 @@ impl Fixture {
             None,
             &self.registry,
             time(),
+            None,
             |_, _| {},
         )
     }
@@ -134,7 +135,7 @@ fn configure_changes_the_settings_and_the_registry_labels_but_keeps_the_identity
     let mut new = profile("New");
     new.settings.site = "Lab 2".to_owned();
     "Autumn Contest".clone_into(&mut new.name);
-    let changed = configure_image(&out, &new, None, &fixture.registry).expect("configure");
+    let changed = configure_image(&out, &new, None, &fixture.registry, None).expect("configure");
 
     assert_eq!(changed.settings.team, "New");
     assert_eq!(changed.stick_id, built.config.stick_id);
@@ -167,7 +168,8 @@ fn configure_refuses_settings_the_agent_would_refuse_on_this_stick() {
     // Fine as settings, but the computer name of this stick would be empty.
     let mut unusable = profile("!!!");
     "{team}".clone_into(&mut unusable.settings.branding.computer_name_pattern);
-    let error = configure_image(&out, &unusable, None, &fixture.registry).expect_err("refused");
+    let error =
+        configure_image(&out, &unusable, None, &fixture.registry, None).expect_err("refused");
     assert!(matches!(error, Error::InvalidProfile(_)), "{error}");
     assert_eq!(
         show_image(&out).expect("show"),
@@ -184,7 +186,13 @@ fn a_plain_image_has_no_settings_to_show_or_change() {
         Err(Error::ImageNotConfigured)
     ));
     assert!(matches!(
-        configure_image(&fixture.base, &Profile::template(), None, &fixture.registry),
+        configure_image(
+            &fixture.base,
+            &Profile::template(),
+            None,
+            &fixture.registry,
+            None
+        ),
         Err(Error::ImageNotConfigured)
     ));
 }
@@ -222,6 +230,7 @@ fn configure_works_without_a_registry_file_and_does_not_create_one() {
         &profile("New"),
         None,
         &elsewhere,
+        None,
     )
     .expect("configure");
     assert!(!elsewhere.exists());
@@ -249,6 +258,7 @@ fn sticks_of_one_contest_get_machine_numbers_one_after_another() {
         &profile("B"),
         None,
         &fixture.registry,
+        None,
     )
     .expect("configure");
     assert_eq!(changed.machine_number, Some(2));

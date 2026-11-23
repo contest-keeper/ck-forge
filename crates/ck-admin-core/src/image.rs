@@ -207,21 +207,9 @@ pub fn build_image(
 /// result is not an image that runs by itself: `ck-forge stick write` reads the rest from `base`,
 /// and refuses it when `base` is not the image it was made from. Needs the EFI partition to be
 /// the last part of the image that the settings touch, which is the case for every stick image.
-pub fn build_thin_image(
-    base: &Path,
-    out: &Path,
-    profile: &Profile,
-    wallpaper: Option<&Wallpaper>,
-    registry: &Path,
-    now: LocalDateTime,
-    progress: impl FnMut(u64, u64),
-) -> Result<Built, Error> {
-    build_thin_image_signed(base, out, profile, wallpaper, registry, now, None, progress)
-}
-
-/// Like [`build_thin_image`], and signs the settings when the base image only accepts signed ones.
+/// The settings are signed with `sign` when the base image only accepts signed ones.
 #[allow(clippy::too_many_arguments)]
-pub fn build_thin_image_signed(
+pub fn build_thin_image(
     base: &Path,
     out: &Path,
     profile: &Profile,
@@ -370,17 +358,8 @@ fn settings_end(base: &Path) -> Result<u64, Error> {
 /// Replaces the settings on an image with the profile's, keeping the stick's id, secret and
 /// creation time. Returns the new file. When the stick is in the registry file at `registry`, its
 /// team, site and contest are updated too. An image with no settings yet is refused.
+/// The new settings are signed with `sign` when the image only accepts signed ones.
 pub fn configure_image(
-    image: &Path,
-    profile: &Profile,
-    wallpaper: Option<&Wallpaper>,
-    registry: &Path,
-) -> Result<StickConfig, Error> {
-    configure_image_signed(image, profile, wallpaper, registry, None)
-}
-
-/// Like [`configure_image`], and signs the new settings when the image only accepts signed ones.
-pub fn configure_image_signed(
     image: &Path,
     profile: &Profile,
     wallpaper: Option<&Wallpaper>,

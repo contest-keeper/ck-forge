@@ -84,7 +84,14 @@ fn the_picture_is_put_on_the_stick_next_to_the_settings() {
         name: "wall.png".to_owned(),
         bytes: vec![9; 100],
     };
-    configure_image(&out, &profile, Some(&newer), &dir.path().join("r.json")).expect("configure");
+    configure_image(
+        &out,
+        &profile,
+        Some(&newer),
+        &dir.path().join("r.json"),
+        None,
+    )
+    .expect("configure");
     assert_eq!(
         ck_image::read_file(&out, "ck/wall.png").expect("read back"),
         vec![9; 100]
