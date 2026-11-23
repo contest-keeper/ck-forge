@@ -17,7 +17,8 @@ use ck_protocol::{EnrolmentCode, Settings, StickId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::OffsetDateTime;
-use ureq::http::{HeaderValue, header::AUTHORIZATION};
+use ureq::http::header::{AUTHORIZATION, COOKIE};
+use ureq::http::{HeaderName, HeaderValue};
 
 use crate::error::Error;
 use crate::hardware::HardwareId;
@@ -81,7 +82,7 @@ pub fn push_registry(
         .map(|token| format!("ck_session={token}"))
         .ok_or_else(|| Error::Hub("the Hub did not start a session".into()))?;
 
-    post_registry(&agent, base, ("cookie", &cookie), body)
+    post_registry(&agent, base, COOKIE, sensitive_header(&cookie)?, body)
 }
 
 fn registry_payload(registry: &Path) -> Result<String, Error> {
@@ -99,12 +100,13 @@ fn registry_payload(registry: &Path) -> Result<String, Error> {
 fn post_registry(
     agent: &ureq::Agent,
     base: &str,
-    auth: (&str, &str),
+    name: HeaderName,
+    value: HeaderValue,
     body: String,
 ) -> Result<Pushed, Error> {
     let mut answer = agent
         .post(format!("{base}/api/v1/sticks"))
-        .header(auth.0, auth.1)
+        .header(name, value)
         .header("content-type", "application/json")
         .send(body)
         .map_err(|e| Error::Hub(format!("cannot reach the Hub at {base}: {e}")))?;
@@ -122,6 +124,15 @@ fn post_registry(
         400 => Err(Error::Hub(format!("the Hub refused the registry: {text}"))),
         code => Err(Error::Hub(format!("the Hub answered {code}"))),
     }
+}
+
+/// Builds a header value that carries a secret and marks it sensitive, so the HTTP stack leaves it
+/// out of `Debug` output. Every Hub header with a token or cookie is made here.
+pub(crate) fn sensitive_header(value: &str) -> Result<HeaderValue, Error> {
+    let mut header =
+        HeaderValue::from_str(value).map_err(|_| Error::Hub("sign in to the Hub again".into()))?;
+    header.set_sensitive(true);
+    Ok(header)
 }
 
 /// What the Hub gave this window when the admin signed in. The program keeps it in memory and in
@@ -144,8 +155,9 @@ impl HubSession {
         &self.token
     }
 
-    pub(crate) fn bearer(&self) -> String {
-        format!("Bearer {}", self.token)
+    /// The `Authorization` header for a Hub request, marked sensitive so no log prints it.
+    pub(crate) fn authorization(&self) -> Result<HeaderValue, Error> {
+        sensitive_header(&format!("Bearer {}", self.token))
     }
 }
 
@@ -313,8 +325,13 @@ pub fn push_registry_signed_in(
 ) -> Result<Pushed, Error> {
     let base = checked_base(hub)?;
     let body = registry_payload(registry)?;
-    let bearer = format!("Bearer {}", session.token);
-    post_registry(&agent(), base, ("authorization", &bearer), body)
+    post_registry(
+        &agent(),
+        base,
+        AUTHORIZATION,
+        session.authorization()?,
+        body,
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,9 +368,7 @@ pub fn mint_enrolment_code(
     hardware: Option<&HardwareId>,
 ) -> Result<MintedEnrolmentCode, Error> {
     let hub = checked_base(hub)?;
-    let mut bearer = HeaderValue::from_str(&session.bearer())
-        .map_err(|_| Error::Hub("sign in to the Hub again".into()))?;
-    bearer.set_sensitive(true);
+    let bearer = session.authorization()?;
     let request = EnrolmentRequest {
         team: settings.team.trim(),
         site: settings.site.trim(),
@@ -403,9 +418,7 @@ pub fn record_stick_write(
     hardware: &HardwareId,
 ) -> Result<(), Error> {
     let base = checked_base(hub)?;
-    let mut bearer = HeaderValue::from_str(&session.bearer())
-        .map_err(|_| Error::Hub("sign in to the Hub again".into()))?;
-    bearer.set_sensitive(true);
+    let bearer = session.authorization()?;
     let answer = agent()
         .post(format!("{base}/api/v1/hardware-writes"))
         .header(AUTHORIZATION, bearer)
@@ -456,7 +469,7 @@ pub fn list_sticks(hub: &str, session: &HubSession) -> Result<Vec<HubStick>, Err
     let base = checked_base(hub)?;
     let mut answer = agent()
         .get(format!("{base}/api/v1/sticks"))
-        .header("authorization", &session.bearer())
+        .header(AUTHORIZATION, session.authorization()?)
         .call()
         .map_err(|e| unreachable_hub(base, &e))?;
     match answer.status().as_u16() {
@@ -492,9 +505,7 @@ struct SignAnswer {
 /// stick that is not another organization's.
 pub fn sign_settings(hub: &str, session: &HubSession, settings: &[u8]) -> Result<String, Error> {
     let base = checked_base(hub)?;
-    let mut bearer = HeaderValue::from_str(&session.bearer())
-        .map_err(|_| Error::Hub("sign in to the Hub again".into()))?;
-    bearer.set_sensitive(true);
+    let bearer = session.authorization()?;
     let request = SignRequest {
         config: base64::engine::general_purpose::STANDARD.encode(settings),
     };
@@ -547,9 +558,7 @@ pub fn record_config_hash(
     sha256: &str,
 ) -> Result<(), Error> {
     let base = checked_base(hub)?;
-    let mut bearer = HeaderValue::from_str(&session.bearer())
-        .map_err(|_| Error::Hub("sign in to the Hub again".into()))?;
-    bearer.set_sensitive(true);
+    let bearer = session.authorization()?;
     let answer = agent()
         .post(format!("{base}/api/v1/config-hashes"))
         .header(AUTHORIZATION, bearer)
@@ -571,7 +580,7 @@ pub fn retire_stick_credential(hub: &str, session: &HubSession, id: &str) -> Res
     let base = checked_base(hub)?;
     let answer = agent()
         .delete(format!("{base}/api/v1/sticks/{id}/credential"))
-        .header("authorization", &session.bearer())
+        .header(AUTHORIZATION, session.authorization()?)
         .call()
         .map_err(|e| unreachable_hub(base, &e))?;
     let status = answer.status().as_u16();
@@ -621,7 +630,7 @@ pub fn list_profiles(hub: &str, session: &HubSession) -> Result<Vec<ProfileSumma
     let base = checked_base(hub)?;
     let mut answer = agent()
         .get(format!("{base}/api/v1/profiles"))
-        .header("authorization", &session.bearer())
+        .header(AUTHORIZATION, session.authorization()?)
         .call()
         .map_err(|e| unreachable_hub(base, &e))?;
     check_profile_status(&mut answer)?;
@@ -634,10 +643,10 @@ pub fn list_profiles(hub: &str, session: &HubSession) -> Result<Vec<ProfileSumma
 /// One profile of the organization, with its wallpaper picture.
 pub fn fetch_profile(hub: &str, session: &HubSession, id: &str) -> Result<HubProfile, Error> {
     let base = checked_base(hub)?;
-    let bearer = session.bearer();
+    let bearer = session.authorization()?;
     let mut answer = agent()
         .get(format!("{base}/api/v1/profiles/{id}"))
-        .header("authorization", &bearer)
+        .header(AUTHORIZATION, bearer.clone())
         .call()
         .map_err(|e| unreachable_hub(base, &e))?;
     check_profile_status(&mut answer)?;
@@ -662,7 +671,7 @@ pub fn fetch_profile(hub: &str, session: &HubSession, id: &str) -> Result<HubPro
         Some(WallpaperName { name }) => {
             let mut picture = agent()
                 .get(format!("{base}/api/v1/profiles/{id}/wallpaper"))
-                .header("authorization", &bearer)
+                .header(AUTHORIZATION, bearer.clone())
                 .call()
                 .map_err(|e| unreachable_hub(base, &e))?;
             check_profile_status(&mut picture)?;
@@ -707,7 +716,7 @@ pub fn upload_profile(
     }
     let mut answer = agent()
         .put(format!("{base}/api/v1/profiles/{id}"))
-        .header("authorization", &session.bearer())
+        .header(AUTHORIZATION, session.authorization()?)
         .send_json(json!({ "name": profile.name, "settings": settings, "wallpaper": wallpaper }))
         .map_err(|e| unreachable_hub(base, &e))?;
     check_profile_status(&mut answer)
@@ -738,10 +747,12 @@ fn check_profile_status(answer: &mut ureq::http::Response<ureq::Body>) -> Result
 /// itself.
 pub fn sign_out(hub: &str, session: &HubSession) {
     let Ok(base) = checked_base(hub) else { return };
-    let bearer = format!("Bearer {}", session.token);
+    let Ok(bearer) = session.authorization() else {
+        return;
+    };
     let _ = agent()
         .post(format!("{base}/api/v1/logout"))
-        .header("authorization", &bearer)
+        .header(AUTHORIZATION, bearer)
         .send_empty();
 }
 
@@ -774,7 +785,8 @@ fn safe_for_password(base: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::safe_for_password;
+    use super::{HubSession, safe_for_password};
+    use std::path::Path;
 
     #[test]
     fn only_https_or_this_pc_may_get_a_password() {
@@ -786,5 +798,39 @@ mod tests {
         assert!(!safe_for_password("http://localhost:80@evil.org"));
         assert!(!safe_for_password("http://localhost@evil.org/"));
         assert!(!safe_for_password("hub.example.org"));
+    }
+
+    #[test]
+    fn the_authorization_header_is_sensitive_and_hidden_from_debug() {
+        let session = HubSession::restore("secret-token".to_owned(), "a@example.test".to_owned());
+        let header = session.authorization().unwrap();
+        assert!(header.is_sensitive());
+        assert_eq!(header.to_str().unwrap(), "Bearer secret-token");
+        assert!(!format!("{header:?}").contains("secret-token"));
+    }
+
+    #[test]
+    fn a_token_the_header_cannot_hold_is_refused_without_printing_it() {
+        let session = HubSession::restore(
+            "bad
+token"
+                .to_owned(),
+            "a@example.test".to_owned(),
+        );
+        let error = session.authorization().unwrap_err();
+        assert!(!format!("{error} {error:?}").contains("bad"));
+    }
+
+    #[test]
+    fn no_source_builds_a_bearer_header_outside_hub_rs() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("hub.rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(!text.contains("\"Bearer "), "{}", path.display());
+                assert!(!text.contains("\"authorization\""), "{}", path.display());
+            }
+        }
     }
 }

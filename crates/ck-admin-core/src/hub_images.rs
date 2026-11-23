@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use ureq::http::header::{ACCEPT_ENCODING, AUTHORIZATION, CONTENT_ENCODING, LOCATION};
-use ureq::http::{HeaderValue, Response, StatusCode, Uri};
+use ureq::http::{Response, StatusCode, Uri};
 
 use crate::hub::{HubSession, agent, checked_base};
 use crate::{Error, folder_of, import_image};
@@ -137,9 +137,7 @@ fn valid_download_location(hub: &str, location: &Uri) -> bool {
 
 fn hub_get(hub: &str, session: &HubSession, path: &str) -> Result<Response<ureq::Body>, Error> {
     let hub = checked_base(hub)?;
-    let mut bearer = HeaderValue::from_str(&session.bearer())
-        .map_err(|_| Error::Hub("sign in to the Hub again".into()))?;
-    bearer.set_sensitive(true);
+    let bearer = session.authorization()?;
     agent()
         .get(format!("{hub}{path}"))
         .header(AUTHORIZATION, bearer)
