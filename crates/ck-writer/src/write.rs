@@ -72,29 +72,24 @@ pub fn write_image_to_all(
     write_images(&jobs, progress)
 }
 
-/// Writes every image of `jobs`, a pair of an image and its target, at once, then reads every
+/// Writes every image of `jobs` (a pair of an image and its target) at once, then reads every
 /// target back and compares.
 ///
-/// The images must be the same size and made of the same base, which is the case for thin images
-/// of one base, or the same plain image for every target. What they share is read once. Each target
-/// is written by a thread of its own: its own image's start, then the shared rest. So a batch of
-/// sticks, each with its own identity, takes about as long as the slowest stick and not as long as
-/// all of them in a row. Each target is also checked while it is written: every so many blocks its
-/// writer flushes, and a second thread reads back what was flushed a distance ago, so it reads what
-/// the target holds and not what was just handed to it. The last part is read after the final flush.
+/// The images must be the same size and made of the same base. What they share is read once. Each
+/// target is written by its own thread, so a batch takes about as long as its slowest stick. While
+/// a target is written, a second thread reads back what was flushed a distance ago, so the check
+/// sees what the device holds and not what was just handed to it. The last part is read after the
+/// final flush.
 ///
-/// A target that already holds the image, such as a stick that was written before with another
-/// stick's image of the same base, is written only where it differs: a few blocks are compared
-/// first to tell, and then every block is compared with what is there before it is written. Reading
-/// is faster than writing on a stick, so such a stick takes much less time. The check after the
-/// write is the same either way and reads all of the target, so a block that was left alone is
-/// checked too. This relies on reads of a device coming from the device and not from a cache.
+/// A target that already holds a similar image is written only where it differs, which is faster
+/// because reads are faster than writes on a stick. The final check still reads the whole target.
+/// This relies on reads of a device coming from the device and not from a cache.
 ///
 /// Returns one result per job, in order: the SHA-256 of that target's image as hex, or what went
-/// wrong with that target. One failing target does not stop the others. An image that cannot be
+/// wrong with that target. One failing target does not stop the others; an image that cannot be
 /// opened, or images that do not belong together, fail the whole call before anything is written.
-/// `progress` gets the index of the job, the phase, the bytes done and the total, always on the
-/// calling thread.
+/// `progress` gets the job index, the phase, the bytes done and the total, always on the calling
+/// thread.
 pub fn write_images(
     jobs: &[(PathBuf, PathBuf)],
     progress: impl FnMut(usize, Phase, u64, u64),
