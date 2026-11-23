@@ -60,7 +60,7 @@ pub fn push_registry(
 
     let login = agent
         .post(format!("{base}/api/v1/login"))
-        .send_json(json!({ "username": user, "password": password }))
+        .send_json(json!({ "email": user, "password": password }))
         .map_err(|e| Error::Hub(format!("cannot reach the Hub at {base}: {e}")))?;
     match login.status().as_u16() {
         200 => {}
@@ -82,7 +82,9 @@ pub fn push_registry(
         .map(|token| format!("ck_session={token}"))
         .ok_or_else(|| Error::Hub("the Hub did not start a session".into()))?;
 
-    post_registry(&agent, base, COOKIE, sensitive_header(&cookie)?, body)
+    let cookie = sensitive_header(&cookie)?;
+    let url = format!("{}/sticks", org_url(&agent, base, &COOKIE, &cookie)?);
+    post_registry(&agent, base, &url, COOKIE, cookie, body)
 }
 
 fn registry_payload(registry: &Path) -> Result<String, Error> {
@@ -100,12 +102,13 @@ fn registry_payload(registry: &Path) -> Result<String, Error> {
 fn post_registry(
     agent: &ureq::Agent,
     base: &str,
+    url: &str,
     name: HeaderName,
     value: HeaderValue,
     body: String,
 ) -> Result<Pushed, Error> {
     let mut answer = agent
-        .post(format!("{base}/api/v1/sticks"))
+        .post(url)
         .header(name, value)
         .header("content-type", "application/json")
         .send(body)
@@ -126,6 +129,58 @@ fn post_registry(
     }
 }
 
+#[derive(Deserialize)]
+struct MeAnswer {
+    organizations: Vec<MeOrganization>,
+}
+
+#[derive(Deserialize)]
+struct MeOrganization {
+    slug: String,
+}
+
+/// `{base}/api/v1/orgs/{slug}` for the one organization the signed-in account belongs to. Forge
+/// works with one organization at a time, so an account with none or several is refused.
+fn org_url(
+    agent: &ureq::Agent,
+    base: &str,
+    name: &HeaderName,
+    value: &HeaderValue,
+) -> Result<String, Error> {
+    let mut answer = agent
+        .get(format!("{base}/api/v1/me"))
+        .header(name, value.clone())
+        .call()
+        .map_err(|e| unreachable_hub(base, &e))?;
+    match answer.status().as_u16() {
+        200 => {}
+        401 => return Err(Error::Hub("the sign-in ended; sign in again".into())),
+        code => return Err(Error::Hub(format!("the Hub answered {code}"))),
+    }
+    let me: MeAnswer = answer
+        .body_mut()
+        .read_json()
+        .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}")))?;
+    let [only] = me.organizations.as_slice() else {
+        return Err(Error::Hub(if me.organizations.is_empty() {
+            "this account belongs to no organization".into()
+        } else {
+            "this account belongs to several organizations; Forge works with one".into()
+        }));
+    };
+    if only.slug.is_empty()
+        || !only
+            .slug
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(Error::Hub(
+            "the Hub sent an organization name Forge cannot use".into(),
+        ));
+    }
+    Ok(format!("{base}/api/v1/orgs/{}", only.slug))
+}
+
 /// Builds a header value that carries a secret and marks it sensitive, so the HTTP stack leaves it
 /// out of `Debug` output. Every Hub header with a token or cookie is made here.
 pub(crate) fn sensitive_header(value: &str) -> Result<HeaderValue, Error> {
@@ -140,19 +195,37 @@ pub(crate) fn sensitive_header(value: &str) -> Result<HeaderValue, Error> {
 pub struct HubSession {
     token: String,
     pub email: String,
+    /// The slug of the one organization the account belongs to, asked of the Hub when first needed.
+    org: std::sync::OnceLock<String>,
 }
 
 impl HubSession {
     /// Rebuilds a session the program saved earlier.
     #[must_use]
     pub fn restore(token: String, email: String) -> Self {
-        Self { token, email }
+        Self {
+            token,
+            email,
+            org: std::sync::OnceLock::new(),
+        }
     }
 
     /// The secret the Hub gave. Only for saving it in the operating system's vault.
     #[must_use]
     pub fn token(&self) -> &str {
         &self.token
+    }
+
+    /// The address of `tail` inside this account's organization, like `{base}/api/v1/orgs/acm/sticks`.
+    pub(crate) fn org_url(&self, base: &str, tail: &str) -> Result<String, Error> {
+        if let Some(slug) = self.org.get() {
+            return Ok(format!("{base}/api/v1/orgs/{slug}{tail}"));
+        }
+        let url = org_url(&agent(), base, &AUTHORIZATION, &self.authorization()?)?;
+        let _ = self
+            .org
+            .set(url.rsplit('/').next().unwrap_or_default().to_owned());
+        Ok(format!("{url}{tail}"))
     }
 
     /// The `Authorization` header for a Hub request, marked sensitive so no log prints it.
@@ -308,10 +381,7 @@ pub fn sign_in_with_code(hub: &str, code: &str) -> Result<HubSession, Error> {
         .body_mut()
         .read_json()
         .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}")))?;
-    Ok(HubSession {
-        token: answer.token,
-        email: answer.email,
-    })
+    Ok(HubSession::restore(answer.token, answer.email))
 }
 
 /// Sends every stick of the registry file, as the signed-in admin.
@@ -325,9 +395,11 @@ pub fn push_registry_signed_in(
 ) -> Result<Pushed, Error> {
     let base = checked_base(hub)?;
     let body = registry_payload(registry)?;
+    let url = session.org_url(base, "/sticks")?;
     post_registry(
         &agent(),
         base,
+        &url,
         AUTHORIZATION,
         session.authorization()?,
         body,
@@ -379,7 +451,7 @@ pub fn mint_enrolment_code(
         lifetime_minutes: ENROLMENT_CODE_MINUTES,
     };
     let mut answer = agent()
-        .post(format!("{hub}/api/v1/enrolment-codes"))
+        .post(session.org_url(hub, "/enrolment-codes")?)
         .header(AUTHORIZATION, bearer)
         .send_json(&request)
         .map_err(|_| Error::Hub("cannot reach the Hub to make an enrolment code".into()))?;
@@ -420,7 +492,7 @@ pub fn record_stick_write(
     let base = checked_base(hub)?;
     let bearer = session.authorization()?;
     let answer = agent()
-        .post(format!("{base}/api/v1/hardware-writes"))
+        .post(session.org_url(base, "/hardware-writes")?)
         .header(AUTHORIZATION, bearer)
         .send_json(&HardwareWriteRequest { stick_id, hardware })
         .map_err(|e| unreachable_hub(base, &e))?;
@@ -468,7 +540,7 @@ pub struct HubStickDisk {
 pub fn list_sticks(hub: &str, session: &HubSession) -> Result<Vec<HubStick>, Error> {
     let base = checked_base(hub)?;
     let mut answer = agent()
-        .get(format!("{base}/api/v1/sticks"))
+        .get(session.org_url(base, "/sticks")?)
         .header(AUTHORIZATION, session.authorization()?)
         .call()
         .map_err(|e| unreachable_hub(base, &e))?;
@@ -510,7 +582,7 @@ pub fn sign_settings(hub: &str, session: &HubSession, settings: &[u8]) -> Result
         config: base64::engine::general_purpose::STANDARD.encode(settings),
     };
     let mut answer = agent()
-        .post(format!("{base}/api/v1/config-signatures"))
+        .post(session.org_url(base, "/config-signatures")?)
         .header(AUTHORIZATION, bearer)
         .send_json(&request)
         .map_err(|e| unreachable_hub(base, &e))?;
@@ -560,7 +632,7 @@ pub fn record_config_hash(
     let base = checked_base(hub)?;
     let bearer = session.authorization()?;
     let answer = agent()
-        .post(format!("{base}/api/v1/config-hashes"))
+        .post(session.org_url(base, "/config-hashes")?)
         .header(AUTHORIZATION, bearer)
         .send_json(&ConfigHashRequest { stick_id, sha256 })
         .map_err(|e| unreachable_hub(base, &e))?;
@@ -579,7 +651,7 @@ pub fn retire_stick_credential(hub: &str, session: &HubSession, id: &str) -> Res
     let id = StickId::parse(id.trim()).map_err(|_| Error::Hub("enter a valid stick ID".into()))?;
     let base = checked_base(hub)?;
     let answer = agent()
-        .delete(format!("{base}/api/v1/sticks/{id}/credential"))
+        .delete(session.org_url(base, &format!("/sticks/{id}/credential"))?)
         .header(AUTHORIZATION, session.authorization()?)
         .call()
         .map_err(|e| unreachable_hub(base, &e))?;

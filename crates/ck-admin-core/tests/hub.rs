@@ -51,6 +51,11 @@ fn reply(status: &str, headers: &str, body: &str) -> String {
     )
 }
 
+/// The Hub's answer about an account that belongs to one organization, `acm`.
+fn me() -> String {
+    reply("200 OK", "", r#"{"organizations":[{"slug":"acm"}]}"#)
+}
+
 mod hub_images {
     use super::{fake_hub, reply};
     use ck_admin_core::{
@@ -210,7 +215,7 @@ mod enrolment {
     use serde_json::{Value, json};
     use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-    use super::{fake_hub, reply};
+    use super::{fake_hub, me, reply};
 
     fn session() -> HubSession {
         HubSession::restore(
@@ -226,17 +231,21 @@ mod enrolment {
     #[test]
     fn asks_the_hub_to_sign_the_exact_bytes_of_the_settings() {
         let signature = "ck-settings-signature-v1 0123456789abcdef c2ln\n";
-        let (hub, requests) = fake_hub(vec![reply(
-            "200 OK",
-            "",
-            &json!({"signature": signature, "key_id": "0123456789abcdef"}).to_string(),
-        )]);
+        let (hub, requests) = fake_hub(vec![
+            me(),
+            reply(
+                "200 OK",
+                "",
+                &json!({"signature": signature, "key_id": "0123456789abcdef"}).to_string(),
+            ),
+        ]);
         let settings = b"{\"schema\": 3,\n  \"stick_id\": \"03c9f556\"}";
         let answer = sign_settings(&hub, &session(), settings).expect("signed");
         assert_eq!(answer, signature);
         let requests = requests.join().expect("Hub requests");
-        let (headers, body) = requests[0].split_once("\r\n\r\n").expect("HTTP request");
-        assert!(headers.starts_with("POST /api/v1/config-signatures HTTP/1.1\r\n"));
+        assert!(requests[0].starts_with("GET /api/v1/me HTTP/1.1\r\n"));
+        let (headers, body) = requests[1].split_once("\r\n\r\n").expect("HTTP request");
+        assert!(headers.starts_with("POST /api/v1/orgs/acm/config-signatures HTTP/1.1\r\n"));
         assert!(
             headers
                 .to_ascii_lowercase()
@@ -262,7 +271,7 @@ mod enrolment {
             ("429 Too Many Requests", "too many"),
             ("403 Forbidden", "cannot get settings signed"),
         ] {
-            let (hub, _requests) = fake_hub(vec![reply(status, "", "fixture-secret-body")]);
+            let (hub, _requests) = fake_hub(vec![me(), reply(status, "", "fixture-secret-body")]);
             let error = sign_settings(&hub, &session(), b"{}")
                 .unwrap_err()
                 .to_string();
@@ -273,12 +282,12 @@ mod enrolment {
 
     #[test]
     fn tells_the_hub_the_hash_of_the_settings_it_wrote() {
-        let (hub, requests) = fake_hub(vec![reply("204 No Content", "", "")]);
+        let (hub, requests) = fake_hub(vec![me(), reply("204 No Content", "", "")]);
         let stick = ck_protocol::StickId::parse("03c9f556").expect("stick id");
         record_config_hash(&hub, &session(), &stick, &"ab".repeat(32)).expect("recorded");
         let requests = requests.join().expect("Hub requests");
-        let (headers, body) = requests[0].split_once("\r\n\r\n").expect("HTTP request");
-        assert!(headers.starts_with("POST /api/v1/config-hashes HTTP/1.1\r\n"));
+        let (headers, body) = requests[1].split_once("\r\n\r\n").expect("HTTP request");
+        assert!(headers.starts_with("POST /api/v1/orgs/acm/config-hashes HTTP/1.1\r\n"));
         assert!(
             headers
                 .to_ascii_lowercase()
@@ -293,11 +302,14 @@ mod enrolment {
     #[test]
     fn mints_one_code_with_the_allocated_machine_and_contest_scope() {
         let fixture_code = "ABCD-EFGH-JKLM-NPQR-STUV";
-        let (hub, requests) = fake_hub(vec![reply(
-            "201 Created",
-            "Cache-Control: no-store\r\n",
-            &json!({"code": fixture_code, "expires_at": "2026-11-19T23:00:00Z"}).to_string(),
-        )]);
+        let (hub, requests) = fake_hub(vec![
+            me(),
+            reply(
+                "201 Created",
+                "Cache-Control: no-store\r\n",
+                &json!({"code": fixture_code, "expires_at": "2026-11-19T23:00:00Z"}).to_string(),
+            ),
+        ]);
         let settings = Settings {
             team: "Team A".to_owned(),
             site: "Lab B".to_owned(),
@@ -323,8 +335,8 @@ mod enrolment {
         assert_eq!(minted.expires_at, utc("2026-11-19T23:00:00Z"));
         assert!(!format!("{minted:?}").contains(fixture_code));
         let requests = requests.join().expect("Hub requests");
-        let (headers, body) = requests[0].split_once("\r\n\r\n").expect("HTTP request");
-        assert!(headers.starts_with("POST /api/v1/enrolment-codes HTTP/1.1\r\n"));
+        let (headers, body) = requests[1].split_once("\r\n\r\n").expect("HTTP request");
+        assert!(headers.starts_with("POST /api/v1/orgs/acm/enrolment-codes HTTP/1.1\r\n"));
         assert!(
             headers
                 .to_ascii_lowercase()
@@ -369,14 +381,17 @@ mod enrolment {
         local["enrolments"] =
             json!([{ "stick_id": "new", "contest": "Contest", "machine_number": 2 }]);
         std::fs::write(&path, local.to_string()).expect("write registry");
-        let (hub, requests) = fake_hub(vec![reply(
-            "200 OK",
-            "",
-            r#"{"added":1,"already_known":0,"conflicts":[]}"#,
-        )]);
+        let (hub, requests) = fake_hub(vec![
+            me(),
+            reply(
+                "200 OK",
+                "",
+                r#"{"added":1,"already_known":0,"conflicts":[]}"#,
+            ),
+        ]);
         push_registry_signed_in(&hub, &session(), &path).expect("push legacy registry");
         let requests = requests.join().expect("hub requests");
-        let (_, body) = requests[0].split_once("\r\n\r\n").expect("HTTP request");
+        let (_, body) = requests[1].split_once("\r\n\r\n").expect("HTTP request");
         assert_eq!(
             serde_json::from_str::<Value>(body).expect("old wire"),
             legacy
@@ -403,6 +418,7 @@ fn logs_in_then_sends_the_registry_with_the_session() {
             "set-cookie: ck_session=abc123; HttpOnly; Secure\r\n",
             "{}",
         ),
+        me(),
         reply(
             "200 OK",
             "",
@@ -414,10 +430,12 @@ fn logs_in_then_sends_the_registry_with_the_session() {
 
     let seen = handle.join().expect("hub");
     assert!(seen[0].starts_with("POST /api/v1/login"));
-    assert!(seen[0].contains(r#""username": "ana""#), "{}", seen[0]);
-    assert!(seen[1].starts_with("POST /api/v1/sticks"));
+    assert!(seen[0].contains(r#""email": "ana""#), "{}", seen[0]);
+    assert!(seen[1].starts_with("GET /api/v1/me"));
     assert!(seen[1].to_lowercase().contains("cookie: ck_session=abc123"));
-    assert!(seen[1].contains(r#""stick_id":"s1""#));
+    assert!(seen[2].starts_with("POST /api/v1/orgs/acm/sticks"));
+    assert!(seen[2].to_lowercase().contains("cookie: ck_session=abc123"));
+    assert!(seen[2].contains(r#""stick_id":"s1""#));
 }
 
 #[test]
@@ -438,6 +456,7 @@ fn a_conflict_still_reports_what_was_added() {
             "set-cookie: ck_session=abc123; HttpOnly\r\n",
             "{}",
         ),
+        me(),
         reply(
             "409 Conflict",
             "",
@@ -457,7 +476,7 @@ fn a_password_is_never_sent_over_plain_http_to_another_machine() {
 }
 
 mod signed_in {
-    use super::{fake_hub, registry_file, reply};
+    use super::{fake_hub, me, registry_file, reply};
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::time::Duration;
@@ -520,6 +539,7 @@ mod signed_in {
                 "",
                 r#"{"token":"tok123","email":"ana@example.org","expires_in":43200}"#,
             ),
+            me(),
             reply(
                 "200 OK",
                 "",
@@ -535,12 +555,15 @@ mod signed_in {
         let seen = handle.join().expect("hub");
         assert!(seen[0].starts_with("POST /api/v1/forge/token"));
         assert!(seen[0].contains(r#""code": "the-code""#), "{}", seen[0]);
-        assert!(seen[1].starts_with("POST /api/v1/sticks"));
-        assert!(
-            seen[1]
-                .to_lowercase()
-                .contains("authorization: bearer tok123")
-        );
+        assert!(seen[1].starts_with("GET /api/v1/me"));
+        assert!(seen[2].starts_with("POST /api/v1/orgs/acm/sticks"));
+        for request in &seen[1..] {
+            assert!(
+                request
+                    .to_lowercase()
+                    .contains("authorization: bearer tok123")
+            );
+        }
     }
 
     #[test]
@@ -566,7 +589,7 @@ mod profiles {
         upload_profile,
     };
 
-    use super::{fake_hub, reply};
+    use super::{fake_hub, me, reply};
 
     fn signed_in_replies() -> Vec<String> {
         vec![reply("200 OK", "", r#"{"token":"tok123","email":"a@b.c"}"#)]
@@ -645,18 +668,38 @@ mod profiles {
     #[test]
     fn retiring_a_key_uses_the_signed_in_admin_and_the_exact_stick_id() {
         let mut replies = signed_in_replies();
+        replies.push(me());
         replies.push(reply("204 No Content", "", ""));
         let (hub, handle) = fake_hub(replies);
         let session = sign_in_with_code(&hub, "c").expect("session");
         assert!(retire_stick_credential(&hub, &session, "../another-stick").is_err());
         retire_stick_credential(&hub, &session, "old-stick").expect("retire");
         let seen = handle.join().expect("hub");
-        assert!(seen[1].starts_with("DELETE /api/v1/sticks/old-stick/credential "));
+        assert!(seen[2].starts_with("DELETE /api/v1/orgs/acm/sticks/old-stick/credential "));
         assert!(
-            seen[1]
+            seen[2]
                 .to_lowercase()
                 .contains("authorization: bearer tok123")
         );
+    }
+
+    #[test]
+    fn an_account_with_no_or_several_organizations_is_refused() {
+        for (answer, words) in [
+            (r#"{"organizations":[]}"#, "no organization"),
+            (
+                r#"{"organizations":[{"slug":"a"},{"slug":"b"}]}"#,
+                "several organizations",
+            ),
+            (r#"{"organizations":[{"slug":"../x"}]}"#, "cannot use"),
+        ] {
+            let mut replies = signed_in_replies();
+            replies.push(reply("200 OK", "", answer));
+            let (hub, _handle) = fake_hub(replies);
+            let session = sign_in_with_code(&hub, "c").expect("session");
+            let error = retire_stick_credential(&hub, &session, "old-stick").unwrap_err();
+            assert!(error.to_string().contains(words), "{answer}: {error}");
+        }
     }
 
     #[test]
