@@ -1,15 +1,12 @@
 //! Thin stick images.
 //!
-//! The settings of a stick live in the EFI partition near the start of the image, so an image made
-//! for one stick differs from the base image only in its first few hundred megabytes. A thin image
-//! is that start (a file that is exactly as long as the part that can differ) and a manifest next
-//! to it that names the base image for all the rest. Making one takes a second and 130 MB of disk
-//! instead of a copy of 30 GB, and writing it reads the head from the thin image and the rest from
-//! the base.
+//! A stick's settings live near the start of the image, so an image made for one stick differs from
+//! the base only in its first few hundred megabytes. A thin image is that start plus a manifest
+//! naming the base for the rest: about 130 MB of disk instead of a 30 GB copy.
 //!
-//! The head file is a raw image start, so `image show` and `image configure` work on it. It is not
-//! a bootable image by itself: [`open`] refuses it unless its manifest is there and the base is
-//! still the one it was made from.
+//! The head file is a raw image start, so `image show` and `image configure` work on it. It does
+//! not boot by itself: [`open`] refuses it unless its manifest is there and the base is still the
+//! one it was made from.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
