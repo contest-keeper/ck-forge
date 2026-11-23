@@ -1,0 +1,314 @@
+//! `ck-forge stick`: listing, and writing sticks with their progress report.
+
+use std::fmt::Write as _;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use ck_admin_core::{Error, check_one_stick};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use serde_json::json;
+
+pub(crate) fn stick_list() -> Result<String, Error> {
+    let mut text = String::new();
+    for disk in ck_writer::list_disks()? {
+        let verdict = match disk.check(0, true) {
+            Ok(()) => "can be written".to_owned(),
+            Err(error) => format!("refused: {error}"),
+        };
+        let _ = writeln!(
+            text,
+            "disk {}  {}  {}  {}  serial {}  [{}]",
+            disk.number,
+            disk.friendly_name.as_deref().unwrap_or("?"),
+            disk.size_text(),
+            disk.bus_type,
+            disk.serial_number.as_deref().unwrap_or("?").trim(),
+            verdict
+        );
+    }
+    Ok(text)
+}
+
+pub(crate) fn stick_write(
+    images: &[PathBuf],
+    disks: &[u32],
+    to: Vec<PathBuf>,
+    allow_virtual: bool,
+    yes: bool,
+    progress: Option<&Path>,
+) -> Result<String, Error> {
+    let count = disks.len().max(to.len());
+    let images = images_for(images, count)?;
+    // Before anything is erased: the images must fit together, and a base that moved is found now.
+    let size = ck_writer::check_images(&images)?;
+    let prepared = if to.is_empty() {
+        prepare_disks(disks, size, allow_virtual, yes)?
+    } else {
+        Vec::new()
+    };
+    let targets = if prepared.is_empty() {
+        to
+    } else {
+        prepared
+            .iter()
+            .map(|disk| ck_writer::disk_path(disk.number))
+            .collect()
+    };
+    let jobs: Vec<(PathBuf, PathBuf)> = images.into_iter().zip(targets).collect();
+    let targets: Vec<&PathBuf> = jobs.iter().map(|(_, target)| target).collect();
+
+    let bars = MultiProgress::new();
+    let bars: Vec<ProgressBar> = targets
+        .iter()
+        .map(|target| {
+            let bar = bars.add(ProgressBar::new(size));
+            bar.set_style(
+                ProgressStyle::with_template(
+                    "{prefix:>16} {msg:>9} {bar:30} {bytes}/{total_bytes} ({eta})",
+                )
+                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+            );
+            bar.set_prefix(label(target));
+            bar
+        })
+        .collect();
+    // For each target how far it is written and how far it is checked; the slowest is reported.
+    let mut state = vec![(0_u64, 0_u64); targets.len()];
+    let mut last_report = Instant::now();
+    let report = |index: usize, phase, done, total| {
+        match phase {
+            ck_writer::Phase::Writing => state[index].0 = done,
+            ck_writer::Phase::Verifying => state[index].1 = done,
+        }
+        show_target(&bars[index], state[index], total);
+        // A file rewritten for every 4 MiB block would be needless work.
+        if done == total || last_report.elapsed() >= Duration::from_millis(500) {
+            last_report = Instant::now();
+            report_slowest(progress, &state, total);
+        }
+    };
+    let results = if prepared.is_empty() {
+        ck_writer::write_images(&jobs, report)
+    } else {
+        ck_writer::write_disk_images(&jobs, &prepared, report)
+    };
+    for bar in &bars {
+        bar.finish_and_clear();
+    }
+
+    let mut text = String::new();
+    let mut failures = Vec::new();
+    let mut hash = String::new();
+    for ((image, target), result) in jobs.iter().zip(results.map_err(admin_hint)?) {
+        match result {
+            Ok(ck_writer::Written { sha256, unchanged }) => {
+                let _ = write!(text, "Wrote {} to {}", image.display(), target.display());
+                if unchanged > 0 {
+                    let _ = write!(
+                        text,
+                        " ({:.1} of {:.1} GB was already on it and was not written again)",
+                        gigabytes(unchanged),
+                        gigabytes(size),
+                    );
+                }
+                text.push('\n');
+                hash = sha256;
+            }
+            Err(error) => failures.push(format!("{}: {}", label(target), admin_hint(error))),
+        }
+    }
+    if !failures.is_empty() {
+        let message = format!(
+            "{} of {} sticks failed ({}{})",
+            failures.len(),
+            targets.len(),
+            failures.join("; "),
+            if text.is_empty() {
+                String::new()
+            } else {
+                format!("). The others are written and checked, {}", text.trim_end())
+            }
+        );
+        return Err(Error::io("writing the sticks", io::Error::other(message)));
+    }
+    report_progress(progress, &json!({ "state": "done", "sha256": hash }));
+    if jobs.len() == 1 || jobs.windows(2).all(|pair| pair[0].0 == pair[1].0) {
+        let _ = writeln!(text, "Read back and checked, SHA-256 {hash}");
+    } else {
+        let _ = writeln!(
+            text,
+            "Every stick was read back and checked against its own image"
+        );
+    }
+    Ok(text)
+}
+
+/// One image for every target, in order: the one image given, or one image per target. Several
+/// sticks written from one image that holds a stick's identity, or from the same image twice,
+/// would share an id and secret, so that is refused.
+pub(crate) fn images_for(images: &[PathBuf], count: usize) -> Result<Vec<PathBuf>, Error> {
+    if images.len() == 1 {
+        check_one_stick(&images[0], count)?;
+        return Ok(vec![images[0].clone(); count]);
+    }
+    if images.len() != count {
+        return Err(Error::io(
+            format!("{} images for {count} sticks", images.len()),
+            io::Error::other("give one image for all the sticks, or one image for each stick"),
+        ));
+    }
+    for (index, image) in images.iter().enumerate() {
+        if images[..index].contains(image) {
+            return Err(Error::io(
+                format!("{} is given twice", image.display()),
+                io::Error::other("two sticks written from one image would share its id and secret"),
+            ));
+        }
+    }
+    Ok(images.to_vec())
+}
+
+pub(crate) fn gigabytes(bytes: u64) -> f64 {
+    // Only for showing; a stick image is far below the range where this loses digits.
+    #[allow(clippy::cast_precision_loss)]
+    let gigabytes = bytes as f64 / 1e9;
+    gigabytes
+}
+
+/// A short name for a target: `disk 3` for `\\.\PhysicalDrive3`, else the file name.
+pub(crate) fn label(target: &Path) -> String {
+    let name = target.file_name().map_or_else(
+        || target.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    match name.strip_prefix("PhysicalDrive") {
+        Some(number) => format!("disk {number}"),
+        None => name,
+    }
+}
+
+/// Looks every disk up and checks that it may be written, asks once for all of them, then gets
+/// each ready. Nothing is touched before every disk has passed the checks. Keeps the selected
+/// identities so the writer can match them again before opening the devices.
+pub(crate) fn prepare_disks(
+    numbers: &[u32],
+    size: u64,
+    allow_virtual: bool,
+    yes: bool,
+) -> Result<Vec<ck_writer::Disk>, Error> {
+    let listed = ck_writer::list_disks()?;
+    let mut chosen: Vec<ck_writer::Disk> = Vec::new();
+    for &number in numbers {
+        if chosen.iter().any(|d| d.number == number) {
+            return Err(Error::io(
+                format!("disk {number} is given twice"),
+                io::Error::from(io::ErrorKind::InvalidInput),
+            ));
+        }
+        let disk = listed
+            .iter()
+            .find(|d| d.number == number)
+            .cloned()
+            .ok_or(ck_writer::Error::NoSuchDisk(number))?;
+        disk.check(size, allow_virtual)?;
+        chosen.push(disk);
+    }
+    if !yes {
+        confirm(&chosen)?;
+    }
+    for disk in &chosen {
+        ck_writer::prepare_disk(disk, size, allow_virtual).map_err(admin_hint)?;
+    }
+    Ok(chosen)
+}
+
+/// Asks the admin to type the disk numbers, because this erases the whole disks.
+pub(crate) fn confirm(disks: &[ck_writer::Disk]) -> Result<(), Error> {
+    let mut out = io::stdout();
+    let mut numbers = Vec::new();
+    for disk in disks {
+        writeln!(
+            out,
+            "This ERASES disk {}: {} ({}, serial {}).",
+            disk.number,
+            disk.friendly_name.as_deref().unwrap_or("?"),
+            disk.size_text(),
+            disk.serial_number.as_deref().unwrap_or("?").trim(),
+        )
+        .map_err(|e| Error::io("writing the output", e))?;
+        numbers.push(disk.number.to_string());
+    }
+    let expected = format!("erase {}", numbers.join(" "));
+    write!(out, "Type {expected} to go on: ")
+        .and_then(|()| out.flush())
+        .map_err(|e| Error::io("writing the output", e))?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| Error::io("reading the answer", e))?;
+    if answer.trim() == expected {
+        Ok(())
+    } else {
+        Err(Error::io(
+            "cancelled, nothing was written",
+            io::Error::from(io::ErrorKind::Interrupted),
+        ))
+    }
+}
+
+/// Writing a disk without administrator rights fails with "access denied"; say what to do.
+pub(crate) fn admin_hint(error: ck_writer::Error) -> Error {
+    if let ck_writer::Error::Io { source, .. } = &error
+        && source.kind() == io::ErrorKind::PermissionDenied
+    {
+        return Error::io(
+            "access denied: open a terminal as administrator and run the command again",
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        );
+    }
+    error.into()
+}
+
+/// Shows a target's bar: the writing, then the checking once the writing is over.
+pub(crate) fn show_target(bar: &ProgressBar, (written, checked): (u64, u64), total: u64) {
+    let writing = written < total;
+    bar.set_length(total);
+    bar.set_position(if writing { written } else { checked });
+    bar.set_message(if writing {
+        format!("check {}%", checked * 100 / total)
+    } else {
+        "checking".to_owned()
+    });
+}
+
+/// Reports how far the slowest target is written and checked.
+pub(crate) fn report_slowest(file: Option<&Path>, state: &[(u64, u64)], total: u64) {
+    let written = state
+        .iter()
+        .map(|(written, _)| *written)
+        .min()
+        .unwrap_or_default();
+    let checked = state
+        .iter()
+        .map(|(_, checked)| *checked)
+        .min()
+        .unwrap_or_default();
+    let name = if written < total {
+        "writing"
+    } else {
+        "checking"
+    };
+    report_progress(
+        file,
+        &json!({ "state": name, "done": written, "checked": checked, "total": total }),
+    );
+}
+
+/// Keeps the progress file of `stick write` up to date, when one was asked for. A failure to write it
+/// is ignored: the write itself must not fail because the window stopped listening.
+pub(crate) fn report_progress(file: Option<&Path>, state: &serde_json::Value) {
+    if let Some(path) = file {
+        let _ = std::fs::write(path, state.to_string());
+    }
+}
