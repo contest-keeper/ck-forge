@@ -33,9 +33,9 @@ pub use hub_images::{
 };
 pub use image::{
     Built, EnrolmentBuild, ImageConfiguration, SignSettings, build_enrolment_image, build_image,
-    build_thin_image, build_thin_image_signed, check_one_stick, configure_image,
-    configure_image_signed, enrolment_config_sha256, image_configuration, requires_signed_settings,
-    show_image, stick_config_sha256, supports_enrolment,
+    build_thin_image, check_one_stick, configure_image, enrolment_config_sha256,
+    image_configuration, requires_signed_settings, show_image, stick_config_sha256,
+    supports_enrolment,
 };
 pub use profile::{Profile, StickKeyWindow};
 pub use registry::{CredentialScope, Registry, RegistryEntry};

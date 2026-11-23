@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use ck_admin_core::{
     EnrolmentBuild, HardwareId, HubImage, HubImageStep, Profile, SignSettings, Wallpaper,
-    build_enrolment_image, build_thin_image_signed, enrolment_config_sha256, folder_of,
+    build_enrolment_image, build_thin_image, enrolment_config_sha256, folder_of,
     import_image, local_now, mint_enrolment_code, record_config_hash, record_stick_write,
     requires_signed_settings, sign_settings, stick_config_sha256, supports_enrolment,
 };
@@ -194,7 +194,7 @@ fn build_stick(
             disk: None,
         });
     }
-    let built = build_thin_image_signed(
+    let built = build_thin_image(
         base,
         out,
         &profile,

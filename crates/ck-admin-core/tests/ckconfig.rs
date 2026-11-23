@@ -164,7 +164,8 @@ fn configuring_again_replaces_the_files_on_the_config_partition() {
 
     let mut other = profile();
     other.settings.team = "Team B".to_owned();
-    configure_image(&out, &other, Some(&picture(vec![9; 100])), &registry).expect("configure");
+    configure_image(&out, &other, Some(&picture(vec![9; 100])), &registry, None)
+        .expect("configure");
 
     assert_eq!(show_image(&out).expect("show").settings.team, "Team B");
     assert_eq!(
@@ -187,6 +188,7 @@ fn a_thin_image_reaches_the_end_of_the_config_partition() {
         Some(&picture(vec![7; 100])),
         &registry,
         time(),
+        None,
         |_, _| {},
     )
     .expect("build thin");
@@ -232,6 +234,7 @@ fn changing_the_contest_window_requires_a_fresh_stick_key() {
         None,
         &registry,
         time(),
+        None,
         |_, _| {},
     )
     .expect("first key");
@@ -243,7 +246,7 @@ fn changing_the_contest_window_requires_a_fresh_stick_key() {
         saved["sticks"][0]["credential_scope"]["valid_until"],
         "2026-11-19T13:00:00Z"
     );
-    assert!(configure_image(&first_image, &scoped("5"), None, &registry).is_err());
+    assert!(configure_image(&first_image, &scoped("5"), None, &registry, None).is_err());
     assert_eq!(show_image(&first_image).expect("unchanged"), first.config);
 
     let next = build_thin_image(
@@ -253,6 +256,7 @@ fn changing_the_contest_window_requires_a_fresh_stick_key() {
         None,
         &registry,
         time(),
+        None,
         |_, _| {},
     )
     .expect("new key");

@@ -317,7 +317,13 @@ fn run(command: Command) -> Result<String, Error> {
             let mut loaded = Profile::load(&profile)?;
             extras.apply(&mut loaded)?;
             let wallpaper = Wallpaper::read(&loaded.stick_settings(), folder_of(&profile))?;
-            let config = configure_image(&image, &loaded, wallpaper.as_ref(), &registry.registry)?;
+            let config = configure_image(
+                &image,
+                &loaded,
+                wallpaper.as_ref(),
+                &registry.registry,
+                None,
+            )?;
             warn(&loaded);
             Ok(format!(
                 "Updated {}\n{}",
@@ -476,23 +482,32 @@ fn image_build(
             .unwrap_or_else(|_| ProgressStyle::default_bar()),
     );
     let now = local_now();
-    let make = if full_copy {
-        build_image
-    } else {
-        build_thin_image
+    let progress = |done, total| {
+        bar.set_length(total);
+        bar.set_position(done);
     };
-    let result = make(
-        base,
-        image,
-        &profile,
-        wallpaper.as_ref(),
-        registry,
-        now,
-        |done, total| {
-            bar.set_length(total);
-            bar.set_position(done);
-        },
-    );
+    let result = if full_copy {
+        build_image(
+            base,
+            image,
+            &profile,
+            wallpaper.as_ref(),
+            registry,
+            now,
+            progress,
+        )
+    } else {
+        build_thin_image(
+            base,
+            image,
+            &profile,
+            wallpaper.as_ref(),
+            registry,
+            now,
+            None,
+            progress,
+        )
+    };
     bar.finish_and_clear();
     let built = result?;
     Ok(format!(
