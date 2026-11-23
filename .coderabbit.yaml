@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: assertive
+  auto_review:
+    enabled: true
+    base_branches: ["^develop$"]
+    ignore_usernames: ["dependabot[bot]"]
+  tools:
+    shellcheck:
+      enabled: true
+    clippy:
+      enabled: true
+  path_instructions:
+    - path: "crates/ck-writer/**"
+      instructions: |
+        Writes raw disks as administrator. Check the target disk is re-verified (serial and size) before erasing, that paths and arguments are never built by string quoting, and that success is reported only after reading the target back.
+    - path: "crates/ck-admin-core/src/hub.rs"
+      instructions: |
+        Talks to the Hub with the organiser's credentials. Check Bearer headers are marked sensitive, the password is only sent over https or to a parsed local host, redirects are not followed with a secret in the body, and nothing secret is logged.
