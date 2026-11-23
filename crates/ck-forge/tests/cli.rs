@@ -1,4 +1,4 @@
-#[path = "../../ck-admin-core/tests/support/mod.rs"]
+#[path = "../../ck-admin-core/tests/it/support/mod.rs"]
 mod support;
 
 use std::path::Path;

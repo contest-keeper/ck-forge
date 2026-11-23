@@ -1,8 +1,6 @@
 //! Images with a `CKCONFIG` partition keep the stick's settings and wallpaper there, not on the EFI
 //! partition.
 
-mod support;
-
 use std::io::{Seek, SeekFrom, Write};
 
 use ck_admin_core::{
@@ -33,7 +31,7 @@ fn picture(bytes: Vec<u8>) -> Wallpaper {
 #[test]
 fn enrolment_requires_a_compatible_base_and_only_writes_the_code_to_ckconfig() {
     let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image_with_config(&dir, "base.img");
+    let base = crate::support::make_image_with_config(&dir, "base.img");
     let out = dir.path().join("enrolling.img");
     let registry = dir.path().join("registry.json");
     let mut profile = profile();
@@ -59,9 +57,9 @@ fn enrolment_requires_a_compatible_base_and_only_writes_the_code_to_ckconfig() {
         .write(true)
         .open(&base)
         .expect("disk");
-    disk.seek(SeekFrom::Start(support::CONFIG_END))
+    disk.seek(SeekFrom::Start(crate::support::CONFIG_END))
         .expect("root");
-    disk.write_all(include_bytes!("fixtures/enrolment.ext2"))
+    disk.write_all(include_bytes!("../fixtures/enrolment.ext2"))
         .expect("ext filesystem");
     drop(disk);
     assert!(supports_enrolment(&base).expect("marker"));
@@ -116,7 +114,7 @@ fn enrolment_requires_a_compatible_base_and_only_writes_the_code_to_ckconfig() {
 #[test]
 fn the_settings_and_the_wallpaper_go_to_the_config_partition_only() {
     let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image_with_config(&dir, "base.img");
+    let base = crate::support::make_image_with_config(&dir, "base.img");
     let out = dir.path().join("stick.img");
     let registry = dir.path().join("r.json");
 
@@ -148,7 +146,7 @@ fn the_settings_and_the_wallpaper_go_to_the_config_partition_only() {
 #[test]
 fn configuring_again_replaces_the_files_on_the_config_partition() {
     let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image_with_config(&dir, "base.img");
+    let base = crate::support::make_image_with_config(&dir, "base.img");
     let out = dir.path().join("stick.img");
     let registry = dir.path().join("r.json");
     build_image(
@@ -177,7 +175,7 @@ fn configuring_again_replaces_the_files_on_the_config_partition() {
 #[test]
 fn a_thin_image_reaches_the_end_of_the_config_partition() {
     let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image_with_config(&dir, "base.img");
+    let base = crate::support::make_image_with_config(&dir, "base.img");
     let out = dir.path().join("thin.img");
     let registry = dir.path().join("r.json");
 
@@ -194,7 +192,11 @@ fn a_thin_image_reaches_the_end_of_the_config_partition() {
     .expect("build thin");
 
     let head = std::fs::metadata(&out).expect("thin").len();
-    assert_eq!(head, support::CONFIG_END, "the head ends with CKCONFIG");
+    assert_eq!(
+        head,
+        crate::support::CONFIG_END,
+        "the head ends with CKCONFIG"
+    );
     let on_stick = ck_image::read_config_file(&out, "config.json").expect("settings file");
     assert_eq!(
         ck_admin_core::stick_config_sha256(&built.config),
@@ -211,7 +213,7 @@ fn a_thin_image_reaches_the_end_of_the_config_partition() {
 #[test]
 fn changing_the_contest_window_requires_a_fresh_stick_key() {
     let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image_with_config(&dir, "base.img");
+    let base = crate::support::make_image_with_config(&dir, "base.img");
     let first_image = dir.path().join("first.img");
     let second_image = dir.path().join("second.img");
     let registry = dir.path().join("r.json");

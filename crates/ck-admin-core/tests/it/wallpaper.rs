@@ -1,5 +1,3 @@
-mod support;
-
 use ck_admin_core::{Error, MAX_WALLPAPER_BYTES, Profile, Wallpaper, build_image, configure_image};
 use ck_protocol::LocalDateTime;
 use tempfile::TempDir;
@@ -56,7 +54,7 @@ fn a_missing_oversized_or_non_file_wallpaper_is_refused() {
 #[test]
 fn the_picture_is_put_on_the_stick_next_to_the_settings() {
     let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
+    let base = crate::support::make_image(&dir, "base.img");
     let out = dir.path().join("stick.img");
     let profile = profile_with_wallpaper("wall.png");
     let picture = Wallpaper {
@@ -101,7 +99,7 @@ fn the_picture_is_put_on_the_stick_next_to_the_settings() {
 #[test]
 fn a_picture_named_like_the_settings_file_is_refused_before_it_can_replace_it() {
     let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
+    let base = crate::support::make_image(&dir, "base.img");
     let out = dir.path().join("stick.img");
     let picture = Wallpaper {
         name: "Config.json".to_owned(),
@@ -124,7 +122,7 @@ fn a_picture_named_like_the_settings_file_is_refused_before_it_can_replace_it() 
 #[test]
 fn the_picture_must_be_the_one_the_profile_names_and_nothing_is_copied_otherwise() {
     let dir = TempDir::new().expect("temp dir");
-    let base = support::make_image(&dir, "base.img");
+    let base = crate::support::make_image(&dir, "base.img");
     let out = dir.path().join("stick.img");
     let registry = dir.path().join("r.json");
     let picture = Wallpaper {

@@ -1,5 +1,3 @@
-mod support;
-
 use std::path::PathBuf;
 
 use ck_admin_core::{
@@ -28,7 +26,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let dir = TempDir::new().expect("temp dir");
-        let base = support::make_image(&dir, "base.img");
+        let base = crate::support::make_image(&dir, "base.img");
         let registry = dir.path().join("registry.json");
         Self {
             dir,
@@ -118,7 +116,7 @@ fn a_failed_build_leaves_no_image_behind() {
 #[test]
 fn never_overwrites_an_existing_image() {
     let fixture = Fixture::new();
-    let taken = support::make_image(&fixture.dir, "taken.img");
+    let taken = crate::support::make_image(&fixture.dir, "taken.img");
     let before = std::fs::read(&taken).expect("read");
     fixture
         .build("taken.img", &profile("A"))
