@@ -829,6 +829,7 @@ token"
             if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("hub.rs") {
                 let text = std::fs::read_to_string(&path).unwrap();
                 assert!(!text.contains("\"Bearer "), "{}", path.display());
+                assert!(!text.contains("\"authorization\""), "{}", path.display());
             }
         }
     }
