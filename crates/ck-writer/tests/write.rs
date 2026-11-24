@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ck_writer::{
-    Error, Phase, disk_path, thin, write_disk_images, write_image, write_image_to_all, write_images,
+    Error, Phase, thin, write_disk_images, write_image, write_image_to_all, write_images,
 };
 use tempfile::tempdir;
 
@@ -90,9 +90,13 @@ fn keeps_the_size_of_a_larger_target() {
 }
 
 #[test]
+#[cfg(windows)]
 fn a_disk_is_opened_by_its_device_path_not_as_a_file_on_the_current_drive() {
     // With one backslash less, Windows reads this as `C:\PhysicalDrive3`, an ordinary file.
-    assert_eq!(disk_path(3).to_str(), Some(r"\\.\PhysicalDrive3"));
+    assert_eq!(
+        ck_writer::disk_path(3).to_str(),
+        Some(r"\\.\PhysicalDrive3")
+    );
 }
 
 #[test]
