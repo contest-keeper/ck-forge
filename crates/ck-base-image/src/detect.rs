@@ -11,16 +11,10 @@ use crate::download::sha256_reader;
 
 // These exact raw fingerprints are recorded in ck-os docs/base-images.md. The provisioning
 // catalog and the Hub's download manifest hash their input and compressed archives respectively.
-const KNOWN_RAW_IMAGES: &[(&str, &str)] = &[
-    (
-        "34f4dbaa905b74c80212868053eed75128d30d93d18a2a64ff66c773b0ef8dee",
-        "Keeper OS reference image (2026-11-12)",
-    ),
-    (
-        "f924caf11ee693e64316b20c9ef7690d70396371985e677279445b41e451576b",
-        "ICPC contest reference image (2026-11-12)",
-    ),
-];
+const KNOWN_RAW_IMAGES: &[(&str, &str)] = &[(
+    "34f4dbaa905b74c80212868053eed75128d30d93d18a2a64ff66c773b0ef8dee",
+    "Keeper OS reference image (2026-11-12)",
+)];
 const SUPERBLOCK_OFFSET: u64 = 1024;
 const SUPERBLOCK_PREFIX: usize = 0x154;
 const RELEASE_LIMIT: u64 = 64 * 1024;
