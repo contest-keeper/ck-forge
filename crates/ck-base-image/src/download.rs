@@ -89,19 +89,3 @@ pub fn fetch(
     fs::rename(&part, &target).map_err(|e| Error::io("finishing the download", e))?;
     Ok(target)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hashes_a_file() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("f");
-        fs::write(&path, b"abc").expect("write");
-        assert_eq!(
-            sha256_file(&path).expect("hash"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
-}

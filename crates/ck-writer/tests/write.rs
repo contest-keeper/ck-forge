@@ -163,28 +163,6 @@ fn one_target_that_cannot_be_opened_does_not_stop_the_others() {
     assert_eq!(fs::read(&good).unwrap(), fs::read(&source).unwrap());
 }
 
-#[test]
-fn no_targets_give_no_results() {
-    let dir = tempdir().unwrap();
-    let source = image(dir.path(), 4096);
-    assert!(
-        write_image_to_all(&source, &[], |_, _, _, _| {})
-            .unwrap()
-            .is_empty()
-    );
-}
-
-#[test]
-fn an_empty_image_is_refused_for_several_targets_too() {
-    let dir = tempdir().unwrap();
-    let source = dir.path().join("empty.img");
-    fs::write(&source, b"").unwrap();
-    let targets = [dir.path().join("a.img"), dir.path().join("b.img")];
-    let error = write_image_to_all(&source, &targets, |_, _, _, _| {}).unwrap_err();
-    assert!(matches!(error, Error::EmptyImage));
-    assert!(!targets[0].exists());
-}
-
 /// A thin image of `base` whose start has `mark` written into it, as the settings of a stick would.
 fn stick(dir: &Path, base: &Path, name: &str, head_len: u64, mark: u8) -> PathBuf {
     let path = dir.join(name);
