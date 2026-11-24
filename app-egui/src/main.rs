@@ -2,6 +2,7 @@
 
 mod app;
 mod hub;
+mod profile;
 
 fn main() -> eframe::Result {
     eframe::run_native(
