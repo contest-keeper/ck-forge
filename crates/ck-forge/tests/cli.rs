@@ -125,6 +125,38 @@ fn check_lists_every_problem_and_fails() {
 }
 
 #[test]
+fn a_stick_built_with_the_flag_blocks_other_usb_storage() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    let base = base.to_str().expect("utf-8 path");
+    assert!(
+        forge(&["profile", "new", "p.json"], dir.path())
+            .status
+            .success()
+    );
+    for (out, extra, words) in [
+        ("a.img", None, "USB storage: not blocked"),
+        ("b.img", Some("--block-usb-storage"), "USB storage: blocked"),
+    ] {
+        let mut args = vec![
+            "image",
+            "build",
+            "--base",
+            base,
+            "--out",
+            out,
+            "--profile",
+            "p.json",
+        ];
+        args.extend(extra);
+        let build = forge(&args, dir.path());
+        assert!(build.status.success(), "{}", text(&build.stderr));
+        let shown = text(&forge(&["image", "show", out], dir.path()).stdout);
+        assert!(shown.contains(words), "{shown}");
+    }
+}
+
+#[test]
 fn builds_shows_configures_and_lists_a_stick() {
     let dir = TempDir::new().expect("temp dir");
     let base = support::make_image(&dir, "base.img");
