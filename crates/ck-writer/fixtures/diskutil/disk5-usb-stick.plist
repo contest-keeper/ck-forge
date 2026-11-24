@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>BusProtocol</key>
+	<string>USB</string>
+	<key>DeviceBlockSize</key>
+	<integer>512</integer>
+	<key>DeviceIdentifier</key>
+	<string>disk5</string>
+	<key>DeviceNode</key>
+	<string>/dev/disk5</string>
+	<key>Ejectable</key>
+	<true/>
+	<key>IORegistryEntryName</key>
+	<string>DataTraveler 3.0</string>
+	<key>Internal</key>
+	<false/>
+	<key>MediaName</key>
+	<string>Kingston DataTraveler 3.0</string>
+	<key>Removable</key>
+	<true/>
+	<key>RemovableMedia</key>
+	<true/>
+	<key>RemovableMediaOrExternalDevice</key>
+	<true/>
+	<key>Size</key>
+	<integer>31914983424</integer>
+	<key>SystemImage</key>
+	<false/>
+	<key>VirtualOrPhysical</key>
+	<string>Physical</string>
+	<key>WholeDisk</key>
+	<true/>
+	<key>Writable</key>
+	<true/>
+</dict>
+</plist>

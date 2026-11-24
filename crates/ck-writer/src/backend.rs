@@ -24,17 +24,21 @@ pub(crate) fn system() -> &'static dyn DiskBackend {
     {
         &crate::windows::Windows
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        &crate::macos::Macos
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         &Unsupported
     }
 }
 
 /// Systems that have no way to write a stick yet.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 struct Unsupported;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 impl DiskBackend for Unsupported {
     fn list(&self) -> Result<Vec<Disk>, Error> {
         Err(Error::Listing(

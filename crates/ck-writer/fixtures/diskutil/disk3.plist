@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>APFSContainerReference</key>
+	<string>disk3</string>
+	<key>APFSPhysicalStores</key>
+	<array>
+		<dict>
+			<key>APFSPhysicalStore</key>
+			<string>disk0s2</string>
+		</dict>
+	</array>
+	<key>BusProtocol</key>
+	<string>Apple Fabric</string>
+	<key>DeviceBlockSize</key>
+	<integer>4096</integer>
+	<key>DeviceIdentifier</key>
+	<string>disk3</string>
+	<key>DeviceNode</key>
+	<string>/dev/disk3</string>
+	<key>IORegistryEntryName</key>
+	<string>AppleAPFSMedia</string>
+	<key>Internal</key>
+	<true/>
+	<key>MediaName</key>
+	<string>APPLE SSD AP1024Z</string>
+	<key>RemovableMedia</key>
+	<false/>
+	<key>RemovableMediaOrExternalDevice</key>
+	<false/>
+	<key>Size</key>
+	<integer>994662584320</integer>
+	<key>VirtualOrPhysical</key>
+	<string>Virtual</string>
+	<key>WholeDisk</key>
+	<true/>
+	<key>Writable</key>
+	<true/>
+</dict>
+</plist>

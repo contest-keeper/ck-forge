@@ -421,7 +421,7 @@ fn write_target(
         before = done;
         let _ = events.send((index, Phase::Writing, reported(head_len + done)));
         if unflushed >= FLUSH_EVERY {
-            out.sync_all().map_err(flush_error)?;
+            flush(&out).map_err(flush_error)?;
             unflushed = 0;
             let _ = marks.send((head_len + done).saturating_sub(CHECK_LAG));
         }
@@ -430,13 +430,23 @@ fn write_target(
     if done != tail_len {
         return Err(write_error(io::ErrorKind::UnexpectedEof.into()));
     }
-    out.sync_all().map_err(flush_error)?;
+    flush(&out).map_err(flush_error)?;
     let _ = events.send((index, Phase::Writing, total));
     let _ = marks.send(u64::MAX);
     Ok(Written {
         sha256: hex(&hash.finalize()),
         unchanged: put.unchanged,
     })
+}
+
+/// Makes the system hand what was written to the target. A raw device on macOS (`/dev/rdiskN`)
+/// has no cache to flush and answers fsync with ENOTTY, so that is no failure there.
+fn flush(out: &File) -> io::Result<()> {
+    const ENOTTY: i32 = 25;
+    match out.sync_all() {
+        Err(e) if cfg!(target_os = "macos") && e.raw_os_error() == Some(ENOTTY) => Ok(()),
+        result => result,
+    }
 }
 
 /// How many blocks of the shared rest a target is asked about to tell whether it already holds
@@ -769,6 +779,7 @@ mod tests {
                 bus_type: "USB".into(),
                 is_system: false,
                 is_boot: false,
+                blocked: None,
             }
         }
 

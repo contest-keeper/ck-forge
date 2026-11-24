@@ -124,6 +124,7 @@ mod tests {
             bus_type: bus.into(),
             is_system: false,
             is_boot: false,
+            blocked: None,
         }
     }
 
