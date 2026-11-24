@@ -34,7 +34,7 @@ impl HubState {
     /// Starts signed in when an earlier run saved a session.
     pub fn restored() -> Self {
         Self {
-            session: Mutex::new(crate::vault::load()),
+            session: Mutex::new(ck_admin_core::vault::load()),
             checked: AtomicBool::new(false),
         }
     }
@@ -93,7 +93,7 @@ pub async fn hub_sign_in(
         .await
         .map_err(|e| e.to_string())??;
     let email = session.email.clone();
-    crate::vault::save(&session);
+    ck_admin_core::vault::save(&session);
     state.checked.store(true, Ordering::Relaxed);
     if let Some(old) = state.lock().replace(session) {
         ck_admin_core::sign_out(HUB_URL, &old);
@@ -128,7 +128,7 @@ pub async fn hub_status(state: State<'_, HubState>) -> Result<Option<String>, St
             .is_some_and(|why| why.contains("sign in again"));
         if ended {
             state.lock().take();
-            crate::vault::forget();
+            ck_admin_core::vault::forget();
         }
     }
     Ok(state.lock().as_ref().map(|session| session.email.clone()))
@@ -137,7 +137,7 @@ pub async fn hub_status(state: State<'_, HubState>) -> Result<Option<String>, St
 #[tauri::command]
 pub async fn hub_sign_out(state: State<'_, HubState>) -> Result<(), String> {
     let session = state.lock().take();
-    crate::vault::forget();
+    ck_admin_core::vault::forget();
     if let Some(session) = session {
         tauri::async_runtime::spawn_blocking(move || ck_admin_core::sign_out(HUB_URL, &session))
             .await

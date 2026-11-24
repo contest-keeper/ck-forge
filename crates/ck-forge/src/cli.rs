@@ -33,6 +33,51 @@ pub(crate) enum Command {
     /// List USB disks and write an image to a stick
     #[command(subcommand)]
     Stick(StickCommand),
+    /// Sign in to Keeper Hub and use the profiles, sticks and images of the organization
+    #[command(subcommand)]
+    Hub(HubCommand),
+}
+
+#[derive(Subcommand)]
+pub(crate) enum HubCommand {
+    /// Sign in through the browser; the session is kept in the Windows Credential Manager
+    SignIn,
+    /// Sign out and forget the saved session
+    SignOut,
+    /// Say who is signed in
+    Status,
+    /// List the profiles of the organization
+    Profiles,
+    /// Download a profile into a folder, with its wallpaper
+    Pull {
+        /// The id shown by `hub profiles`
+        id: String,
+        /// The folder to put the profile's own folder in
+        #[arg(long, default_value = ".")]
+        folder: PathBuf,
+    },
+    /// Save a profile file to the Hub, with its wallpaper
+    Push {
+        /// The profile to save
+        file: PathBuf,
+    },
+    /// List the sticks of the organization
+    Sticks,
+    /// Retire the key of a stick, so it can no longer report
+    Retire {
+        /// The stick id shown by `hub sticks`
+        id: String,
+    },
+    /// List the base images the Hub offers
+    Images,
+    /// Download a base image from the Hub, verify it and expand it to a raw .img
+    Download {
+        /// The id shown by `hub images`
+        id: String,
+        /// Where to save the raw .img (must not exist)
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]

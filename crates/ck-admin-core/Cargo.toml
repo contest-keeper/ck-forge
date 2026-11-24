@@ -24,6 +24,10 @@ tempfile = "3.27.0"
 base64 = "0.22.1"
 uuid = { version = "1.26.1", features = ["v4"] }
 
+# Keeps the Hub sign-in between runs, in the Windows Credential Manager.
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
 [dev-dependencies]
 crc32fast = "1.5.5"
 fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
