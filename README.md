@@ -96,5 +96,5 @@ A stick is written, read back and compared by SHA-256. Only USB disks are writte
 the computer runs from.
 
 On macOS build the command line tool with `cargo build --release -p ck-forge` and run it with `sudo`
-for the write (`sudo ck-forge stick write stick.img --disk 3`); `stick list` needs no `sudo`. Only
+for the write (`sudo ./target/release/ck-forge stick write stick.img --disk 3`); `stick list` needs no `sudo`. Only
 external removable USB sticks are offered. The window (below) does not write sticks on macOS yet. To try the writer without a stick, see [docs/testing-the-writer.md](docs/testing-the-writer.md).

@@ -36,8 +36,9 @@ unbuffered device) in the same 4 MiB blocks as on Windows and reads it back.
 - A real stick needs `sudo`: the raw device belongs to root. Forge says so before it unmounts anything.
 
 ```sh
-ck-forge stick list                       # find the number of your stick (diskN)
-sudo ck-forge stick write stick.img --disk N
+cargo build --release -p ck-forge         # the tool is then target/release/ck-forge
+target/release/ck-forge stick list        # find the number of your stick (diskN)
+sudo target/release/ck-forge stick write stick.img --disk N
 ```
 
 ### Manual test with a real stick on macOS (checklist for the user)
