@@ -15,7 +15,7 @@ Run each row on Windows, mark it, and fix gaps in small PRs.
 
 ## 3. R6.3: remove the old Tauri app
 
-Only after every parity row passes on Windows **and** the owner agrees: remove `app/`, `ui/` and their CI jobs, and update the README and installer. The owner said "not yet" on 2026-11-25.
+Only after every parity row passes on Windows (this includes Wi-Fi, recording and the updater, which must each be implemented and tested there) **and** the owner agrees: remove `app/`, `ui/` and their CI jobs, and update the README and installer. The owner said "not yet" on 2026-11-25.
 
 ## 4. Developer image creator and enrolment (#24, #32 to #34)
 
