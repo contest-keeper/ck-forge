@@ -65,7 +65,7 @@ ck-forge image catalog                       # the base images Keeper can make f
 ck-forge image create --distro ubuntu-24.04 --out base.img --patch ck-os-patch.tar.gz
 ck-forge image build --base base.img --out stick.img --profile p.json
 ck-forge stick list                          # disks, and which ones may be written
-ck-forge stick write stick.img --disk 3      # in an administrator terminal; erases the stick
+ck-forge stick write stick.img --disk 3      # in an administrator terminal (sudo on macOS); erases the stick
 ck-forge registry push --hub https://hub.example.org --user ana
 ```
 
@@ -93,4 +93,8 @@ checked completely either way. Only a plain base image, with no stick identity, 
 to several sticks as one image.
 
 A stick is written, read back and compared by SHA-256. Only USB disks are written, never the disk
-Windows runs from. To try the writer without a stick, see [docs/testing-the-writer.md](docs/testing-the-writer.md).
+the computer runs from.
+
+On macOS build the command line tool with `cargo build --release -p ck-forge` and run it with `sudo`
+for the write (`sudo ./target/release/ck-forge stick write stick.img --disk 3`); `stick list` needs no `sudo`. Only
+external removable USB sticks are offered. The window (below) does not write sticks on macOS yet. To try the writer without a stick, see [docs/testing-the-writer.md](docs/testing-the-writer.md).

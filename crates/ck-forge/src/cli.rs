@@ -82,10 +82,10 @@ pub(crate) enum HubCommand {
 
 #[derive(Subcommand)]
 pub(crate) enum StickCommand {
-    /// List the disks of this PC and say which ones may be written
+    /// List the disks of this computer and say which ones may be written
     List,
     /// Write a stick image to USB sticks, then read them back to check them.
-    /// Writing a disk needs an administrator terminal and erases the whole stick. Several sticks
+    /// Writing a disk needs an administrator terminal (`sudo` on macOS) and erases the whole stick. Several sticks
     /// are written at the same time, so a batch takes about as long as one stick
     Write {
         /// The stick image to write. For several sticks each with its own identity give one image
@@ -100,7 +100,7 @@ pub(crate) enum StickCommand {
         /// option to write several files at once
         #[arg(long)]
         to: Vec<PathBuf>,
-        /// Also allow a virtual disk (a VHD), for testing the writer without a stick
+        /// Also allow a virtual disk (a VHD, or a disk image on macOS), for testing the writer without a stick
         #[arg(long)]
         allow_virtual: bool,
         /// Do not ask for the confirmation (for scripts and tests)

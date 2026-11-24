@@ -214,6 +214,7 @@ pub(crate) fn prepare_disks(
         disk.check(size, allow_virtual)?;
         chosen.push(disk);
     }
+    check_access(&chosen)?;
     if !yes {
         confirm(&chosen)?;
     }
@@ -257,17 +258,63 @@ pub(crate) fn confirm(disks: &[ck_writer::Disk]) -> Result<(), Error> {
     }
 }
 
+/// What to do when a disk may not be opened.
+const ADMIN_HINT: &str = if cfg!(target_os = "macos") {
+    "access denied: run the command again with sudo"
+} else {
+    "access denied: open a terminal as administrator and run the command again"
+};
+
 /// Writing a disk without administrator rights fails with "access denied"; say what to do.
 pub(crate) fn admin_hint(error: ck_writer::Error) -> Error {
     if let ck_writer::Error::Io { source, .. } = &error
         && source.kind() == io::ErrorKind::PermissionDenied
     {
-        return Error::io(
-            "access denied: open a terminal as administrator and run the command again",
-            io::Error::from(io::ErrorKind::PermissionDenied),
-        );
+        return Error::io(ADMIN_HINT, io::Error::from(io::ErrorKind::PermissionDenied));
     }
     error.into()
+}
+
+/// On macOS a stick's raw device belongs to root, and the disk is unmounted before it is opened.
+/// Ask for `sudo` now, so that a stick is not unmounted for a write that cannot happen. A disk
+/// image attached by the user belongs to the user and needs no `sudo`.
+#[cfg(target_os = "macos")]
+fn check_access(disks: &[ck_writer::Disk]) -> Result<(), Error> {
+    use std::os::unix::fs::MetadataExt;
+
+    let me = std::process::Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
+        .ok_or_else(|| Error::io("finding out who runs this", io::ErrorKind::Other.into()))?;
+    if me == 0 {
+        return Ok(());
+    }
+    for disk in disks {
+        let device = ck_writer::disk_path(disk.number);
+        let owner = std::fs::metadata(&device)
+            .map_err(|e| Error::io(format!("looking at {}", device.display()), e))?
+            .uid();
+        if owner != me {
+            return Err(Error::io(
+                ADMIN_HINT,
+                io::Error::from(io::ErrorKind::PermissionDenied),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::unnecessary_wraps)]
+fn check_access(_disks: &[ck_writer::Disk]) -> Result<(), Error> {
+    Ok(())
 }
 
 /// Shows a target's bar: the writing, then the checking once the writing is over.

@@ -88,6 +88,21 @@ jobs:
         with:
           shared-key: forge-windows-test
       - run: cargo test --workspace
+  macos-test:
+    # The disk code for macOS reads recorded diskutil plists, so it is tested here without a disk.
+    # Off until the repository variable CK_MACOS_CI is `true`: on 2026-11-24 GitHub refused to start
+    # macOS runners for this organization ("configuration macos-14-arm64-us-default is not supported").
+    if: vars.CK_MACOS_CI == 'true'
+    runs-on: macos-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forge-macos-test
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
   egui:
     runs-on: windows-latest
     env:
