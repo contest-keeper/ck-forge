@@ -14,8 +14,8 @@ a `ck-forge` command already, so a screen only calls the function.
 | Profile editor | `wallpaper_preview` | `wallpaper_data_url` | none needed | [ ] |
 | Profile editor | `hub_list_profiles`, `hub_load_profile`, `hub_save_profile` | `list_profiles`, `load_hub_profile`, `save_hub_profile` | `hub profiles`, `hub pull`, `hub push` | [ ] |
 | Image picker | `list_catalog`, `make_base_image`, `import_base_image` | `catalog`, `create_base_image`, `import_image` | `image catalog`, `image create`, `image import` | [ ] |
-| Image picker | `list_hub_images`, `download_hub_image` | `list_hub_images`, `download_hub_image` | `hub images`, `hub download` | [ ] |
-| Image picker | `signature_required`, `enrolment_supported` | `requires_signed_settings`, `supports_enrolment` | `image support` | [ ] |
+| Image picker | `list_hub_images`, `download_hub_image` | `list_hub_images`, `download_hub_image` | `hub images`, `hub download` | [x] |
+| Image picker | `signature_required`, `enrolment_supported` | `requires_signed_settings`, `supports_enrolment` | `image support` | [x] |
 | Write sticks | `list_disks`, `write_stick` | `ck_writer::list_disks`, the elevated `ck-forge stick write` with its JSON progress file | `stick list`, `stick write` | [ ] |
 | Retire and re-key | `hub_list_sticks`, `hub_retire_stick` | `list_sticks`, `retire_stick_credential` | `hub sticks`, `hub retire` | [ ] |
 

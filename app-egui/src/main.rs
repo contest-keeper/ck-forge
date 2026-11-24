@@ -2,6 +2,7 @@
 
 mod app;
 mod hub;
+mod images;
 mod profile;
 
 fn main() -> eframe::Result {
