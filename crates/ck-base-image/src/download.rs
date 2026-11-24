@@ -89,8 +89,3 @@ pub fn fetch(
     fs::rename(&part, &target).map_err(|e| Error::io("finishing the download", e))?;
     Ok(target)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-}
