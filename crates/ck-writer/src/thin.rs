@@ -1,12 +1,8 @@
-//! Thin stick images.
+//! Thin stick images: the start of a base image, where a stick's settings live, plus a manifest
+//! naming the base for the rest (about 130 MB instead of a 30 GB copy).
 //!
-//! A stick's settings live near the start of the image, so an image made for one stick differs from
-//! the base only in its first few hundred megabytes. A thin image is that start plus a manifest
-//! naming the base for the rest: about 130 MB of disk instead of a 30 GB copy.
-//!
-//! The head file is a raw image start, so `image show` and `image configure` work on it. It does
-//! not boot by itself: [`open`] refuses it unless its manifest is there and the base is still the
-//! one it was made from.
+//! The head is a raw image start, so `image show` and `image configure` work on it. [`open`]
+//! refuses it unless its manifest is there and the base is still the one it was made from.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};

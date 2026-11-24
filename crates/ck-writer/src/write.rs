@@ -72,24 +72,18 @@ pub fn write_image_to_all(
     write_images(&jobs, progress)
 }
 
-/// Writes every image of `jobs` (a pair of an image and its target) at once, then reads every
-/// target back and compares.
+/// Writes every image of `jobs` (an image and its target) at once, then reads every target back
+/// and compares.
 ///
-/// The images must be the same size and made of the same base. What they share is read once. Each
-/// target is written by its own thread, so a batch takes about as long as its slowest stick. While
-/// a target is written, a second thread reads back what was flushed a distance ago, so the check
-/// sees what the device holds and not what was just handed to it. The last part is read after the
-/// final flush.
+/// The images must be the same size and made of the same base; what they share is read once. Each
+/// target has its own writer thread, and a checker reads back what was flushed a distance ago, so
+/// the check sees the device and not the cache. A target that already holds a similar image is
+/// written only where it differs; the final check still reads all of it.
 ///
-/// A target that already holds a similar image is written only where it differs, which is faster
-/// because reads are faster than writes on a stick. The final check still reads the whole target.
-/// This relies on reads of a device coming from the device and not from a cache.
-///
-/// Returns one result per job, in order: the SHA-256 of that target's image as hex, or what went
-/// wrong with that target. One failing target does not stop the others; an image that cannot be
-/// opened, or images that do not belong together, fail the whole call before anything is written.
-/// `progress` gets the job index, the phase, the bytes done and the total, always on the calling
-/// thread.
+/// Returns one result per job, in order: the image's SHA-256 as hex, or what went wrong with that
+/// target. One failing target does not stop the others; an image that cannot be opened, or images
+/// that do not belong together, fail the whole call before anything is written. `progress` gets
+/// the job index, the phase, the bytes done and the total, always on the calling thread.
 pub fn write_images(
     jobs: &[(PathBuf, PathBuf)],
     progress: impl FnMut(usize, Phase, u64, u64),
