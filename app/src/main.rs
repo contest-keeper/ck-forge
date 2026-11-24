@@ -9,7 +9,6 @@ mod hub;
 mod profiles;
 mod sticks;
 mod update;
-mod vault;
 
 fn main() {
     tauri::Builder::default()

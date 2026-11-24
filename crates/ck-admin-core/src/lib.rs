@@ -12,6 +12,7 @@ mod image;
 mod profile;
 mod registry;
 mod stick;
+pub mod vault;
 mod wallpaper;
 
 pub use ck_base_image::{

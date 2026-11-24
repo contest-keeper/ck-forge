@@ -1,7 +1,7 @@
 //! Keeps the Hub sign-in between runs, in the Windows Credential Manager. Other systems keep
-//! nothing: the admin signs in again each time.
+//! nothing: the admin signs in again each time. The window and the command line share the entry.
 
-use ck_admin_core::HubSession;
+use crate::hub::HubSession;
 
 #[cfg(windows)]
 mod store {

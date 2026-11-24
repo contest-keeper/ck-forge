@@ -41,10 +41,6 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 semver = "1"
 
-# Keeps the Hub sign-in between runs, in the Windows Credential Manager.
-[target.'cfg(windows)'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
-
 [profile.dev.package.sha2]
 opt-level = 3
 
