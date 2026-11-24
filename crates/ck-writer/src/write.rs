@@ -8,6 +8,7 @@ use std::thread::{self, ScopedJoinHandle};
 use sha2::{Digest, Sha256};
 
 use crate::Error;
+use crate::backend::DiskBackend;
 use crate::thin::{self, Parts};
 
 /// Disks only take whole sectors, so the last block is padded with zeros to this size.
@@ -33,11 +34,10 @@ pub enum Phase {
     Verifying,
 }
 
-/// The path that opens disk `number` as a raw device. The two leading backslashes matter: with one,
-/// Windows takes it for a file named `PhysicalDriveN` on the current drive.
+/// The path that opens disk `number` as a raw device: `\\.\PhysicalDriveN` on Windows.
 #[must_use]
 pub fn disk_path(number: u32) -> PathBuf {
-    PathBuf::from(format!(r"\\.\PhysicalDrive{number}"))
+    crate::backend::system().raw_path(number)
 }
 
 /// Copies `image` to `target`, then reads `target` back and compares. Returns the image's SHA-256
@@ -97,18 +97,27 @@ pub fn write_disk_images(
     disks: &[crate::Disk],
     progress: impl FnMut(usize, Phase, u64, u64),
 ) -> Result<Vec<Result<Written, Error>>, Error> {
+    write_disk_images_with(crate::backend::system(), jobs, disks, progress)
+}
+
+pub(crate) fn write_disk_images_with(
+    backend: &dyn DiskBackend,
+    jobs: &[(PathBuf, PathBuf)],
+    disks: &[crate::Disk],
+    progress: impl FnMut(usize, Phase, u64, u64),
+) -> Result<Vec<Result<Written, Error>>, Error> {
     if jobs.len() != disks.len() {
         return Err(Error::io(
             "matching images with the prepared disks",
             io::ErrorKind::InvalidInput.into(),
         ));
     }
-    write_targets(jobs, Some(disks), progress)
+    write_targets(jobs, Some((backend, disks)), progress)
 }
 
 fn write_targets(
     jobs: &[(PathBuf, PathBuf)],
-    disks: Option<&[crate::Disk]>,
+    disks: Option<(&dyn DiskBackend, &[crate::Disk])>,
     mut progress: impl FnMut(usize, Phase, u64, u64),
 ) -> Result<Vec<Result<Written, Error>>, Error> {
     let images: Vec<&Path> = jobs.iter().map(|(image, _)| image.as_path()).collect();
@@ -123,15 +132,15 @@ fn write_targets(
     let mut writers = Vec::new();
     for (index, parts) in parts.into_iter().enumerate() {
         let (image, target) = (&jobs[index].0, &jobs[index].1);
-        if let Some(disks) = disks {
+        if let Some((backend, disks)) = disks {
             let disk = &disks[index];
-            if *target != disk_path(disk.number) {
+            if *target != backend.raw_path(disk.number) {
                 return Err(Error::Prepare {
                     number: disk.number,
                     detail: "the write path does not match the prepared disk".to_owned(),
                 });
             }
-            disk.recheck_identity()?;
+            disk.recheck_identity(backend)?;
         }
         // Windows opens physical drives with OPEN_EXISTING. Only file targets may be created.
         match OpenOptions::new()
@@ -743,5 +752,104 @@ mod tests {
             hex(&hash.finalize())
         });
         assert_eq!(hash, sha(5, total));
+    }
+
+    mod disks {
+        use super::*;
+        use crate::backend::fake::Fake;
+        use crate::disk::prepare_with;
+
+        fn stick() -> crate::Disk {
+            crate::Disk {
+                number: 5,
+                friendly_name: Some("Stick".into()),
+                serial_number: Some("S1".into()),
+                device_path: Some("/dev/fake5".into()),
+                size: 64 * 1024 * 1024,
+                bus_type: "USB".into(),
+                is_system: false,
+                is_boot: false,
+            }
+        }
+
+        fn image(dir: &Path) -> PathBuf {
+            let path = dir.join("image.img");
+            std::fs::write(&path, vec![9_u8; 3 * 1024 * 1024 + 700]).unwrap();
+            path
+        }
+
+        #[test]
+        fn a_prepared_disk_is_written_through_the_backend_and_read_back() {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Fake::new(dir.path().join("raw"), vec![stick()]);
+            let disk = stick();
+            let image = image(dir.path());
+            std::fs::write(backend.raw_path(5), b"").unwrap();
+
+            prepare_with(&backend, &disk, 1000, false).unwrap();
+            assert_eq!(backend.prepared(), [5]);
+            let results = write_disk_images_with(
+                &backend,
+                &[(image.clone(), backend.raw_path(5))],
+                &[disk],
+                |_, _, _, _| {},
+            )
+            .unwrap();
+            assert!(results[0].is_ok());
+            let written = std::fs::read(backend.raw_path(5)).unwrap();
+            assert_eq!(
+                &written[..3 * 1024 * 1024 + 700],
+                &std::fs::read(&image).unwrap()[..]
+            );
+        }
+
+        #[test]
+        fn a_disk_that_changed_since_it_was_listed_is_never_opened() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut replaced = stick();
+            replaced.serial_number = Some("OTHER".into());
+            let backend = Fake::new(dir.path().join("raw"), vec![replaced]);
+            let image = image(dir.path());
+            std::fs::write(backend.raw_path(5), b"keep").unwrap();
+
+            let error = write_disk_images_with(
+                &backend,
+                &[(image, backend.raw_path(5))],
+                &[stick()],
+                |_, _, _, _| {},
+            )
+            .unwrap_err();
+            assert!(matches!(error, Error::Prepare { number: 5, .. }), "{error}");
+            assert_eq!(std::fs::read(backend.raw_path(5)).unwrap(), b"keep");
+        }
+
+        #[test]
+        fn a_refused_disk_is_not_prepared() {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Fake::new(dir.path().join("raw"), vec![stick()]);
+            let mut system = stick();
+            system.is_system = true;
+            let error = prepare_with(&backend, &system, 1000, false).unwrap_err();
+            assert!(matches!(error, Error::Refused { number: 5, .. }));
+            assert_eq!(backend.prepared(), Vec::<u32>::new());
+        }
+
+        #[test]
+        fn the_path_must_be_the_one_of_the_prepared_disk() {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Fake::new(dir.path().join("raw"), vec![stick()]);
+            let image = image(dir.path());
+            let other = dir.path().join("elsewhere.img");
+
+            let error = write_disk_images_with(
+                &backend,
+                &[(image, other.clone())],
+                &[stick()],
+                |_, _, _, _| {},
+            )
+            .unwrap_err();
+            assert!(matches!(error, Error::Prepare { .. }));
+            assert!(!other.exists());
+        }
     }
 }
