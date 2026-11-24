@@ -1,9 +1,10 @@
-use crate::{hub, profile};
+use crate::{hub, images, profile};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Page {
     Hub,
     Profile,
+    Images,
 }
 
 /// The window. Screens are added here in the order of the plan: Hub sign-in, profile editor,
@@ -12,6 +13,7 @@ pub struct Forge {
     page: Page,
     hub: hub::Screen,
     profile: profile::Screen,
+    images: images::Screen,
 }
 
 impl Default for Forge {
@@ -20,6 +22,7 @@ impl Default for Forge {
             page: Page::Hub,
             hub: hub::Screen::default(),
             profile: profile::Screen::default(),
+            images: images::Screen::default(),
         }
     }
 }
@@ -30,11 +33,13 @@ impl eframe::App for Forge {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.page, Page::Hub, "Hub");
                 ui.selectable_value(&mut self.page, Page::Profile, "Profile");
+                ui.selectable_value(&mut self.page, Page::Images, "Images");
             });
         });
         eframe::egui::CentralPanel::default().show(ui, |ui| match self.page {
             Page::Hub => self.hub.show(ui),
             Page::Profile => self.profile.show(ui),
+            Page::Images => self.images.show(ui),
         });
     }
 }
