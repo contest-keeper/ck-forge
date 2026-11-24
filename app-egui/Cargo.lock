@@ -353,6 +353,7 @@ dependencies = [
  "ck-admin-core",
  "eframe",
  "open",
+ "serde_json",
 ]
 
 [[package]]
