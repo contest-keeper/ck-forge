@@ -7,6 +7,7 @@ mod file;
 mod hardware;
 mod hub;
 mod hub_images;
+mod hub_profile;
 mod image;
 mod profile;
 mod registry;
@@ -31,6 +32,7 @@ pub use hub_images::{
     HubImage, HubImageDownload, HubImageStep, download_hub_image, list_hub_images,
     prepare_hub_image_download,
 };
+pub use hub_profile::{HUB_URL, LoadedProfile, load_hub_profile, save_hub_profile};
 pub use image::{
     Built, EnrolmentBuild, ImageConfiguration, SignSettings, build_enrolment_image, build_image,
     build_thin_image, check_one_stick, configure_image, enrolment_config_sha256,

@@ -585,8 +585,8 @@ mod signed_in {
 
 mod profiles {
     use ck_admin_core::{
-        Profile, fetch_profile, list_profiles, retire_stick_credential, sign_in_with_code,
-        upload_profile,
+        Profile, fetch_profile, list_profiles, load_hub_profile, retire_stick_credential,
+        sign_in_with_code, upload_profile,
     };
 
     use super::{fake_hub, me, reply};
@@ -663,6 +663,45 @@ mod profiles {
                 .skip(1)
                 .all(|r| r.to_lowercase().contains("authorization: bearer tok123"))
         );
+    }
+
+    #[test]
+    fn a_profile_of_the_hub_is_saved_beside_its_wallpaper_and_never_outside_its_folder() {
+        let settings = serde_json::to_value(&Profile::template().settings).expect("json");
+        let profile_reply = |name: &str| {
+            reply(
+                "200 OK",
+                "",
+                &format!(
+                    r#"{{"id":"p1","name":"Round","settings":{settings},"wallpaper":{{"name":"{name}"}}}}"#
+                ),
+            )
+        };
+        let dir = tempfile::TempDir::new().expect("dir");
+
+        let mut replies = signed_in_replies();
+        replies.push(profile_reply("w.png"));
+        replies.push(reply("200 OK", "", "PNGBYTES"));
+        replies.push(profile_reply("../w.png"));
+        replies.push(reply("200 OK", "", "PNGBYTES"));
+        let (hub, _handle) = fake_hub(replies);
+        let session = sign_in_with_code(&hub, "c").expect("session");
+
+        let loaded = load_hub_profile(&hub, &session, "p1", dir.path()).expect("load");
+        assert_eq!(
+            loaded.path,
+            dir.path().join("p1").join("contest-profile.json")
+        );
+        assert_eq!(loaded.profile.hub_id.as_deref(), Some("p1"));
+        assert_eq!(
+            std::fs::read(dir.path().join("p1").join("w.png")).expect("wallpaper"),
+            b"PNGBYTES"
+        );
+        assert_eq!(Profile::load(&loaded.path).expect("saved").name, "Round");
+
+        assert!(load_hub_profile(&hub, &session, "p1", dir.path()).is_err());
+        assert!(!dir.path().join("w.png").exists());
+        assert!(load_hub_profile(&hub, &session, "../p1", dir.path()).is_err());
     }
 
     #[test]

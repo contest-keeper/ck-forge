@@ -13,21 +13,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ck_admin_core::{
-    HubProfile, HubSession, Profile, ProfileSummary, Pushed, Wallpaper, folder_of,
-};
+use ck_admin_core::{HubSession, Profile, ProfileSummary, Pushed};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use crate::profiles::{message, registry_of};
 
-/// Where sticks report and where admins sign in. Sticks only get this address when the admin who
-/// made them was signed in. Every build from develop, a pull request or a local checkout uses the
-/// develop Hub; only the release workflow sets `CK_HUB_URL` to the production Hub when it compiles.
-pub const HUB_URL: &str = match option_env!("CK_HUB_URL") {
-    Some(url) => url,
-    None => "https://hub.dev.contestkeeper.com",
-};
+pub use ck_admin_core::HUB_URL;
 
 const SIGN_IN_WAIT: Duration = Duration::from_secs(180);
 
@@ -200,41 +192,18 @@ pub async fn hub_load_profile(
     state: State<'_, HubState>,
     id: String,
 ) -> Result<Loaded, String> {
-    if id.is_empty()
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("the Hub gave a profile id that cannot be used as a folder name".to_owned());
-    }
-    let remote = state.as_admin(|session| ck_admin_core::fetch_profile(HUB_URL, session, &id))?;
     let folder = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
-        .join("profiles")
-        .join(&id);
-    std::fs::create_dir_all(&folder)
-        .map_err(|e| format!("could not make {}: {e}", folder.display()))?;
-    let mut settings = remote.settings;
-    if let Some(wallpaper) = &remote.wallpaper {
-        // The name is checked with the settings when the profile is saved, before it is trusted.
-        settings.branding.wallpaper = Some(wallpaper.name.clone());
-        if wallpaper.name.contains(['/', '\\']) || wallpaper.name == ".." {
-            return Err("the Hub gave a wallpaper name that is not a file name".to_owned());
-        }
-        std::fs::write(folder.join(&wallpaper.name), &wallpaper.bytes)
-            .map_err(|e| format!("could not save the wallpaper: {e}"))?;
-    }
-    let profile = Profile {
-        name: remote.name,
-        settings,
-        hub_id: Some(id),
-        stick_key_window: remote.stick_key_window,
-    };
-    let path = folder.join("contest-profile.json");
-    profile.save(&path).map_err(|e| message(&e))?;
-    Ok(Loaded { profile, path })
+        .join("profiles");
+    let loaded = state.as_admin(|session| {
+        ck_admin_core::load_hub_profile(HUB_URL, session, &id, &folder)
+    })?;
+    Ok(Loaded {
+        profile: loaded.profile,
+        path: loaded.path,
+    })
 }
 
 /// Saves the profile to the Hub, with its wallpaper, and remembers the Hub's id in the local file.
@@ -242,23 +211,7 @@ pub async fn hub_load_profile(
 pub async fn hub_save_profile(
     state: State<'_, HubState>,
     path: PathBuf,
-    mut profile: Profile,
+    profile: Profile,
 ) -> Result<Profile, String> {
-    profile.credential_scope().map_err(|e| message(&e))?;
-    let id = profile
-        .hub_id
-        .clone()
-        .unwrap_or_else(ck_admin_core::new_profile_id);
-    let wallpaper =
-        Wallpaper::read(&profile.settings, folder_of(&path)).map_err(|e| message(&e))?;
-    let upload = HubProfile {
-        name: profile.name.clone(),
-        settings: profile.settings.clone(),
-        stick_key_window: profile.stick_key_window.clone(),
-        wallpaper,
-    };
-    state.as_admin(|session| ck_admin_core::upload_profile(HUB_URL, session, &id, &upload))?;
-    profile.hub_id = Some(id);
-    profile.save(&path).map_err(|e| message(&e))?;
-    Ok(profile)
+    state.as_admin(|session| ck_admin_core::save_hub_profile(HUB_URL, session, &path, profile))
 }
