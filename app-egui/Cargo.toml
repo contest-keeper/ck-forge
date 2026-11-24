@@ -27,6 +27,7 @@ missing_errors_doc = "allow"
 
 [dependencies]
 ck-admin-core = { path = "../crates/ck-admin-core" }
+ck-protocol = { git = "https://github.com/contest-keeper/ck-protocol", rev = "f4796fe7f0546076f1013fb842f85af30dbfb05d", version = "0.1.0" }
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 open = "5"
 

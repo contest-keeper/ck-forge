@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use ck_admin_core::{Profile, add_wallpaper};
+use ck_protocol::Bookmark;
 
 #[derive(Default)]
 pub struct Screen {
@@ -24,6 +25,33 @@ fn parse_domains(text: &str) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+fn bookmarks_ui(ui: &mut eframe::egui::Ui, bookmarks: &mut Vec<Bookmark>) {
+    let mut remove = None;
+    for (at, bookmark) in bookmarks.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(&mut bookmark.title);
+            ui.text_edit_singleline(&mut bookmark.url);
+            if ui.button("Remove").clicked() {
+                remove = Some(at);
+            }
+        });
+    }
+    if let Some(at) = remove {
+        bookmarks.remove(at);
+    }
+    if ui.button("Add a bookmark").clicked() {
+        bookmarks.push(new_bookmark());
+    }
+}
+
+/// An empty bookmark for the admin to fill in; the check reports it until it has a title and a link.
+fn new_bookmark() -> Bookmark {
+    Bookmark {
+        title: String::new(),
+        url: String::new(),
+    }
 }
 
 impl Screen {
@@ -76,6 +104,26 @@ impl Screen {
                     ui.end_row();
                 }
             });
+        let home = profile
+            .settings
+            .branding
+            .home_page
+            .get_or_insert_with(String::new);
+        ui.horizontal(|ui| {
+            ui.label("Home page");
+            ui.text_edit_singleline(home);
+        });
+        if home.trim().is_empty() {
+            profile.settings.branding.home_page = None;
+        }
+        ui.label("Welcome text");
+        ui.text_edit_multiline(&mut profile.settings.branding.welcome_text);
+        ui.checkbox(
+            &mut profile.settings.block_bluetooth,
+            "Block Bluetooth on the stick",
+        );
+        ui.label("Bookmarks");
+        bookmarks_ui(ui, &mut profile.settings.branding.bookmarks);
         ui.label("Allowed sites, one per line");
         if ui.text_edit_multiline(&mut self.domains).changed() {
             profile.settings.network.allowed_domains = parse_domains(&self.domains);
@@ -152,6 +200,23 @@ mod tests {
             parse_domains(" codeforces.com \n\n  example.org\n"),
             ["codeforces.com", "example.org"]
         );
+    }
+
+    #[test]
+    fn a_new_bookmark_is_reported_until_it_is_filled_in() {
+        let mut profile = Profile::template();
+        let before = profile.problems().len();
+        profile.settings.branding.bookmarks.push(new_bookmark());
+        assert!(profile.problems().len() > before);
+        let bookmark = profile
+            .settings
+            .branding
+            .bookmarks
+            .last_mut()
+            .expect("added");
+        bookmark.title = "Judge".to_owned();
+        bookmark.url = "https://judge.example.org".to_owned();
+        assert_eq!(profile.problems(), []);
     }
 
     #[test]

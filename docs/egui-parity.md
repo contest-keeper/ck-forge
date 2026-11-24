@@ -8,7 +8,7 @@ a `ck-forge` command already, so a screen only calls the function.
 | Screen | Window command | Engine function | CLI | egui |
 |---|---|---|---|---|
 | Hub sign-in | `hub_sign_in`, `hub_sign_out`, `hub_status` | `sign_in_url`, `sign_in_with_code`, `sign_out`, `vault` | `hub sign-in`, `hub sign-out`, `hub status` | [x] |
-| Profile editor | `new_profile`, `open_profile`, `save_profile`, `check_profile` | `Profile` | `profile new`, `profile check` | [x] (fields: name, contest, team, site, computer name, USB label, server, sites) |
+| Profile editor | `new_profile`, `open_profile`, `save_profile`, `check_profile` | `Profile` | `profile new`, `profile check` | [x] (fields: name, contest, team, site, computer name, USB label, server, sites, home page, welcome text, bookmarks, Bluetooth; Wi-Fi and recording still open) |
 | Profile editor | `save_profile_in_forge_folder` | `Profile::save` into the app data folder | none needed | [ ] |
 | Profile editor | `add_wallpaper` | `add_wallpaper` | `profile wallpaper` | [x] |
 | Profile editor | `wallpaper_preview` | `wallpaper_data_url` | none needed | [ ] |
