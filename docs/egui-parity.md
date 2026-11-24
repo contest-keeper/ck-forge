@@ -20,3 +20,22 @@ a `ck-forge` command already, so a screen only calls the function.
 | Retire and re-key | `hub_list_sticks`, `hub_retire_stick` | `list_sticks`, `retire_stick_credential` | `hub sticks`, `hub retire` | [x] |
 
 Also to carry over: the updater (`app/src/update.rs`) and the Windows elevation of the stick write.
+
+## R6.3 checklist (prepared, not done)
+
+R6.3 removes `app/`, `ui/` and their CI jobs. It starts only when the user agrees and every row above
+is ticked. Steps, in order:
+
+1. Parity: every row of the table is `[x]`, and each screen was used on a Windows PC against the dev Hub:
+   sign in, edit and save a profile, download a base image, write and verify two sticks, retire a key.
+2. The elevated write works from the egui window (UAC prompt, JSON progress file, cancel) and a stick
+   booted from it passes the VM test.
+3. The updater and the installer of the egui window exist (`app/src/update.rs`, `tauri.conf.json`
+   `bundle` and `updater` settings, the release workflow), and one release was installed over the old one.
+4. Remove, in one PR: `app/`, `ui/`, the `window` and `ui` jobs of `.github/workflows/pr.yml`, the
+   `app` and `ui` steps of `release.yml`, `tools/` scripts that only the window uses, and the
+   Svelte and Tauri words in `README.md`, `AGENTS.md`, `CLAUDE.md` and `docs/`.
+5. In `.github`, drop `ui / check` from the required checks of this repository (a user task: branch
+   protection is not editable from a session).
+6. Check: `rg -i "tauri|svelte|pnpm" .` finds nothing that matters, `cargo machete` is clean, the
+   release workflow builds the egui installer.
