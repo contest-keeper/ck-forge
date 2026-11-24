@@ -28,10 +28,14 @@ is ticked. Steps, in order:
 
 1. Parity: every row of the table is `[x]`, and each screen was used on a Windows PC against the dev Hub:
    sign in, edit and save a profile, download a base image, write and verify two sticks, retire a key.
+   Wi-Fi (including its secret handling) and recording are also required here: both must be implemented in
+   the egui window and tested on Windows, even where the profile-editor row is already ticked.
 2. The elevated write works from the egui window (UAC prompt, JSON progress file, cancel) and a stick
    booted from it passes the VM test.
 3. The updater and the installer of the egui window exist (`app/src/update.rs`, `tauri.conf.json`
    `bundle` and `updater` settings, the release workflow), and one release was installed over the old one.
+   The updater is a parity row of its own: on Windows, an older egui build must find the newer release,
+   download it, verify it and restart into it.
 4. Remove, in one PR: `app/`, `ui/`, the `window` and `ui` jobs of `.github/workflows/pr.yml`, the
    `app` and `ui` steps of `release.yml`, `tools/` scripts that only the window uses, and the
    Svelte and Tauri words in `README.md`, `AGENTS.md`, `CLAUDE.md` and `docs/`.
