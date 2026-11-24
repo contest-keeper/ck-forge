@@ -169,6 +169,11 @@ pub(crate) enum ImageCommand {
         #[arg(long, default_value_t = 90)]
         timeout_minutes: u64,
     },
+    /// Say whether a base image needs Hub-signed settings and supports first-boot enrolment
+    Support {
+        /// The base image to read
+        base: PathBuf,
+    },
     /// Print the settings on a stick image (the secret is not shown)
     Show {
         /// The stick image to read

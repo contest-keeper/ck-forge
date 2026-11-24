@@ -20,7 +20,7 @@ use serde_json::json;
 use cli::{Cli, Command, ImageCommand, ProfileCommand, RegistryCommand, StickCommand};
 use image::{
     config_text, default_cache, image_build, image_catalog, image_create, image_import,
-    show_config, warn,
+    show_config, show_support, warn,
 };
 use profile::{profile_check, profile_new, profile_wallpaper};
 use registry::{registry_list, registry_push};
@@ -127,6 +127,7 @@ fn run(command: Command) -> Result<String, Error> {
             timeout: Duration::from_secs(timeout_minutes * 60),
             patch,
         }),
+        Command::Image(ImageCommand::Support { base }) => show_support(&base),
         Command::Image(ImageCommand::Show { image }) => show_config(&image),
         Command::Registry(RegistryCommand::List { registry }) => registry_list(&registry.registry),
         Command::Registry(RegistryCommand::Push {

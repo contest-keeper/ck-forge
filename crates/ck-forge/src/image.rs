@@ -7,7 +7,7 @@ use crate::cli::ExtraSettings;
 use ck_admin_core::{
     CreateOptions, CreateStep, Error, ImageConfiguration, Profile, Wallpaper, build_image,
     build_thin_image, catalog, create_base_image, folder_of, image_configuration, import_image,
-    local_now,
+    local_now, requires_signed_settings, supports_enrolment,
 };
 use ck_protocol::{LocalDateTime, Settings, StickConfig, StickId, render_computer_name};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -134,6 +134,15 @@ pub(crate) fn config_text(config: &StickConfig) -> String {
         config.machine_number,
         &config.settings,
     )
+}
+
+pub(crate) fn show_support(base: &Path) -> Result<String, Error> {
+    let yes = |value: bool| if value { "yes" } else { "no" };
+    Ok(format!(
+        "Settings must be signed by the Hub: {}\nFirst-boot enrolment: {}\n",
+        yes(requires_signed_settings(base)?),
+        yes(supports_enrolment(base)?)
+    ))
 }
 
 pub(crate) fn show_config(image: &Path) -> Result<String, Error> {
