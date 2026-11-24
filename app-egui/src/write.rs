@@ -64,14 +64,34 @@ fn command_line(image: &str, number: &str) -> String {
     } else {
         ""
     };
-    // Inside single quotes only the quote itself is special: `'\''` in a POSIX shell, `''` in
-    // PowerShell.
-    let escaped = if cfg!(windows) { "''" } else { r"'\''" };
-    let image = image.trim().replace('\'', escaped);
+    let image = if cfg!(windows) {
+        quote_powershell(image.trim())
+    } else {
+        quote_posix(image.trim())
+    };
     format!(
-        "{sudo}ck-forge stick write '{image}' --disk {}",
+        "{sudo}ck-forge stick write {image} --disk {}",
         number.trim()
     )
+}
+
+/// `text` as one single-quoted word of a POSIX shell: only the quote itself is special inside.
+fn quote_posix(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// `text` as one single-quoted string of PowerShell, which ends the string at any of its four
+/// kinds of single quote, so each is doubled.
+fn quote_powershell(text: &str) -> String {
+    let mut quoted = String::from("'");
+    for c in text.chars() {
+        quoted.push(c);
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            quoted.push(c);
+        }
+    }
+    quoted.push('\'');
+    quoted
 }
 
 impl Screen {
@@ -141,14 +161,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_command_quotes_the_image_for_a_shell() {
-        let command = command_line(" /tmp/it's.img ", " 4 ");
+    fn the_command_quotes_the_image_for_the_shell_of_this_system() {
+        let command = command_line(" /tmp/it's a.img ", " 4 ");
         let quoted = if cfg!(windows) {
-            "'/tmp/it''s.img'"
+            "'/tmp/it''s a.img'"
         } else {
-            r"'/tmp/it'\''s.img'"
+            r"'/tmp/it'\''s a.img'"
         };
         assert!(command.ends_with(&format!("ck-forge stick write {quoted} --disk 4")));
         assert_eq!(command.starts_with("sudo "), cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn powershell_quotes_every_kind_of_single_quote() {
+        // PowerShell ends a string at the typographic quotes too.
+        assert_eq!(
+            quote_powershell("x\u{2019}; calc; #\u{2018}'"),
+            "'x\u{2019}\u{2019}; calc; #\u{2018}\u{2018}'''"
+        );
+        assert_eq!(quote_posix("a'b"), r"'a'\''b'");
     }
 }
