@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>APFSPhysicalStores</key>
+	<array>
+		<dict>
+			<key>APFSPhysicalStore</key>
+			<string>disk0s2</string>
+		</dict>
+	</array>
+	<key>BusProtocol</key>
+	<string>Apple Fabric</string>
+	<key>DeviceIdentifier</key>
+	<string>disk3s1s1</string>
+	<key>Internal</key>
+	<true/>
+	<key>ParentWholeDisk</key>
+	<string>disk3</string>
+	<key>Size</key>
+	<integer>994662584320</integer>
+	<key>WholeDisk</key>
+	<false/>
+</dict>
+</plist>

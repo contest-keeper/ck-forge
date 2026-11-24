@@ -6,6 +6,7 @@
 mod backend;
 mod disk;
 mod error;
+mod macos;
 mod process;
 pub mod thin;
 #[cfg(any(windows, test))]

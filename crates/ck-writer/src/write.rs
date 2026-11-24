@@ -769,6 +769,7 @@ mod tests {
                 bus_type: "USB".into(),
                 is_system: false,
                 is_boot: false,
+                blocked: None,
             }
         }
 

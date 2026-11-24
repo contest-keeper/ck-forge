@@ -16,6 +16,9 @@ pub struct Disk {
     pub bus_type: String,
     pub is_system: bool,
     pub is_boot: bool,
+    /// Set by a system that knows more than the bus says: why this disk is never written.
+    #[serde(default)]
+    pub blocked: Option<String>,
 }
 
 /// Every disk of this computer. Needs no administrator rights.
@@ -41,7 +44,10 @@ impl Disk {
             reason: reason.to_owned(),
         };
         if self.is_system || self.is_boot {
-            return Err(refuse("the disk Windows runs from"));
+            return Err(refuse("the disk this computer runs from"));
+        }
+        if let Some(reason) = &self.blocked {
+            return Err(refuse(reason));
         }
         let virtual_disk = self.bus_type.contains("Virtual");
         if virtual_disk && !allow_virtual {
@@ -124,6 +130,7 @@ mod tests {
             bus_type: bus.into(),
             is_system: false,
             is_boot: false,
+            blocked: None,
         }
     }
 
