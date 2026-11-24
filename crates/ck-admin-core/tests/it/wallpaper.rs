@@ -161,3 +161,35 @@ fn the_picture_must_be_the_one_the_profile_names_and_nothing_is_copied_otherwise
     assert!(!out.exists(), "all three stop before the large copy");
     assert!(!registry.exists());
 }
+
+#[test]
+fn a_chosen_picture_is_copied_next_to_the_profile_and_replaces_one_of_another_type() {
+    let dir = TempDir::new().expect("temp dir");
+    let profile = dir.path().join("p.json");
+    std::fs::write(dir.path().join("wallpaper.bmp"), b"old").expect("old picture");
+    let source = dir.path().join("pic.PNG");
+    std::fs::write(&source, b"\x89PNG").expect("picture");
+
+    assert_eq!(
+        ck_admin_core::add_wallpaper(&profile, &source).expect("added"),
+        "wallpaper.png"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("wallpaper.png")).expect("copy"),
+        b"\x89PNG"
+    );
+    assert!(!dir.path().join("wallpaper.bmp").exists());
+    let url = ck_admin_core::wallpaper_data_url(&profile, "wallpaper.png").expect("preview");
+    assert!(url.starts_with("data:image/png;base64,"));
+    assert_eq!(
+        ck_admin_core::wallpaper_data_url(&profile, "../p.png"),
+        None
+    );
+
+    let exe = dir.path().join("pic.exe");
+    std::fs::write(&exe, b"x").expect("file");
+    assert!(matches!(
+        ck_admin_core::add_wallpaper(&profile, &exe),
+        Err(Error::Wallpaper(_))
+    ));
+}

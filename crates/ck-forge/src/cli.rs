@@ -80,6 +80,13 @@ pub(crate) enum ProfileCommand {
         /// The profile to check
         file: PathBuf,
     },
+    /// Copy a picture next to a profile and make it the profile's wallpaper
+    Wallpaper {
+        /// The profile to change
+        file: PathBuf,
+        /// A PNG, JPG, WEBP or BMP picture
+        picture: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]

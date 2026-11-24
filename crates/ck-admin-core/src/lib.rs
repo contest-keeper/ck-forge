@@ -40,4 +40,4 @@ pub use image::{
 pub use profile::{Profile, StickKeyWindow};
 pub use registry::{CredentialScope, Registry, RegistryEntry};
 pub use stick::{local_now, make_stick_config};
-pub use wallpaper::{MAX_WALLPAPER_BYTES, Wallpaper};
+pub use wallpaper::{MAX_WALLPAPER_BYTES, Wallpaper, add_wallpaper, wallpaper_data_url};

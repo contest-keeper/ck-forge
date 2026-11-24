@@ -4,7 +4,7 @@ use std::io::{self};
 use std::path::Path;
 
 use crate::image::warn;
-use ck_admin_core::{Error, Profile, Wallpaper, folder_of};
+use ck_admin_core::{Error, Profile, Wallpaper, add_wallpaper, folder_of};
 
 pub(crate) fn profile_new(file: &Path) -> Result<String, Error> {
     if file.exists() {
@@ -26,4 +26,12 @@ pub(crate) fn profile_check(file: &Path) -> Result<String, Error> {
     Wallpaper::read(&profile.stick_settings(), folder_of(file))?;
     warn(&profile);
     Ok(format!("{} is fine: {}\n", file.display(), profile.name))
+}
+
+pub(crate) fn profile_wallpaper(file: &Path, picture: &Path) -> Result<String, Error> {
+    let mut profile = Profile::load(file)?;
+    let name = add_wallpaper(file, picture)?;
+    profile.settings.branding.wallpaper = Some(name.clone());
+    profile.save(file)?;
+    Ok(format!("{} now uses {name}\n", file.display()))
 }
