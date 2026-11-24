@@ -1,14 +1,40 @@
-use crate::hub::Screen;
+use crate::{hub, profile};
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Page {
+    Hub,
+    Profile,
+}
 
 /// The window. Screens are added here in the order of the plan: Hub sign-in, profile editor,
 /// image picker and download, write sticks, retire and re-key.
-#[derive(Default)]
 pub struct Forge {
-    hub: Screen,
+    page: Page,
+    hub: hub::Screen,
+    profile: profile::Screen,
+}
+
+impl Default for Forge {
+    fn default() -> Self {
+        Self {
+            page: Page::Hub,
+            hub: hub::Screen::default(),
+            profile: profile::Screen::default(),
+        }
+    }
 }
 
 impl eframe::App for Forge {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
-        eframe::egui::CentralPanel::default().show(ui, |ui| self.hub.show(ui));
+        eframe::egui::Panel::top("pages").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.page, Page::Hub, "Hub");
+                ui.selectable_value(&mut self.page, Page::Profile, "Profile");
+            });
+        });
+        eframe::egui::CentralPanel::default().show(ui, |ui| match self.page {
+            Page::Hub => self.hub.show(ui),
+            Page::Profile => self.profile.show(ui),
+        });
     }
 }

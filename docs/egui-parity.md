@@ -8,8 +8,10 @@ a `ck-forge` command already, so a screen only calls the function.
 | Screen | Window command | Engine function | CLI | egui |
 |---|---|---|---|---|
 | Hub sign-in | `hub_sign_in`, `hub_sign_out`, `hub_status` | `sign_in_url`, `sign_in_with_code`, `sign_out`, `vault` | `hub sign-in`, `hub sign-out`, `hub status` | [x] |
-| Profile editor | `new_profile`, `open_profile`, `save_profile`, `check_profile`, `save_profile_in_forge_folder` | `Profile` | `profile new`, `profile check` | [ ] |
-| Profile editor | `add_wallpaper`, `wallpaper_preview` | `add_wallpaper`, `wallpaper_data_url` | `profile wallpaper` | [ ] |
+| Profile editor | `new_profile`, `open_profile`, `save_profile`, `check_profile` | `Profile` | `profile new`, `profile check` | [x] (fields: name, contest, team, site, computer name, USB label, server, sites) |
+| Profile editor | `save_profile_in_forge_folder` | `Profile::save` into the app data folder | none needed | [ ] |
+| Profile editor | `add_wallpaper` | `add_wallpaper` | `profile wallpaper` | [x] |
+| Profile editor | `wallpaper_preview` | `wallpaper_data_url` | none needed | [ ] |
 | Profile editor | `hub_list_profiles`, `hub_load_profile`, `hub_save_profile` | `list_profiles`, `load_hub_profile`, `save_hub_profile` | `hub profiles`, `hub pull`, `hub push` | [ ] |
 | Image picker | `list_catalog`, `make_base_image`, `import_base_image` | `catalog`, `create_base_image`, `import_image` | `image catalog`, `image create`, `image import` | [ ] |
 | Image picker | `list_hub_images`, `download_hub_image` | `list_hub_images`, `download_hub_image` | `hub images`, `hub download` | [ ] |
