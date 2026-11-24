@@ -3,26 +3,12 @@
 // Tauri hands each command its arguments by value.
 #![allow(clippy::needless_pass_by_value)]
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
-use ck_admin_core::{Error, MAX_WALLPAPER_BYTES, Profile, folder_of};
+use ck_admin_core::{Error, Profile, folder_of};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
-
-/// The picture types a wallpaper may be, with the type a page needs to show them.
-const WALLPAPER_TYPES: [(&str, &str); 5] = [
-    ("png", "image/png"),
-    ("jpg", "image/jpeg"),
-    ("jpeg", "image/jpeg"),
-    ("webp", "image/webp"),
-    ("bmp", "image/bmp"),
-];
-
-/// A bigger picture is still used as the wallpaper, but is not shown as a preview in the window.
-const PREVIEW_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Plain words for the window: one line per problem with a profile, one line for anything else.
 pub fn message(error: &Error) -> String {
@@ -122,66 +108,16 @@ pub fn save_profile_in_forge_folder(app: AppHandle, profile: Profile) -> Result<
 }
 
 /// The type name of a wallpaper picture, or nothing when the file is not one of the types.
-fn wallpaper_extension(path: &Path) -> Option<&'static str> {
-    let extension = path.extension().and_then(OsStr::to_str)?.to_ascii_lowercase();
-    WALLPAPER_TYPES
-        .iter()
-        .map(|(name, _)| *name)
-        .find(|name| *name == extension)
-}
-
-/// Copies the chosen picture into the profile's folder as `wallpaper.<type>` and returns that file
-/// name, which is what the profile names. A picture of another type left from before is removed.
+/// Copies the chosen picture into the profile's folder and returns the file name the profile names.
 #[tauri::command]
 pub fn add_wallpaper(profile_path: PathBuf, source: PathBuf) -> Result<String, String> {
-    let extension = wallpaper_extension(&source)
-        .ok_or_else(|| "choose a PNG, JPG, WEBP or BMP picture".to_owned())?;
-    let meta = std::fs::metadata(&source)
-        .map_err(|e| format!("could not read {}: {e}", source.display()))?;
-    if !meta.is_file() {
-        return Err(format!("{} is not a file", source.display()));
-    }
-    if meta.len() > MAX_WALLPAPER_BYTES {
-        return Err(format!(
-            "the picture is larger than {} MB",
-            MAX_WALLPAPER_BYTES / (1024 * 1024)
-        ));
-    }
-    let folder = folder_of(&profile_path);
-    let name = format!("wallpaper.{extension}");
-    let target = folder.join(&name);
-    if source != target {
-        std::fs::copy(&source, &target)
-            .map_err(|e| format!("could not copy the picture to {}: {e}", target.display()))?;
-    }
-    for (other, _) in WALLPAPER_TYPES {
-        if other != extension {
-            let _ = std::fs::remove_file(folder.join(format!("wallpaper.{other}")));
-        }
-    }
-    Ok(name)
+    ck_admin_core::add_wallpaper(&profile_path, &source).map_err(|e| e.to_string())
 }
 
-/// The wallpaper as a small picture the window can show, or nothing when it is missing, not a
-/// picture or too big to preview.
+/// The wallpaper as a small picture the window can show, or nothing.
 #[tauri::command]
 pub fn wallpaper_preview(profile_path: PathBuf, name: String) -> Option<String> {
-    if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
-        return None;
-    }
-    let path = folder_of(&profile_path).join(&name);
-    let extension = wallpaper_extension(&path)?;
-    let mime = WALLPAPER_TYPES
-        .iter()
-        .find(|(known, _)| *known == extension)
-        .map(|(_, mime)| *mime)?;
-    let meta = std::fs::metadata(&path).ok()?;
-    if !meta.is_file() || meta.len() > PREVIEW_MAX_BYTES {
-        return None;
-    }
-    let bytes = std::fs::read(&path).ok()?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Some(format!("data:{mime};base64,{encoded}"))
+    ck_admin_core::wallpaper_data_url(&profile_path, &name)
 }
 
 #[cfg(test)]
@@ -199,16 +135,6 @@ mod tests {
         assert_ne!(folder_name("Same", 1), folder_name("Same", 2));
         let long = folder_name(&"a".repeat(100), 3);
         assert!(long.len() <= 40 + 9, "{long}");
-    }
-
-    #[test]
-    fn only_pictures_are_wallpapers() {
-        for good in ["a.png", "a.PNG", "x/y.jpeg", "b.webp", "c.bmp", "d.jpg"] {
-            assert!(wallpaper_extension(Path::new(good)).is_some(), "{good}");
-        }
-        for bad in ["a.exe", "a", "a.png.exe", "a.svg", ".png"] {
-            assert!(wallpaper_extension(Path::new(bad)).is_none(), "{bad}");
-        }
     }
 
     #[test]

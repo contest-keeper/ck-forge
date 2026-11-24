@@ -22,7 +22,7 @@ use image::{
     config_text, default_cache, image_build, image_catalog, image_create, image_import,
     show_config, warn,
 };
-use profile::{profile_check, profile_new};
+use profile::{profile_check, profile_new, profile_wallpaper};
 use registry::{registry_list, registry_push};
 use stick::{report_progress, stick_list, stick_write};
 
@@ -59,6 +59,9 @@ fn run(command: Command) -> Result<String, Error> {
     match command {
         Command::Profile(ProfileCommand::New { file }) => profile_new(&file),
         Command::Profile(ProfileCommand::Check { file }) => profile_check(&file),
+        Command::Profile(ProfileCommand::Wallpaper { file, picture }) => {
+            profile_wallpaper(&file, &picture)
+        }
         Command::Image(ImageCommand::Import {
             archive,
             sha256,

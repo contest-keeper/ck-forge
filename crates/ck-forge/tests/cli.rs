@@ -79,6 +79,26 @@ fn a_new_profile_passes_its_own_check_and_is_never_replaced() {
 }
 
 #[test]
+fn a_picture_becomes_the_wallpaper_of_a_profile() {
+    let dir = TempDir::new().expect("temp dir");
+    assert!(
+        forge(&["profile", "new", "p.json"], dir.path())
+            .status
+            .success()
+    );
+    std::fs::write(dir.path().join("pic.png"), b"\x89PNG").expect("picture");
+    let done = forge(&["profile", "wallpaper", "p.json", "pic.png"], dir.path());
+    assert!(done.status.success(), "{}", text(&done.stderr));
+    assert!(text(&done.stdout).contains("wallpaper.png"));
+    assert!(dir.path().join("wallpaper.png").exists());
+    assert!(
+        forge(&["profile", "check", "p.json"], dir.path())
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn check_lists_every_problem_and_fails() {
     let dir = TempDir::new().expect("temp dir");
     std::fs::write(
