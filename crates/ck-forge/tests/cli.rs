@@ -99,6 +99,17 @@ fn a_picture_becomes_the_wallpaper_of_a_profile() {
 }
 
 #[test]
+fn a_base_image_says_what_it_supports() {
+    let dir = TempDir::new().expect("temp dir");
+    let base = support::make_image(&dir, "base.img");
+    let shown = forge(&["image", "support", base.to_str().unwrap()], dir.path());
+    assert!(shown.status.success(), "{}", text(&shown.stderr));
+    let out = text(&shown.stdout);
+    assert!(out.contains("signed by the Hub: no"), "{out}");
+    assert!(out.contains("First-boot enrolment: "), "{out}");
+}
+
+#[test]
 fn check_lists_every_problem_and_fails() {
     let dir = TempDir::new().expect("temp dir");
     std::fs::write(
