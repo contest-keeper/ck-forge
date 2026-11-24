@@ -56,14 +56,18 @@ fn describe(disk: &Disk) -> String {
     )
 }
 
-/// The command that writes `image` to disk `number`. The text is quoted for a shell.
+/// The command that writes `image` to disk `number`, quoted for the shell the hint names: zsh or
+/// bash on macOS, PowerShell on Windows.
 fn command_line(image: &str, number: &str) -> String {
     let sudo = if cfg!(target_os = "macos") {
         "sudo "
     } else {
         ""
     };
-    let image = image.trim().replace('\'', r"'\''");
+    // Inside single quotes only the quote itself is special: `'\''` in a POSIX shell, `''` in
+    // PowerShell.
+    let escaped = if cfg!(windows) { "''" } else { r"'\''" };
+    let image = image.trim().replace('\'', escaped);
     format!(
         "{sudo}ck-forge stick write '{image}' --disk {}",
         number.trim()
