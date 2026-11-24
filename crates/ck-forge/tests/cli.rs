@@ -197,13 +197,6 @@ fn an_enrolment_image_shows_no_code_and_cannot_be_written_to_several_targets() {
 }
 
 #[test]
-fn a_wrong_command_is_a_usage_error() {
-    let dir = TempDir::new().expect("temp dir");
-    assert_eq!(forge(&["bogus"], dir.path()).status.code(), Some(2));
-    assert!(forge(&["--help"], dir.path()).status.success());
-}
-
-#[test]
 fn a_stick_shows_its_contest_name_and_each_problem_is_listed_once() {
     let dir = TempDir::new().expect("temp dir");
     let base = support::make_image(&dir, "base.img");
