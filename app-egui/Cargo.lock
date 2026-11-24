@@ -351,6 +351,7 @@ name = "ck-forge-egui"
 version = "0.1.0"
 dependencies = [
  "ck-admin-core",
+ "ck-protocol",
  "eframe",
  "open",
  "serde_json",
