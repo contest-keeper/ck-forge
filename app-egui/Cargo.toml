@@ -1,0 +1,34 @@
+[package]
+name = "ck-forge-egui"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/contest-keeper/ck-forge"
+rust-version = "1.89"
+description = "The Keeper Forge window, in egui"
+
+# Its own workspace, like `app/`, so `cargo test` at the root does not build a window.
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+
+[dependencies]
+ck-admin-core = { path = "../crates/ck-admin-core" }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+open = "5"
+
+[profile.dev.package.sha2]
+opt-level = 3

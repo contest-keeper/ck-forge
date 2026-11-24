@@ -88,3 +88,22 @@ jobs:
         with:
           shared-key: forge-windows-test
       - run: cargo test --workspace
+  egui:
+    runs-on: windows-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned GNU toolchain
+        run: |
+          rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal --component clippy
+          echo "RUSTUP_TOOLCHAIN=1.99.1-x86_64-pc-windows-gnu" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forge-egui
+          workspaces: app-egui
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: app-egui
+      - run: cargo test
+        working-directory: app-egui
