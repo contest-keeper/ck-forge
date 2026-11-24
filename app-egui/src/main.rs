@@ -5,6 +5,7 @@ mod hub;
 mod images;
 mod profile;
 mod sticks;
+mod write;
 
 fn main() -> eframe::Result {
     eframe::run_native(
