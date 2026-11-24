@@ -48,6 +48,8 @@ export type Settings = {
   recording: Recording;
   api: Api;
   block_bluetooth: boolean;
+  // Left out of the file while off.
+  block_usb_storage?: boolean | undefined;
   wifi?: Wifi | undefined;
 };
 

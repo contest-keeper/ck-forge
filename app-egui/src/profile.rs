@@ -122,6 +122,10 @@ impl Screen {
             &mut profile.settings.block_bluetooth,
             "Block Bluetooth on the stick",
         );
+        ui.checkbox(
+            &mut profile.settings.block_usb_storage,
+            "Block other USB storage devices on the stick",
+        );
         ui.label("Bookmarks");
         bookmarks_ui(ui, &mut profile.settings.branding.bookmarks);
         ui.label("Allowed sites, one per line");

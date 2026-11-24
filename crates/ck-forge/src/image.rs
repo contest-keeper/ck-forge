@@ -195,6 +195,15 @@ pub(crate) fn describe_config(
             "not blocked"
         }
     );
+    let _ = writeln!(
+        text,
+        "USB storage: {}",
+        if s.block_usb_storage {
+            "blocked"
+        } else {
+            "not blocked"
+        }
+    );
     // Only the network name: the password stays on the stick.
     if let Some(wifi) = &s.wifi {
         let _ = writeln!(

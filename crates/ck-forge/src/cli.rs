@@ -252,6 +252,9 @@ pub(crate) struct ExtraSettings {
     /// Block Bluetooth on the stick, whatever the profile says
     #[arg(long)]
     block_bluetooth: bool,
+    /// Block USB storage devices other than the stick itself, whatever the profile says
+    #[arg(long)]
+    block_usb_storage: bool,
     /// The Wi-Fi network the stick joins (replaces the profile's)
     #[arg(long)]
     wifi_ssid: Option<String>,
@@ -267,6 +270,9 @@ impl ExtraSettings {
     pub(crate) fn apply(&self, profile: &mut Profile) -> Result<(), Error> {
         if self.block_bluetooth {
             profile.settings.block_bluetooth = true;
+        }
+        if self.block_usb_storage {
+            profile.settings.block_usb_storage = true;
         }
         if let Some(ssid) = &self.wifi_ssid {
             profile.settings.wifi = Some(Wifi {

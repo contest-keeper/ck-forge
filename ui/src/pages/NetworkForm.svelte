@@ -54,6 +54,10 @@
     <input type="checkbox" bind:checked={settings.block_bluetooth} />
     <span>Block Bluetooth on the sticks</span>
   </label>
+  <label class="check">
+    <input type="checkbox" bind:checked={settings.block_usb_storage} />
+    <span>Block other USB storage devices on the sticks</span>
+  </label>
   <div class="grid">
     <Field
       label="Wi-Fi name (SSID)"
