@@ -335,6 +335,12 @@ impl Screen {
         let Some(profile) = &self.profile else {
             return;
         };
+        // Otherwise the end that was typed would be left out and an older one saved.
+        if !end_is_valid(&self.contest_end) {
+            "Fix the contest end first: use a date and time like 2026-11-15T09:00"
+                .clone_into(&mut self.message);
+            return;
+        }
         self.message = match profile.save(&PathBuf::from(self.path.trim())) {
             Ok(()) => "Saved".to_owned(),
             Err(error) => error.to_string(),
@@ -408,6 +414,22 @@ mod tests {
         bookmark.title = "Judge".to_owned();
         bookmark.url = "https://judge.example.org".to_owned();
         assert_eq!(profile.problems(), []);
+    }
+
+    #[test]
+    fn a_profile_is_not_saved_with_a_contest_end_that_does_not_parse() {
+        let dir = std::env::temp_dir().join(format!("ck-egui-end-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("folder");
+        let mut screen = Screen {
+            path: dir.join("p.json").display().to_string(),
+            ..Screen::default()
+        };
+        screen.set(Profile::template(), "");
+        screen.contest_end = "tomorrow".to_owned();
+        screen.save();
+        assert_ne!(screen.message, "Saved");
+        assert!(!dir.join("p.json").exists());
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
