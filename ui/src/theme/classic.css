@@ -1,15 +1,28 @@
-/* The classic theme: the Windows 9x look of the Contest Keeper browser extension (contest-keeper-extension app.css). */
+/* The classic look: the Windows 9x style of the Contest Keeper browser extension (contest-keeper-extension
+   app.css), in a light and a dark version. Regular weight only: nothing here is bold. */
 
 :root[data-theme='classic'] {
-  color-scheme: light;
   --font: Tahoma, 'MS Sans Serif', Verdana, sans-serif;
   --mono: 'Courier New', ui-monospace, monospace;
+  --radius: 0;
+  --radius-lg: 0;
+  --gap: 10px;
+  --danger-line: var(--danger);
+  --danger-text: var(--danger);
+  font-size: 13px;
+}
+
+:root[data-theme='classic'][data-mode='light'] {
+  color-scheme: light;
   --bg: #c0c0c0;
   --side-bg: #c0c0c0;
   --panel: #c0c0c0;
+  --face: #c0c0c0;
+  --pushed: #d4d0c8;
   --soft: #dfdfdf;
   --text: #000;
   --muted: #404040;
+  --disabled: #808080;
   --line: #808080;
   --line-strong: #808080;
   --accent: #0a6f6c;
@@ -20,14 +33,12 @@
   --warn: #7a4200;
   --warn-bg: #ffd84a;
   --danger: #a00000;
-  --danger-text: #a00000;
   --danger-bg: #ffffe1;
-  --danger-line: #a00000;
   --danger-solid: #a00000;
   --input-bg: #fff;
-  --radius: 0;
-  --radius-lg: 0;
-  --gap: 10px;
+  --field: #fff;
+  --selected: #0b2545;
+  --selected-text: #fff;
   --bevel-raised:
     inset -1px -1px #0a0a0a, inset 1px 1px #fff, inset -2px -2px #808080, inset 2px 2px #dfdfdf;
   --bevel-pressed:
@@ -35,51 +46,101 @@
   --bevel-sunken:
     inset 1px 1px #808080, inset -1px -1px #fff, inset 2px 2px #0a0a0a, inset -2px -2px #dfdfdf;
   --bevel-thin: inset 1px 1px #808080, inset -1px -1px #fff;
-  font-size: 13px;
+  --edge-hi: #fff;
+  --edge-lo: #808080;
+}
+
+:root[data-theme='classic'][data-mode='dark'] {
+  color-scheme: dark;
+  --bg: #2b2b2b;
+  --side-bg: #2b2b2b;
+  --panel: #2b2b2b;
+  --face: #2b2b2b;
+  --pushed: #3c3c3c;
+  --soft: #1c1c1c;
+  --text: #e6e6e6;
+  --muted: #b4b4b4;
+  --disabled: #8a8a8a;
+  --line: #5a5a5a;
+  --line-strong: #5a5a5a;
+  --accent: #0a6f6c;
+  --accent-soft: #3c3c3c;
+  --accent-text: #fff;
+  --ok: #6fe3a0;
+  --ok-bg: #0d0d0d;
+  --warn: #f2c56b;
+  --warn-bg: #3a2d10;
+  --danger: #ff8c84;
+  --danger-bg: #3a1414;
+  --danger-solid: #a00000;
+  --input-bg: #0d0d0d;
+  --field: #0d0d0d;
+  --selected: #0f5f63;
+  --selected-text: #fff;
+  --bevel-raised:
+    inset -1px -1px #000, inset 1px 1px #6a6a6a, inset -2px -2px #151515, inset 2px 2px #3c3c3c;
+  --bevel-pressed:
+    inset 1px 1px #000, inset -1px -1px #6a6a6a, inset 2px 2px #151515, inset -2px -2px #3c3c3c;
+  --bevel-sunken:
+    inset 1px 1px #5a5a5a, inset -1px -1px #000, inset 2px 2px #000, inset -2px -2px #3c3c3c;
+  --bevel-thin: inset 1px 1px #5a5a5a, inset -1px -1px #000;
+  --edge-hi: #6a6a6a;
+  --edge-lo: #000;
+}
+
+/* Regular weight only. !important because components set their own weights in scoped styles. */
+[data-theme='classic'] *,
+[data-theme='classic'] *::before {
+  font-weight: 400 !important;
+}
+[data-theme='classic'] button:focus-visible,
+[data-theme='classic'] input:focus-visible,
+[data-theme='classic'] select:focus-visible,
+[data-theme='classic'] textarea:focus-visible,
+[data-theme='classic'] a:focus-visible {
+  outline: 1px dotted var(--text);
+  outline-offset: -4px;
 }
 
 [data-theme='classic'] .win {
   box-shadow:
-    inset -1px -1px #0a0a0a,
-    inset 1px 1px #dfdfdf,
-    inset -2px -2px #808080,
-    inset 2px 2px #fff;
+    inset -1px -1px var(--edge-lo),
+    inset 1px 1px var(--edge-hi);
 }
 [data-theme='classic'] .side {
-  box-shadow: 1px 0 #fff;
+  border-right: 0;
+  box-shadow: 1px 0 var(--edge-hi);
 }
 [data-theme='classic'] .brand {
   font-size: 15px;
 }
 [data-theme='classic'] .step {
-  color: #000;
+  color: var(--text);
+  background: var(--face);
   box-shadow: var(--bevel-raised);
   min-height: 46px;
 }
 [data-theme='classic'] .step.on {
-  background: #d4d0c8;
+  background: var(--pushed);
   box-shadow: var(--bevel-pressed);
-  font-weight: 700;
-}
-[data-theme='classic'] .step.on .ss {
-  font-weight: 400;
+  text-decoration: underline;
 }
 [data-theme='classic'] .dot {
   width: 24px;
   height: 24px;
   border: 0;
   border-radius: 0;
-  background: #fff;
-  color: #000;
+  background: var(--field);
+  color: var(--text);
   box-shadow: var(--bevel-thin);
 }
 [data-theme='classic'] .step.on .dot {
-  background: #0a6f6c;
+  background: var(--accent);
   color: #fff;
 }
 [data-theme='classic'] .step.done .dot {
-  background: #fff;
-  color: #0a6f6c;
+  background: var(--field);
+  color: var(--ok);
 }
 [data-theme='classic'] .st {
   font-size: 13px;
@@ -91,25 +152,9 @@
   font-size: 12px;
 }
 [data-theme='classic'] .side-foot {
-  background: #fff;
+  background: var(--field);
   box-shadow: var(--bevel-sunken);
   font-size: 12px;
-}
-[data-theme='classic'] .seg {
-  gap: 4px;
-  padding: 0;
-  border-radius: 0;
-  background: none;
-}
-[data-theme='classic'] .seg button {
-  border-radius: 0;
-  background: #c0c0c0;
-  color: #000;
-  box-shadow: var(--bevel-raised);
-}
-[data-theme='classic'] .seg button[aria-pressed='true'] {
-  background: #d4d0c8;
-  box-shadow: var(--bevel-pressed);
 }
 [data-theme='classic'] .head {
   padding: 14px 18px 10px;
@@ -123,43 +168,42 @@
 }
 [data-theme='classic'] .foot {
   padding: 8px 18px;
-  box-shadow: inset 0 1px #fff;
+  box-shadow: inset 0 1px var(--edge-hi);
 }
 [data-theme='classic'] .btn {
   min-height: 30px;
   border: 0;
-  background: #c0c0c0;
+  background: var(--face);
+  color: var(--text);
   box-shadow: var(--bevel-raised);
-  font-weight: 400;
 }
 [data-theme='classic'] .btn:active:not(:disabled) {
   box-shadow: var(--bevel-pressed);
 }
+/* The main button has no weight to stand out with, so it gets the extension's heavy outline. */
 [data-theme='classic'] .btn.pri {
-  background: #c0c0c0;
-  color: #000;
-  font-weight: 700;
-  outline: 2px solid #000;
+  background: var(--face);
+  color: var(--text);
+  outline: 2px solid var(--text);
   outline-offset: -2px;
 }
 [data-theme='classic'] .btn.dng {
-  background: #a00000;
+  background: var(--danger-solid);
   color: #fff;
-  font-weight: 700;
 }
 [data-theme='classic'] .btn:disabled {
   opacity: 1;
-  color: #808080;
-  text-shadow: 1px 1px #fff;
+  color: var(--disabled);
+  text-shadow: 1px 1px var(--edge-hi);
 }
 [data-theme='classic'] .card {
   gap: 10px;
   padding: 12px 14px;
-  border: 1px solid #808080;
+  border: 1px solid var(--line);
   background: transparent;
   box-shadow:
-    1px 1px #fff,
-    inset 1px 1px #fff;
+    1px 1px var(--edge-hi),
+    inset 1px 1px var(--edge-hi);
 }
 [data-theme='classic'] .card h2 {
   font-size: 13px;
@@ -180,7 +224,6 @@
   border-radius: 0;
   padding: 2px 7px;
   font-size: 11px;
-  font-weight: 700;
 }
 [data-theme='classic'] .pill.ok {
   background: #0a6f6c;
@@ -188,44 +231,44 @@
 }
 [data-theme='classic'] .pill.no {
   box-shadow: var(--bevel-thin);
-  color: #000;
+  color: var(--text);
 }
 [data-theme='classic'] .path {
   min-height: 46px;
   border: 0;
-  background: #fff;
+  background: var(--field);
   box-shadow: var(--bevel-sunken);
 }
 [data-theme='classic'] .disk {
   min-height: 50px;
   padding: 8px 12px;
   border: 0;
-  background: #fff;
+  background: var(--field);
   box-shadow: var(--bevel-thin);
 }
 [data-theme='classic'] .disk.sel {
-  background: #0b2545;
-  color: #fff;
+  background: var(--selected);
+  color: var(--selected-text);
 }
 [data-theme='classic'] .disk.sel .dm {
-  color: #dfdfdf;
+  color: var(--selected-text);
 }
 [data-theme='classic'] .disk.off {
-  background: #c0c0c0;
-  color: #404040;
+  background: var(--face);
+  color: var(--muted);
 }
 [data-theme='classic'] .danger {
   padding: 10px 14px;
   border-width: 1px;
 }
 [data-theme='classic'] .lock {
-  background: #ffffe1;
-  border: 1px solid #808080;
+  background: var(--danger-bg);
+  border: 1px solid var(--line);
 }
 [data-theme='classic'] .note.ok {
-  background: #fff;
+  background: var(--field);
   box-shadow: var(--bevel-sunken);
 }
 [data-theme='classic'] .note.error {
-  background: #ffffe1;
+  background: var(--danger-bg);
 }
