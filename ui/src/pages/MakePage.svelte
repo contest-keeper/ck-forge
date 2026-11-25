@@ -143,15 +143,22 @@
     testFile = (await api.chooseImageToSave()) ?? testFile;
   }
 
+  /** The chosen disks with the identity token of each as it was listed and confirmed. */
+  function diskTarget() {
+    const disk = [...chosen];
+    const confirmed = disks.filter((d) => disk.includes(d.number)).map((d) => `${d.number}=${d.token}`);
+    return { disks: disk, confirmed };
+  }
+
   /** Pressing the write button: when it replaces sticks the Hub knows, ask first. */
   function begin() {
     if (replaced.length > 0) asking = true;
-    else void write({ disks: [...chosen] }, false);
+    else void write(diskTarget(), false);
   }
 
   function decided(choice: 'retire' | 'keep' | 'cancel') {
     asking = false;
-    if (choice !== 'cancel') void write({ disks: [...chosen] }, choice === 'retire');
+    if (choice !== 'cancel') void write(diskTarget(), choice === 'retire');
   }
 
   /** Retires the old keys one by one; a key that fails is told, and the others still go. */
@@ -170,7 +177,7 @@
     }
   }
 
-  async function write(target: { disks: number[] } | { file: string }, retireAfter = false) {
+  async function write(target: { disks: number[]; confirmed: string[] } | { file: string }, retireAfter = false) {
     if (!app.profilePath || !app.basePath) return;
     app.busy = true;
     failure = '';

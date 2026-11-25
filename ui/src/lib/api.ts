@@ -35,6 +35,8 @@ export type DiskView = {
   name: string;
   serial: string;
   hardware_id: string | null;
+  /** Sent back with the write: the helper erases only a disk that still has it. */
+  token: string;
   size: string;
   bus: string;
   refused: string | null;
@@ -102,7 +104,7 @@ export const signatureRequired = (base: string) => invoke<boolean>('signature_re
 export const writeStick = (
   base: string,
   profilePath: string,
-  target: { disks: number[] } | { file: string },
+  target: { disks: number[]; confirmed: string[] } | { file: string },
   allowVirtual: boolean,
   wifiPassword: string,
   firstBootEnrolment: boolean,
@@ -111,6 +113,7 @@ export const writeStick = (
     base,
     profilePath,
     disks: 'disks' in target ? target.disks : [],
+    confirmed: 'disks' in target ? target.confirmed : [],
     toFile: 'file' in target ? target.file : null,
     allowVirtual,
     wifiPassword: wifiPassword === '' ? null : wifiPassword,

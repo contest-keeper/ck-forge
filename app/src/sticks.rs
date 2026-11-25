@@ -238,6 +238,9 @@ pub struct DiskView {
     serial: String,
     /// The start of the disk's fingerprint, the same id the Hub shows for a stick written to it.
     hardware_id: Option<String>,
+    /// `Disk::identity_token` as listed. The window sends it back with the write, and the helper
+    /// erases only a disk that still has it.
+    token: String,
     size: String,
     bus: String,
     /// Why this disk is never written, or nothing when it may be.
@@ -266,6 +269,7 @@ pub async fn list_disks(base: PathBuf, allow_virtual: bool) -> Result<Vec<DiskVi
                         .to_owned(),
                     hardware_id: HardwareId::of(disk)
                         .map(|id| id.fingerprint.chars().take(8).collect()),
+                    token: disk.identity_token(),
                     size: disk.size_text(),
                     bus: disk.bus_type.clone(),
                     refused: refusal.as_ref().map(ToString::to_string),
@@ -324,6 +328,41 @@ fn quote(path: &Path) -> Result<String, String> {
     Ok(format!("\"{text}\""))
 }
 
+/// The argument string of the elevated `ck-forge stick write`. Every disk must come with the identity
+/// token the admin confirmed, so the helper refuses a stick that took its number in the meantime;
+/// without one nothing is started.
+fn helper_arguments(
+    images: &[PathBuf],
+    progress_file: &Path,
+    disks: &[u32],
+    confirmed: &[String],
+    allow_virtual: bool,
+) -> Result<String, String> {
+    let mut arguments = vec!["stick".to_owned(), "write".to_owned()];
+    for image in images {
+        arguments.push(quote(image)?);
+    }
+    arguments.extend([
+        "--yes".to_owned(),
+        "--progress-file".to_owned(),
+        quote(progress_file)?,
+    ]);
+    for disk in disks {
+        let prefix = format!("{disk}=");
+        let token = confirmed
+            .iter()
+            .find_map(|pair| pair.strip_prefix(&prefix))
+            .filter(|token| !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| format!("disk {disk} was not confirmed; list the disks again"))?;
+        arguments.extend(["--disk".to_owned(), disk.to_string()]);
+        arguments.extend(["--confirmed".to_owned(), format!("{disk}={token}")]);
+    }
+    if allow_virtual {
+        arguments.push("--allow-virtual".to_owned());
+    }
+    Ok(arguments.join(" "))
+}
+
 /// Makes one image for each stick from `base` and the saved profile, so every stick has its own
 /// identity, and writes them to `disks` all at the same time. Or writes the first image to the file
 /// `to_file`. Raw disk access needs administrator rights, so the write runs in `ck-forge.exe`
@@ -339,6 +378,7 @@ pub async fn write_stick(
     profile_path: PathBuf,
     disks: Vec<u32>,
     to_file: Option<PathBuf>,
+    confirmed: Vec<String>,
     allow_virtual: bool,
     wifi_password: Option<String>,
     first_boot_enrolment: Option<bool>,
@@ -358,6 +398,7 @@ pub async fn write_stick(
             .map_err(|e| format!("could not make {}: {e}", work.display()))?;
         let target = Target {
             disks: &disks,
+            confirmed: &confirmed,
             to_file: to_file.as_deref(),
             allow_virtual,
             wifi_password: wifi_password.as_ref(),
@@ -374,6 +415,8 @@ pub async fn write_stick(
 /// Where the sticks go and what is typed for this write only.
 struct Target<'a> {
     disks: &'a [u32],
+    /// `NUMBER=TOKEN` of each disk as the admin saw it when confirming.
+    confirmed: &'a [String],
     to_file: Option<&'a Path>,
     allow_virtual: bool,
     wifi_password: Option<&'a WifiPassword>,
@@ -448,6 +491,7 @@ fn make_and_write(
 ) -> Result<String, String> {
     let Target {
         disks,
+        confirmed,
         to_file,
         allow_virtual,
         ..
@@ -460,22 +504,7 @@ fn make_and_write(
     let exe = forge_exe()?;
     let progress_file = std::env::temp_dir().join(format!("ck-write-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&progress_file);
-    let mut arguments = vec!["stick".to_owned(), "write".to_owned()];
-    for image in &images {
-        arguments.push(quote(image)?);
-    }
-    arguments.extend([
-        "--yes".to_owned(),
-        "--progress-file".to_owned(),
-        quote(&progress_file)?,
-    ]);
-    for disk in disks {
-        arguments.push("--disk".to_owned());
-        arguments.push(disk.to_string());
-    }
-    if allow_virtual {
-        arguments.push("--allow-virtual".to_owned());
-    }
+    let arguments = helper_arguments(&images, &progress_file, disks, confirmed, allow_virtual)?;
     // The program and its arguments go in environment variables, so nothing chosen in the
     // window is ever part of the PowerShell command text.
     let mut powershell = Command::new("powershell.exe");
@@ -488,7 +517,7 @@ fn make_and_write(
                  -WindowStyle Hidden -Wait",
         ])
         .env("CK_EXE", &exe)
-        .env("CK_ARGS", arguments.join(" "));
+        .env("CK_ARGS", arguments);
     // The elevated helper starts hidden, but PowerShell itself would still show a console.
     let mut child = ck_writer::without_console_window(&mut powershell)
         .spawn()
@@ -586,6 +615,17 @@ mod tests {
         assert!(quote(Path::new(r#"x.img" --to "C:\Windows\win.ini"#)).is_err());
         // A backslash before the closing quote would make the quote part of the argument.
         assert!(quote(Path::new(r"C:\folder\")).is_err());
+    }
+
+    #[test]
+    fn a_disk_is_written_only_with_the_token_the_admin_confirmed() {
+        let image = [PathBuf::from(r"C:\w\stick-1.img")];
+        let progress = Path::new(r"C:\w\p.json");
+        let ok = helper_arguments(&image, progress, &[3], &["3=ab12".to_owned()], false).unwrap();
+        assert!(ok.contains("--disk 3 --confirmed 3=ab12"), "{ok}");
+        for bad in [vec![], vec!["4=ab12".to_owned()], vec!["3=zz".to_owned()]] {
+            assert!(helper_arguments(&image, progress, &[3], &bad, false).is_err());
+        }
     }
 
     #[test]
