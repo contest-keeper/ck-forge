@@ -88,8 +88,14 @@ pub fn write_images(
     jobs: &[(PathBuf, PathBuf)],
     progress: impl FnMut(usize, Phase, u64, u64),
 ) -> Result<Vec<Result<Written, Error>>, Error> {
-    write_targets(jobs, None, progress)
+    write_targets(jobs, None, NEVER, progress)
 }
+
+/// Asked between blocks whether the write should stop.
+pub type Cancelled<'a> = &'a (dyn Fn() -> bool + Sync);
+
+/// A write that nobody cancels.
+const NEVER: Cancelled<'static> = &|| false;
 
 /// Writes images to the physical disks already checked and prepared by the caller.
 pub fn write_disk_images(
@@ -97,13 +103,26 @@ pub fn write_disk_images(
     disks: &[crate::Disk],
     progress: impl FnMut(usize, Phase, u64, u64),
 ) -> Result<Vec<Result<Written, Error>>, Error> {
-    write_disk_images_with(crate::backend::system(), jobs, disks, progress)
+    write_disk_images_cancellable(jobs, disks, NEVER, progress)
+}
+
+/// Like [`write_disk_images`], and stops with [`Error::Cancelled`] when `cancelled` says so. It is
+/// asked before each block of the image is read, so a stop takes effect within a block or two. The
+/// disks are then only partly written and must be written again.
+pub fn write_disk_images_cancellable(
+    jobs: &[(PathBuf, PathBuf)],
+    disks: &[crate::Disk],
+    cancelled: Cancelled<'_>,
+    progress: impl FnMut(usize, Phase, u64, u64),
+) -> Result<Vec<Result<Written, Error>>, Error> {
+    write_disk_images_with(crate::backend::system(), jobs, disks, cancelled, progress)
 }
 
 pub(crate) fn write_disk_images_with(
     backend: &dyn DiskBackend,
     jobs: &[(PathBuf, PathBuf)],
     disks: &[crate::Disk],
+    cancelled: Cancelled<'_>,
     progress: impl FnMut(usize, Phase, u64, u64),
 ) -> Result<Vec<Result<Written, Error>>, Error> {
     if jobs.len() != disks.len() {
@@ -112,12 +131,13 @@ pub(crate) fn write_disk_images_with(
             io::ErrorKind::InvalidInput.into(),
         ));
     }
-    write_targets(jobs, Some((backend, disks)), progress)
+    write_targets(jobs, Some((backend, disks)), cancelled, progress)
 }
 
 fn write_targets(
     jobs: &[(PathBuf, PathBuf)],
     disks: Option<(&dyn DiskBackend, &[crate::Disk])>,
+    cancelled: Cancelled<'_>,
     mut progress: impl FnMut(usize, Phase, u64, u64),
 ) -> Result<Vec<Result<Written, Error>>, Error> {
     let images: Vec<&Path> = jobs.iter().map(|(image, _)| image.as_path()).collect();
@@ -180,7 +200,7 @@ fn write_targets(
         head_len,
         total,
     };
-    let outcomes = write_all_targets(&shared, writers, &mut progress)?;
+    let outcomes = write_all_targets(&shared, writers, cancelled, &mut progress)?;
     for (index, written, read_back) in outcomes {
         // A write that failed is the reason; the check then only ran out of data to read.
         results[index] = Some(match (written, read_back) {
@@ -298,6 +318,7 @@ impl Read for Trailing {
 fn write_all_targets(
     shared: &Shared<'_>,
     writers: Vec<Writer<'_>>,
+    cancelled: Cancelled<'_>,
     progress: &mut impl FnMut(usize, Phase, u64, u64),
 ) -> Result<Outcomes, Error> {
     let (head_len, total) = (shared.head_len, shared.total);
@@ -357,8 +378,8 @@ fn write_all_targets(
             handles.push((index, writer, checker));
         }
         drop(events);
-        let reader =
-            scope.spawn(move || read_blocks(tail, tail_len, false, &read_context, senders));
+        let reader = scope
+            .spawn(move || read_blocks(tail, tail_len, false, &read_context, senders, cancelled));
 
         // Ends when every writer and checker is done, because each holds a sender of the events.
         for (index, phase, done) in events_in {
@@ -548,9 +569,13 @@ fn read_blocks<R: Read>(
     read_padded: bool,
     read_context: &str,
     mut senders: Vec<SyncSender<Arc<Vec<u8>>>>,
+    cancelled: Cancelled<'_>,
 ) -> Result<(), Error> {
     let mut done = 0_u64;
     while done < total && !senders.is_empty() {
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
         let want = block_len(total - done);
         let padded = want.next_multiple_of(SECTOR);
         let mut block = vec![0_u8; padded];
@@ -598,8 +623,16 @@ fn stream<R: Read + Send>(
 ) -> Result<String, Error> {
     thread::scope(|scope| {
         let (sender, receiver) = sync_channel(IN_FLIGHT);
-        let reader = scope
-            .spawn(move || read_blocks(source, total, read_padded, read_context, vec![sender]));
+        let reader = scope.spawn(move || {
+            read_blocks(
+                source,
+                total,
+                read_padded,
+                read_context,
+                vec![sender],
+                NEVER,
+            )
+        });
         let consumed = consume_all(receiver, total, Sha256::new(), consume);
         let read = join(reader);
         let (done, hash) = consumed?;
@@ -753,7 +786,14 @@ mod tests {
         drop(gone_receiver);
         let hash = thread::scope(|scope| {
             let reader = scope.spawn(move || {
-                read_blocks(bytes_of(5, total), total, false, "r", vec![gone, kept])
+                read_blocks(
+                    bytes_of(5, total),
+                    total,
+                    false,
+                    "r",
+                    vec![gone, kept],
+                    NEVER,
+                )
             });
             let (done, hash) =
                 consume_all(kept_receiver, total, Sha256::new(), |_, _| Ok(())).unwrap();
@@ -803,6 +843,7 @@ mod tests {
                 &backend,
                 &[(image.clone(), backend.raw_path(5))],
                 &[disk],
+                NEVER,
                 |_, _, _, _| {},
             )
             .unwrap();
@@ -812,6 +853,50 @@ mod tests {
                 &written[..3 * 1024 * 1024 + 700],
                 &std::fs::read(&image).unwrap()[..]
             );
+        }
+
+        #[test]
+        fn a_cancelled_write_stops_before_the_image_is_read_and_says_so() {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Fake::new(dir.path().join("raw"), vec![stick()]);
+            let image = image(dir.path());
+            std::fs::write(backend.raw_path(5), b"").unwrap();
+
+            let error = write_disk_images_with(
+                &backend,
+                &[(image, backend.raw_path(5))],
+                &[stick()],
+                &|| true,
+                |_, _, _, _| {},
+            )
+            .unwrap_err();
+            assert!(matches!(error, Error::Cancelled), "{error}");
+            // Nothing of the image reached the fake disk.
+            assert_eq!(std::fs::read(backend.raw_path(5)).unwrap(), b"");
+        }
+
+        #[test]
+        fn a_write_cancelled_half_way_ends_with_the_cancel_and_not_with_a_check_error() {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Fake::new(dir.path().join("raw"), vec![stick()]);
+            let image = dir.path().join("big.img");
+            std::fs::write(&image, vec![4_u8; 10 * BLOCK]).unwrap();
+            std::fs::write(backend.raw_path(5), b"").unwrap();
+
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            let error = write_disk_images_with(
+                &backend,
+                &[(image, backend.raw_path(5))],
+                &[stick()],
+                &|| stop.load(std::sync::atomic::Ordering::Relaxed),
+                |_, phase, _, _| {
+                    if phase == Phase::Writing {
+                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(error, Error::Cancelled), "{error}");
         }
 
         #[test]
@@ -827,6 +912,7 @@ mod tests {
                 &backend,
                 &[(image, backend.raw_path(5))],
                 &[stick()],
+                NEVER,
                 |_, _, _, _| {},
             )
             .unwrap_err();
@@ -856,6 +942,7 @@ mod tests {
                 &backend,
                 &[(image, other.clone())],
                 &[stick()],
+                NEVER,
                 |_, _, _, _| {},
             )
             .unwrap_err();

@@ -12,6 +12,8 @@ Four levels, from safest to most real. Only the last one touches a real stick, a
 4. **A real stick** (A.9): `ck-forge stick list`, pick the number of your stick, then
    `ck-forge stick write stick.img --disk N` in an administrator terminal. You type `erase N` to confirm.
 
+Cancel: the admin window cannot reach the process it starts with administrator rights, so `ck-forge stick write --cancel-file F` stops when the file `F` exists (checked before each 4 MiB block). The progress file then says `"state": "cancelled"`, the command fails, and the stick is only partly written and must be written again. Tested with the in-memory disk backend, never a real disk.
+
 ## What the writer refuses
 
 Only USB disks are written. The disk the computer runs from, internal drives (SATA, NVMe), disks

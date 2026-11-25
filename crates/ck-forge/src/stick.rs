@@ -30,13 +30,38 @@ pub(crate) fn stick_list() -> Result<String, Error> {
     Ok(text)
 }
 
-pub(crate) fn stick_write(
+/// Writes the sticks and, when a progress file was asked for, says in it how it ended: an error,
+/// or `cancelled` when the admin window asked to stop.
+pub(crate) fn stick_write_reported(
     images: &[PathBuf],
     disks: &[u32],
     to: Vec<PathBuf>,
     allow_virtual: bool,
     yes: bool,
-    progress: Option<&Path>,
+    files: (Option<&Path>, Option<&Path>),
+) -> Result<String, Error> {
+    let result = stick_write(images, disks, to, allow_virtual, yes, files);
+    if let Err(error) = &result {
+        let state = if matches!(error, Error::Writer(ck_writer::Error::Cancelled)) {
+            "cancelled"
+        } else {
+            "error"
+        };
+        report_progress(
+            files.0,
+            &json!({ "state": state, "message": error.to_string() }),
+        );
+    }
+    result
+}
+
+fn stick_write(
+    images: &[PathBuf],
+    disks: &[u32],
+    to: Vec<PathBuf>,
+    allow_virtual: bool,
+    yes: bool,
+    (progress, cancel_file): (Option<&Path>, Option<&Path>),
 ) -> Result<String, Error> {
     let count = disks.len().max(to.len());
     let images = images_for(images, count)?;
@@ -91,7 +116,8 @@ pub(crate) fn stick_write(
     let results = if prepared.is_empty() {
         ck_writer::write_images(&jobs, report)
     } else {
-        ck_writer::write_disk_images(&jobs, &prepared, report)
+        let cancelled = || cancel_file.is_some_and(Path::exists);
+        ck_writer::write_disk_images_cancellable(&jobs, &prepared, &cancelled, report)
     };
     for bar in &bars {
         bar.finish_and_clear();
