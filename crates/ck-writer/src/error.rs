@@ -18,6 +18,8 @@ pub enum Error {
     TooSmall { number: u32, disk: u64, image: u64 },
     #[error("could not get disk {number} ready: {detail}")]
     Prepare { number: u32, detail: String },
+    #[error("writing was cancelled, so the stick is only partly written and must be written again")]
+    Cancelled,
     #[error("the image is empty")]
     EmptyImage,
     #[error(
