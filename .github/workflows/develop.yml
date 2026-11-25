@@ -255,3 +255,38 @@ jobs:
       artifact: forge-windows
       folder: forge
       version: ${{ needs.windows.outputs.version }}
+
+  # The macOS disk image goes on the same dev pre-release. Off until the repository variable
+  # CK_MACOS_CI is `true`: GitHub refused to start macOS runners for this organization on 2026-11-24.
+  macos:
+    needs: [windows, release]
+    if: vars.CK_MACOS_CI == 'true'
+    runs-on: macos-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forge-macos-develop
+          workspaces: |
+            .
+            app-egui
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: Build the universal app
+        run: |
+          mkdir -p out
+          tools/make-macos-dmg.sh "$VERSION" out/keeper-forge-macos-universal.dmg
+        env:
+          VERSION: ${{ needs.windows.outputs.version }}
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: out/keeper-forge-macos-universal.dmg
+      - name: Upload to the dev pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload dev out/keeper-forge-macos-universal.dmg --clobber --repo "$GITHUB_REPOSITORY"
