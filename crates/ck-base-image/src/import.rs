@@ -65,6 +65,11 @@ pub fn import_image(
 
     // The file could have changed after the first check. Verify the exact bytes decoded.
     decoder.finish().into_inner().verify_checksum(sha256)?;
+    // Without this a power cut after "done" can leave a short file under the final name.
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|e| Error::io("flushing the verified image", e))?;
     temporary
         .persist_noclobber(out)
         .map_err(|err| match err.error.kind() {
