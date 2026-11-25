@@ -73,6 +73,8 @@ jobs:
         run: |
           cp app/target/x86_64-pc-windows-gnu/release/bundle/nsis/*-setup.exe out/keeper-forge-setup-x64.exe
           cp target/release/ck-forge.exe out/ck-forge-windows-x64.exe
+          # Lets a person check a download against the release page.
+          (cd out && sha256sum keeper-forge-setup-x64.exe ck-forge-windows-x64.exe > SHA256SUMS)
         shell: bash
       - uses: actions/upload-artifact@v4
         with:
@@ -119,7 +121,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: gh release upload "$TAG" out/keeper-forge-macos-universal.dmg --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          (cd out && shasum -a 256 keeper-forge-macos-universal.dmg > SHA256SUMS-macos)
+          gh release upload "$TAG" out/keeper-forge-macos-universal.dmg out/SHA256SUMS-macos --clobber --repo "$GITHUB_REPOSITORY"
 
   publish:
     needs: [release-please, windows]
