@@ -7,7 +7,11 @@ import type { Profile } from '../core/profile';
 
 export type Checked = { problems: string[]; warnings: string[] };
 
-export type SignedIn = { email: string; registry: string | null };
+export type SignInEnd = {
+  status: 'approved' | 'denied' | 'expired' | 'cancelled';
+  email: string | null;
+  registry: string | null;
+};
 
 export type HubProfileItem = { id: string; name: string };
 
@@ -124,7 +128,11 @@ export function onBaseProgress(handler: (progress: BaseProgress) => void): Promi
 }
 
 export const hubSignIn = (profilePath: string | null) =>
-  invoke<SignedIn>('hub_sign_in', { profilePath });
+  invoke<SignInEnd>('hub_sign_in', { profilePath });
+export const hubSignInCancel = () => invoke<null>('hub_sign_in_cancel');
+/** The pairing code the Hub gave, to show while the admin agrees in the browser. */
+export const onPairingCode = (handler: (code: string) => void) =>
+  listen<string>('hub-pairing-code', (event) => handler(event.payload));
 export const hubSignOut = () => invoke<null>('hub_sign_out');
 export const hubStatus = () => invoke<string | null>('hub_status');
 export const hubRetireStick = (id: string) => invoke<null>('hub_retire_stick', { id });

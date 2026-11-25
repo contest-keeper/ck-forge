@@ -37,6 +37,7 @@ fn main() {
             sticks::list_disks,
             sticks::write_stick,
             hub::hub_sign_in,
+            hub::hub_sign_in_cancel,
             hub::hub_sign_out,
             hub::hub_list_profiles,
             hub::hub_load_profile,

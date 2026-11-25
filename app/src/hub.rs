@@ -7,27 +7,29 @@
 // Tauri hands each command its arguments by value.
 #![allow(clippy::needless_pass_by_value)]
 
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use ck_admin_core::{HubSession, Profile, ProfileSummary, Pushed};
+use ck_admin_core::{HubSession, PairingEnd, Profile, ProfileSummary, Pushed};
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::profiles::{message, registry_of};
 
 pub use ck_admin_core::HUB_URL;
 
-const SIGN_IN_WAIT: Duration = Duration::from_secs(180);
+const SIGN_IN_WAIT: Duration = Duration::from_secs(600);
+const POLL_EVERY: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub struct HubState {
     session: Mutex<Option<HubSession>>,
     /// Whether the Hub has said yes to the session saved by an earlier run.
     checked: AtomicBool,
+    /// Set by the Cancel button to stop a sign-in that is waiting for the browser.
+    cancel: AtomicBool,
 }
 
 impl HubState {
@@ -36,6 +38,7 @@ impl HubState {
         Self {
             session: Mutex::new(ck_admin_core::vault::load()),
             checked: AtomicBool::new(false),
+            cancel: AtomicBool::new(false),
         }
     }
 
@@ -76,45 +79,78 @@ fn describe(pushed: &Pushed) -> String {
 }
 
 #[derive(Serialize)]
-pub struct SignedIn {
-    email: String,
+pub struct SignInEnd {
+    /// `approved`, `denied`, `expired` or `cancelled`.
+    status: &'static str,
+    email: Option<String>,
     /// What happened to the registry that was sent right after signing in, if there was one.
     registry: Option<String>,
 }
 
-/// Opens the Hub in the browser and waits for the admin to sign in there. When the profile already
-/// has a registry, it is sent at once, so the Hub knows the sticks made before signing in.
+/// Shows the admin a pairing code, opens the Hub in the browser and waits for the admin to agree
+/// there. When the profile already has a registry, it is sent at once, so the Hub knows the sticks
+/// made before signing in.
 #[tauri::command]
 pub async fn hub_sign_in(
+    app: AppHandle,
     state: State<'_, HubState>,
     profile_path: Option<PathBuf>,
-) -> Result<SignedIn, String> {
-    let session = tauri::async_runtime::spawn_blocking(sign_in)
-        .await
-        .map_err(|e| e.to_string())??;
-    let email = session.email.clone();
-    ck_admin_core::vault::save(&session);
-    state.checked.store(true, Ordering::Relaxed);
-    if let Some(old) = state.lock().replace(session) {
-        ck_admin_core::sign_out(HUB_URL, &old);
-    }
-    let registry = profile_path
-        .map(|path| registry_of(&path))
-        .filter(|registry| registry.is_file())
-        .and_then(|registry| state.push(&registry))
-        .map(|sent| sent.unwrap_or_else(|why| format!("not sent: {why}")));
-    Ok(SignedIn { email, registry })
+) -> Result<SignInEnd, String> {
+    state.cancel.store(false, Ordering::Relaxed);
+    let started = Instant::now();
+    let end = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        move || sign_in(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let status = match end {
+        PairingEnd::Approved(session) => {
+            let email = session.email.clone();
+            ck_admin_core::vault::save(&session);
+            state.checked.store(true, Ordering::Relaxed);
+            if let Some(old) = state.lock().replace(session) {
+                ck_admin_core::sign_out(HUB_URL, &old);
+            }
+            let registry = profile_path
+                .map(|path| registry_of(&path))
+                .filter(|registry| registry.is_file())
+                .and_then(|registry| state.push(&registry))
+                .map(|sent| sent.unwrap_or_else(|why| format!("not sent: {why}")));
+            return Ok(SignInEnd {
+                status: "approved",
+                email: Some(email),
+                registry,
+            });
+        }
+        PairingEnd::Cancelled => "cancelled",
+        // The Hub says "gone" for a refusal and for an end alike; its 10 minutes tell them apart.
+        PairingEnd::Gone if started.elapsed() < Duration::from_secs(590) => "denied",
+        PairingEnd::Gone | PairingEnd::TimedOut => "expired",
+    };
+    Ok(SignInEnd {
+        status,
+        email: None,
+        registry: None,
+    })
 }
 
-fn sign_in() -> Result<HubSession, String> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let state = ck_admin_core::new_state();
-    let url = ck_admin_core::sign_in_url(HUB_URL, port, &state).map_err(|e| message(&e))?;
-    open::that(&url).map_err(|e| format!("could not open the browser: {e}"))?;
-    let code =
-        ck_admin_core::wait_for_code(&listener, &state, SIGN_IN_WAIT).map_err(|e| message(&e))?;
-    ck_admin_core::sign_in_with_code(HUB_URL, &code).map_err(|e| message(&e))
+/// Stops the sign-in that is waiting for the browser.
+#[tauri::command]
+pub fn hub_sign_in_cancel(state: State<'_, HubState>) {
+    state.cancel.store(true, Ordering::Relaxed);
+}
+
+/// Asks the Hub for a pairing code, shows it to the window and opens the Hub page that shows the
+/// same one, then waits for the admin to agree there.
+fn sign_in(app: &AppHandle) -> Result<PairingEnd, String> {
+    let pairing = ck_admin_core::start_pairing(HUB_URL).map_err(|e| message(&e))?;
+    let _ = app.emit("hub-pairing-code", &pairing.code);
+    // The code is on screen too, so a browser that does not open is not the end of it.
+    let _ = open::that(&pairing.url);
+    let state = app.state::<HubState>();
+    ck_admin_core::watch_pairing(HUB_URL, &pairing, SIGN_IN_WAIT, POLL_EVERY, &state.cancel)
+        .map_err(|e| message(&e))
 }
 
 /// The signed-in admin's email. The first time after a run that restored a saved session, the Hub is

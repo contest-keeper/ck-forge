@@ -3,13 +3,12 @@
 //! The password is used for one login and then dropped. It is never stored or printed, and neither
 //! is the session cookie the Hub answers with.
 //!
-//! The window signs in through the browser instead: it opens the Hub's page, listens on a port of
-//! this PC, and the Hub sends the browser back to that port with a code that works once. The code
-//! is traded for a session token that is only kept in memory and never printed.
+//! The window signs in through the browser instead: it asks the Hub for a pairing code, shows it and
+//! opens the Hub's page, which shows the same code. When the admin agrees there, the Hub hands this
+//! Forge a session token once. The token is only kept in memory and never printed.
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -243,26 +242,10 @@ impl std::fmt::Debug for HubSession {
     }
 }
 
-/// A random value that ties the page the browser comes back from to the sign-in that was started.
-#[must_use]
-pub fn new_state() -> String {
-    format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    )
-}
-
 /// An id for a profile that is saved to the Hub for the first time.
 #[must_use]
 pub fn new_profile_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
-}
-
-/// The Hub page the browser opens. It asks the admin to sign in, if needed, and to agree.
-pub fn sign_in_url(hub: &str, port: u16, state: &str) -> Result<String, Error> {
-    let base = checked_base(hub)?;
-    Ok(format!("{base}/forge/connect?port={port}&state={state}"))
 }
 
 /// An address the code and the session may be sent to: https, or this PC (a Hub started for a test).
@@ -277,111 +260,159 @@ pub(crate) fn checked_base(hub: &str) -> Result<&str, Error> {
     }
 }
 
-/// Waits for the browser to come back to `listener` and returns the code the Hub put in the
-/// address. A request without the right `state` is answered and ignored, because anything on this
-/// PC (a web page, for one) can send a request to the port.
-pub fn wait_for_code(listener: &TcpListener, state: &str, wait: Duration) -> Result<String, Error> {
-    let io = |e| Error::io("waiting for the browser", e);
-    listener.set_nonblocking(true).map_err(io)?;
-    let until = Instant::now() + wait;
-    while Instant::now() < until {
-        let mut stream = match listener.accept() {
-            Ok((stream, _)) => stream,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(100));
-                continue;
-            }
-            Err(e) => return Err(io(e)),
-        };
-        stream.set_nonblocking(false).map_err(io)?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .map_err(io)?;
-        let code = read_callback(&mut stream, state);
-        let (status, text) = match code {
-            Some(_) => (
-                "200 OK",
-                "Signed in. You can close this tab and go back to Keeper Forge.",
-            ),
-            None => (
-                "400 Bad Request",
-                "This is not the sign-in Keeper Forge is waiting for.",
-            ),
-        };
-        let page =
-            format!("<!doctype html><meta charset=utf-8><title>Keeper Forge</title><p>{text}</p>");
-        let _ = write!(
-            stream,
-            "HTTP/1.1 {status}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n{page}",
-            page.len()
-        );
-        if let Some(code) = code {
-            return Ok(code);
-        }
-    }
-    Err(Error::Hub(
-        "the sign-in in the browser was not finished in time; try again".into(),
-    ))
+/// A sign-in waiting for the admin to agree in the browser.
+pub struct Pairing {
+    /// The code to show the admin. The Hub page shows the same one, so the admin can see that the
+    /// page answers this Forge and not someone else's.
+    pub code: String,
+    /// The Hub page to open in the browser.
+    pub url: String,
+    // What this Forge asks about the answer with. Only the Hub and this Forge know it.
+    poll_key: String,
 }
 
-/// The code of a `GET /callback?code=..&state=..` request, when the state is the expected one.
-fn read_callback(stream: &mut impl Read, state: &str) -> Option<String> {
-    let mut head = Vec::new();
-    let mut chunk = [0_u8; 1024];
-    // Only the first line matters, and a browser sends it in one piece.
-    while !head.contains(&b'\n') && head.len() < 8192 {
-        match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => head.extend_from_slice(&chunk[..n]),
-        }
+impl std::fmt::Debug for Pairing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pairing")
+            .field("code", &self.code)
+            .finish_non_exhaustive()
     }
-    let text = String::from_utf8_lossy(&head);
-    let target = text.lines().next()?.strip_prefix("GET ")?;
-    let query = target.split(' ').next()?.strip_prefix("/callback?")?;
-    let mut code = None;
-    let mut got_state = None;
-    for pair in query.split('&') {
-        match pair.split_once('=') {
-            Some(("code", value)) => code = Some(value),
-            Some(("state", value)) => got_state = Some(value),
-            _ => {}
-        }
-    }
-    let code = code.filter(|c| !c.is_empty() && c.chars().all(is_token_char))?;
-    (got_state == Some(state)).then(|| code.to_owned())
-}
-
-fn is_token_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
 #[derive(Deserialize)]
-struct TokenAnswer {
-    token: String,
-    email: String,
+struct Started {
+    code: String,
+    poll_key: String,
 }
 
-/// Trades the code from the browser for a session.
-pub fn sign_in_with_code(hub: &str, code: &str) -> Result<HubSession, Error> {
+#[derive(Deserialize)]
+struct Polled {
+    status: String,
+    token: Option<String>,
+    email: Option<String>,
+}
+
+/// Asks the Hub for a pairing code. Nothing is typed in Forge: the admin agrees in the browser.
+pub fn start_pairing(hub: &str) -> Result<Pairing, Error> {
     let base = checked_base(hub)?;
     let mut answer = agent()
-        .post(format!("{base}/api/v1/forge/token"))
-        .send_json(json!({ "code": code }))
-        .map_err(|e| Error::Hub(format!("cannot reach the Hub at {base}: {e}")))?;
+        .post(format!("{base}/api/v1/forge/pairings"))
+        .send_json(json!({}))
+        .map_err(|e| unreachable_hub(base, &e))?;
     match answer.status().as_u16() {
         200 => {}
-        400 => return Err(Error::Hub("the sign-in code ended; sign in again".into())),
+        404 | 405 => {
+            return Err(Error::Hub(
+                "this Hub is too old for this Forge; ask for it to be updated".into(),
+            ));
+        }
+        429 => {
+            return Err(Error::Hub(
+                "too many sign-ins were started; wait a minute and try again".into(),
+            ));
+        }
         code => {
             return Err(Error::Hub(format!(
                 "the Hub answered {code} to the sign-in"
             )));
         }
     }
-    let answer: TokenAnswer = answer
+    let started: Started = answer
         .body_mut()
         .read_json()
         .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}")))?;
-    Ok(HubSession::restore(answer.token, answer.email))
+    // The code goes into an address; a Hub that sends anything else is not one to follow.
+    if started.code.is_empty()
+        || started.code.len() > 16
+        || !started
+            .code
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(Error::Hub(
+            "the Hub sent a sign-in code that cannot be used".into(),
+        ));
+    }
+    Ok(Pairing {
+        url: format!("{base}/forge/connect?code={}", started.code),
+        code: started.code,
+        poll_key: started.poll_key,
+    })
+}
+
+/// How a pairing ended.
+pub enum PairingEnd {
+    Approved(HubSession),
+    /// The Hub said no more. It answers the same for a refusal and for an end, so the caller tells
+    /// them apart by its own clock.
+    Gone,
+    /// `wait` ran out first.
+    TimedOut,
+    Cancelled,
+}
+
+/// Waits, asking the Hub every `every`, until the admin agrees in the browser. The session is
+/// handed out once, kept in memory and never printed.
+pub fn wait_for_pairing(
+    hub: &str,
+    pairing: &Pairing,
+    wait: Duration,
+    every: Duration,
+) -> Result<HubSession, Error> {
+    match watch_pairing(hub, pairing, wait, every, &AtomicBool::new(false))? {
+        PairingEnd::Approved(session) => Ok(session),
+        PairingEnd::Gone | PairingEnd::Cancelled => Err(Error::Hub(
+            "the sign-in was refused or ran out of time; try again".into(),
+        )),
+        PairingEnd::TimedOut => Err(Error::Hub(
+            "the sign-in in the browser was not finished in time; try again".into(),
+        )),
+    }
+}
+
+/// Like `wait_for_pairing`, and stops early when `cancel` is set.
+pub fn watch_pairing(
+    hub: &str,
+    pairing: &Pairing,
+    wait: Duration,
+    every: Duration,
+    cancel: &AtomicBool,
+) -> Result<PairingEnd, Error> {
+    let base = checked_base(hub)?;
+    let until = Instant::now() + wait;
+    while Instant::now() < until {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(PairingEnd::Cancelled);
+        }
+        let mut answer = agent()
+            .post(format!("{base}/api/v1/forge/pairings/poll"))
+            .send_json(json!({ "poll_key": pairing.poll_key }))
+            .map_err(|e| unreachable_hub(base, &e))?;
+        match answer.status().as_u16() {
+            200 => {}
+            410 => return Ok(PairingEnd::Gone),
+            code => {
+                return Err(Error::Hub(format!(
+                    "the Hub answered {code} to the sign-in"
+                )));
+            }
+        }
+        let polled: Polled = answer
+            .body_mut()
+            .read_json()
+            .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}")))?;
+        if let (true, Some(token), Some(email)) =
+            (polled.status == "approved", polled.token, polled.email)
+        {
+            return Ok(PairingEnd::Approved(HubSession::restore(token, email)));
+        }
+        // Short sleeps, so a cancel is felt at once.
+        let next = Instant::now() + every;
+        while Instant::now() < next && !cancel.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    Ok(PairingEnd::TimedOut)
 }
 
 /// Sends every stick of the registry file, as the signed-in admin.

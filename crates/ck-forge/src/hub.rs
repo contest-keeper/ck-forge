@@ -1,7 +1,6 @@
 //! `ck-forge hub`: the admin's session on the Hub, and what the window does with it.
 
 use std::fmt::Write as _;
-use std::net::TcpListener;
 use std::path::Path;
 use std::time::Duration;
 
@@ -10,7 +9,8 @@ use ck_admin_core::vault;
 use ck_admin_core::{Error, HUB_URL, HubImageStep, HubSession, Profile, retire_stick_credential};
 use indicatif::{ProgressBar, ProgressStyle};
 
-const SIGN_IN_WAIT: Duration = Duration::from_secs(180);
+const SIGN_IN_WAIT: Duration = Duration::from_secs(600);
+const POLL_EVERY: Duration = Duration::from_secs(2);
 
 /// The session an earlier `hub sign-in` or the window saved, or a request to sign in.
 fn session() -> Result<HubSession, Error> {
@@ -30,21 +30,20 @@ fn forget_ended<T>(result: Result<T, Error>) -> Result<T, Error> {
 }
 
 fn hub_sign_in() -> Result<String, Error> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| Error::io("opening the sign-in port on this PC", e))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| Error::io("reading the sign-in port", e))?
-        .port();
-    let state = ck_admin_core::new_state();
-    let url = ck_admin_core::sign_in_url(HUB_URL, port, &state)?;
-    eprintln!("Sign in to the Hub in the browser: {url}");
+    let pairing = ck_admin_core::start_pairing(HUB_URL)?;
+    eprintln!(
+        "Code {}. Sign in to the Hub in the browser and check that it shows the same code: {}",
+        pairing.code, pairing.url
+    );
     // Not being able to open the browser only means the admin opens the address above.
-    let _ = open::that(&url);
-    let code = ck_admin_core::wait_for_code(&listener, &state, SIGN_IN_WAIT)?;
-    let session = ck_admin_core::sign_in_with_code(HUB_URL, &code)?;
+    let _ = open::that(&pairing.url);
+    let session = ck_admin_core::wait_for_pairing(HUB_URL, &pairing, SIGN_IN_WAIT, POLL_EVERY)?;
     vault::save(&session);
-    Ok(format!("Signed in as {}\n", session.email))
+    Ok(format!(
+        "Signed in as {}
+",
+        session.email
+    ))
 }
 
 fn hub_sign_out() -> String {
