@@ -3,6 +3,7 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -35,6 +36,17 @@ pub(crate) fn sha256_reader(file: &mut impl Read) -> std::io::Result<String> {
     }
 }
 
+/// A download that sends nothing for this long has stalled.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn agent(read: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_per_read(Some(read))
+        .build()
+        .into()
+}
+
 /// Returns the downloaded image in `cache`, fetching it when it is not there yet. A cached file
 /// is checked again, so a damaged cache is replaced. `progress` gets the bytes done and the total.
 pub fn fetch(
@@ -52,7 +64,8 @@ pub fn fetch(
         url: entry.url.clone(),
         detail,
     };
-    let response = ureq::get(&entry.url)
+    let response = agent(READ_TIMEOUT)
+        .get(&entry.url)
         .call()
         .map_err(|e| download_error(e.to_string()))?;
     let total = response.body().content_length().unwrap_or(0);
@@ -88,4 +101,22 @@ pub fn fetch(
     }
     fs::rename(&part, &target).map_err(|e| Error::io("finishing the download", e))?;
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_server_that_never_answers_ends_the_request() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("port");
+        let url = format!("http://{}/image", listener.local_addr().expect("address"));
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(agent(Duration::from_millis(300)).get(&url).call().is_err());
+        });
+        // The listener accepts into its backlog and never replies.
+        assert_eq!(result.recv_timeout(Duration::from_secs(10)), Ok(true));
+        drop(listener);
+    }
 }
