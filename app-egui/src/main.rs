@@ -7,6 +7,7 @@ mod hub;
 mod hub_profiles;
 mod images;
 mod profile;
+mod stick_job;
 mod sticks;
 mod write;
 

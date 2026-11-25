@@ -25,7 +25,7 @@ use image::{
 };
 use profile::{profile_check, profile_new, profile_wallpaper};
 use registry::{registry_list, registry_push};
-use stick::{stick_list, stick_write_reported};
+use stick::{Control, stick_list, stick_write_reported};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -56,6 +56,33 @@ fn report(error: &Error) {
 }
 
 /// Does the command and returns what to print.
+fn run_stick(command: StickCommand) -> Result<String, Error> {
+    match command {
+        StickCommand::List => stick_list(),
+        StickCommand::Write {
+            images,
+            disk,
+            to,
+            allow_virtual,
+            yes,
+            progress_file,
+            cancel_file,
+            confirmed,
+        } => stick_write_reported(
+            &images,
+            &disk,
+            to,
+            allow_virtual,
+            yes,
+            &Control {
+                progress: progress_file.as_deref(),
+                cancel: cancel_file.as_deref(),
+                confirmed: &confirmed,
+            },
+        ),
+    }
+}
+
 fn run(command: Command) -> Result<String, Error> {
     match command {
         Command::Profile(ProfileCommand::New { file }) => profile_new(&file),
@@ -137,22 +164,6 @@ fn run(command: Command) -> Result<String, Error> {
             user,
             registry,
         }) => registry_push(&hub, &user, &registry.registry),
-        Command::Stick(StickCommand::List) => stick_list(),
-        Command::Stick(StickCommand::Write {
-            images,
-            disk,
-            to,
-            allow_virtual,
-            yes,
-            progress_file,
-            cancel_file,
-        }) => stick_write_reported(
-            &images,
-            &disk,
-            to,
-            allow_virtual,
-            yes,
-            (progress_file.as_deref(), cancel_file.as_deref()),
-        ),
+        Command::Stick(command) => run_stick(command),
     }
 }

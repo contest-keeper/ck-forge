@@ -30,6 +30,15 @@ pub(crate) fn stick_list() -> Result<String, Error> {
     Ok(text)
 }
 
+/// What controls a write from outside: the files that report and cancel, and the disks that were
+/// confirmed by an admin window that started this command.
+pub(crate) struct Control<'a> {
+    pub progress: Option<&'a Path>,
+    pub cancel: Option<&'a Path>,
+    /// `NUMBER=TOKEN` for each confirmed disk.
+    pub confirmed: &'a [String],
+}
+
 /// Writes the sticks and, when a progress file was asked for, says in it how it ended: an error,
 /// or `cancelled` when the admin window asked to stop.
 pub(crate) fn stick_write_reported(
@@ -38,9 +47,9 @@ pub(crate) fn stick_write_reported(
     to: Vec<PathBuf>,
     allow_virtual: bool,
     yes: bool,
-    files: (Option<&Path>, Option<&Path>),
+    control: &Control<'_>,
 ) -> Result<String, Error> {
-    let result = stick_write(images, disks, to, allow_virtual, yes, files);
+    let result = stick_write(images, disks, to, allow_virtual, yes, control);
     if let Err(error) = &result {
         let state = if matches!(error, Error::Writer(ck_writer::Error::Cancelled)) {
             "cancelled"
@@ -48,7 +57,7 @@ pub(crate) fn stick_write_reported(
             "error"
         };
         report_progress(
-            files.0,
+            control.progress,
             &json!({ "state": state, "message": error.to_string() }),
         );
     }
@@ -61,14 +70,14 @@ fn stick_write(
     to: Vec<PathBuf>,
     allow_virtual: bool,
     yes: bool,
-    (progress, cancel_file): (Option<&Path>, Option<&Path>),
+    control: &Control<'_>,
 ) -> Result<String, Error> {
     let count = disks.len().max(to.len());
     let images = images_for(images, count)?;
     // Before anything is erased: the images must fit together, and a base that moved is found now.
     let size = ck_writer::check_images(&images)?;
     let prepared = if to.is_empty() {
-        prepare_disks(disks, size, allow_virtual, yes)?
+        prepare_disks(disks, size, allow_virtual, yes, control.confirmed)?
     } else {
         Vec::new()
     };
@@ -83,21 +92,7 @@ fn stick_write(
     let jobs: Vec<(PathBuf, PathBuf)> = images.into_iter().zip(targets).collect();
     let targets: Vec<&PathBuf> = jobs.iter().map(|(_, target)| target).collect();
 
-    let bars = MultiProgress::new();
-    let bars: Vec<ProgressBar> = targets
-        .iter()
-        .map(|target| {
-            let bar = bars.add(ProgressBar::new(size));
-            bar.set_style(
-                ProgressStyle::with_template(
-                    "{prefix:>16} {msg:>9} {bar:30} {bytes}/{total_bytes} ({eta})",
-                )
-                .unwrap_or_else(|_| ProgressStyle::default_bar()),
-            );
-            bar.set_prefix(label(target));
-            bar
-        })
-        .collect();
+    let bars = progress_bars(&targets, size);
     // For each target how far it is written and how far it is checked; the slowest is reported.
     let mut state = vec![(0_u64, 0_u64); targets.len()];
     let mut last_report = Instant::now();
@@ -110,13 +105,13 @@ fn stick_write(
         // A file rewritten for every 4 MiB block would be needless work.
         if done == total || last_report.elapsed() >= Duration::from_millis(500) {
             last_report = Instant::now();
-            report_slowest(progress, &state, total);
+            report_slowest(control.progress, &state, total);
         }
     };
     let results = if prepared.is_empty() {
         ck_writer::write_images(&jobs, report)
     } else {
-        let cancelled = || cancel_file.is_some_and(Path::exists);
+        let cancelled = || control.cancel.is_some_and(Path::exists);
         ck_writer::write_disk_images_cancellable(&jobs, &prepared, &cancelled, report)
     };
     for bar in &bars {
@@ -158,7 +153,10 @@ fn stick_write(
         );
         return Err(Error::io("writing the sticks", io::Error::other(message)));
     }
-    report_progress(progress, &json!({ "state": "done", "sha256": hash }));
+    report_progress(
+        control.progress,
+        &json!({ "state": "done", "sha256": hash }),
+    );
     if jobs.len() == 1 || jobs.windows(2).all(|pair| pair[0].0 == pair[1].0) {
         let _ = writeln!(text, "Read back and checked, SHA-256 {hash}");
     } else {
@@ -168,6 +166,25 @@ fn stick_write(
         );
     }
     Ok(text)
+}
+
+/// One progress bar for each target.
+fn progress_bars(targets: &[&PathBuf], size: u64) -> Vec<ProgressBar> {
+    let bars = MultiProgress::new();
+    targets
+        .iter()
+        .map(|target| {
+            let bar = bars.add(ProgressBar::new(size));
+            bar.set_style(
+                ProgressStyle::with_template(
+                    "{prefix:>16} {msg:>9} {bar:30} {bytes}/{total_bytes} ({eta})",
+                )
+                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+            );
+            bar.set_prefix(label(target));
+            bar
+        })
+        .collect()
 }
 
 /// One image for every target, in order: the one image given, or one image per target. Several
@@ -222,7 +239,9 @@ pub(crate) fn prepare_disks(
     size: u64,
     allow_virtual: bool,
     yes: bool,
+    confirmed: &[String],
 ) -> Result<Vec<ck_writer::Disk>, Error> {
+    let confirmed = parse_confirmed(confirmed)?;
     let listed = ck_writer::list_disks()?;
     let mut chosen: Vec<ck_writer::Disk> = Vec::new();
     for &number in numbers {
@@ -238,6 +257,17 @@ pub(crate) fn prepare_disks(
             .cloned()
             .ok_or(ck_writer::Error::NoSuchDisk(number))?;
         disk.check(size, allow_virtual)?;
+        // The admin confirmed one particular stick in the window. If another one took this number
+        // since, it is not erased: it was never confirmed.
+        if let Some((_, token)) = confirmed.iter().find(|(n, _)| *n == number)
+            && *token != disk.identity_token()
+        {
+            return Err(ck_writer::Error::Prepare {
+                number,
+                detail: "this is not the disk that was confirmed; list the disks again".to_owned(),
+            }
+            .into());
+        }
         chosen.push(disk);
     }
     check_access(&chosen)?;
@@ -248,6 +278,26 @@ pub(crate) fn prepare_disks(
         ck_writer::prepare_disk(disk, size, allow_virtual).map_err(admin_hint)?;
     }
     Ok(chosen)
+}
+
+/// `NUMBER=TOKEN` pairs of `--confirmed`. A token is hex, so nothing else is accepted.
+fn parse_confirmed(pairs: &[String]) -> Result<Vec<(u32, String)>, Error> {
+    pairs
+        .iter()
+        .map(|pair| {
+            pair.split_once('=')
+                .and_then(|(number, token)| {
+                    let valid = !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit());
+                    valid.then(|| number.parse().ok().map(|n| (n, token.to_owned())))?
+                })
+                .ok_or_else(|| {
+                    Error::io(
+                        format!("--confirmed {pair}"),
+                        io::Error::from(io::ErrorKind::InvalidInput),
+                    )
+                })
+        })
+        .collect()
 }
 
 /// Asks the admin to type the disk numbers, because this erases the whole disks.
@@ -383,5 +433,21 @@ pub(crate) fn report_slowest(file: Option<&Path>, state: &[(u64, u64)], total: u
 pub(crate) fn report_progress(file: Option<&Path>, state: &serde_json::Value) {
     if let Some(path) = file {
         let _ = std::fs::write(path, state.to_string());
+    }
+}
+
+#[cfg(test)]
+mod confirmed_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_number_and_a_hex_token_are_accepted() {
+        assert_eq!(
+            parse_confirmed(&["3=ab12".to_owned()]).expect("valid"),
+            [(3, "ab12".to_owned())]
+        );
+        for bad in ["3", "x=ab", "3=", "3=zz", "3=ab;calc", "-1=ab"] {
+            assert!(parse_confirmed(&[bad.to_owned()]).is_err(), "{bad}");
+        }
     }
 }

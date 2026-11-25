@@ -18,5 +18,6 @@ pub use error::Error;
 pub use process::without_console_window;
 pub use write::{
     Cancelled, Phase, Written, check_images, disk_path, write_disk_images,
-    write_disk_images_cancellable, write_image, write_image_to_all, write_images,
+    write_disk_images_cancellable, write_image, write_image_cancellable, write_image_to_all,
+    write_images,
 };

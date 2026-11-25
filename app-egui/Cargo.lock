@@ -357,6 +357,7 @@ dependencies = [
  "eframe",
  "image",
  "open",
+ "serde",
  "serde_json",
  "tempfile",
 ]

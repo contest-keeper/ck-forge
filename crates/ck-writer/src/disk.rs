@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::Error;
 use crate::backend::{self, DiskBackend};
@@ -27,6 +28,23 @@ pub fn list_disks() -> Result<Vec<Disk>, Error> {
 }
 
 impl Disk {
+    /// A fingerprint of this disk as it was listed: its number, name, serial number, size and device
+    /// path. A window that asked the admin to confirm this disk hands it to the helper that writes,
+    /// which refuses a disk with another fingerprint, so a stick that took the number of the
+    /// confirmed one in the meantime is never erased.
+    #[must_use]
+    pub fn identity_token(&self) -> String {
+        let text = format!(
+            "{}|{}|{}|{}|{}",
+            self.number,
+            self.friendly_name.as_deref().unwrap_or(""),
+            self.serial_number.as_deref().unwrap_or("").trim(),
+            self.size,
+            self.device_path.as_deref().unwrap_or("").trim(),
+        );
+        crate::write::hex(&Sha256::digest(text.as_bytes()))
+    }
+
     /// The size for people, in decimal gigabytes like the box of a stick, e.g. `31.9 GB`.
     #[must_use]
     pub fn size_text(&self) -> String {
@@ -160,5 +178,34 @@ mod tests {
 
         let error = disk("USB").check(64_000_000_000, false).unwrap_err();
         assert!(matches!(error, Error::TooSmall { number: 3, .. }));
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    fn stick(number: u32, serial: &str) -> Disk {
+        Disk {
+            number,
+            friendly_name: Some("Stick".into()),
+            serial_number: Some(serial.into()),
+            device_path: Some("/dev/fake".into()),
+            size: 32_000_000_000,
+            bus_type: "USB".into(),
+            is_system: false,
+            is_boot: false,
+            blocked: None,
+        }
+    }
+
+    #[test]
+    fn another_stick_with_the_same_number_has_another_token() {
+        let a = stick(3, "AAAA1111");
+        assert_eq!(a.identity_token(), stick(3, "AAAA1111 ").identity_token());
+        assert_ne!(a.identity_token(), stick(3, "BBBB2222").identity_token());
+        assert_ne!(a.identity_token(), stick(4, "AAAA1111").identity_token());
+        // Only hex, so it can sit in the helper's command line.
+        assert!(a.identity_token().bytes().all(|b| b.is_ascii_hexdigit()));
     }
 }
