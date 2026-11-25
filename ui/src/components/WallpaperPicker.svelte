@@ -66,7 +66,7 @@
       {/if}
     </div>
     <div class="grow">
-      <div class="n">{name ?? 'The Keeper OS wallpaper'}</div>
+      <div class="n" role="status">{name ?? 'The Keeper OS wallpaper'}</div>
       <div class="hint">PNG, JPG, WEBP or BMP up to 16 MB. A copy is kept with the profile.</div>
     </div>
     <button type="button" class="btn sm" onclick={choose} disabled={busy}>

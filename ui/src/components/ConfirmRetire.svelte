@@ -9,10 +9,18 @@
   let dialog = $state<HTMLDialogElement>();
 
   // The browser's own modal dialog: it traps focus and closes on Escape, which counts as Cancel.
+  // Focus goes back to the button that opened it; the browser does not always do that itself.
+  let invoker: Element | null = null;
   $effect(() => {
     if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
-    if (!open && dialog.open) dialog.close();
+    if (open && !dialog.open) {
+      invoker = document.activeElement;
+      dialog.showModal();
+    }
+    if (!open && dialog.open) {
+      dialog.close();
+      if (invoker instanceof HTMLElement) invoker.focus();
+    }
   });
 </script>
 
@@ -56,7 +64,7 @@
 
 <style>
   dialog {
-    width: min(520px, calc(100vw - 32px));
+    width: min(660px, calc(100vw - 32px));
     padding: 22px 24px;
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-lg);
