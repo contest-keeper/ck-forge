@@ -3,6 +3,7 @@
 mod app;
 mod folder;
 mod hub;
+mod hub_profiles;
 mod images;
 mod profile;
 mod sticks;
