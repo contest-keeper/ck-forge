@@ -745,6 +745,7 @@ pub fn list_profiles(hub: &str, session: &HubSession) -> Result<Vec<ProfileSumma
 
 /// One profile of the organization, with its wallpaper picture.
 pub fn fetch_profile(hub: &str, session: &HubSession, id: &str) -> Result<HubProfile, Error> {
+    check_profile_id(id)?;
     let base = checked_base(hub)?;
     let bearer = session.authorization()?;
     let mut answer = agent()
@@ -803,6 +804,7 @@ pub fn upload_profile(
     id: &str,
     profile: &HubProfile,
 ) -> Result<(), Error> {
+    check_profile_id(id)?;
     let base = checked_base(hub)?;
     let wallpaper = profile.wallpaper.as_ref().map(|w| {
         json!({ "name": w.name, "data_base64": base64::engine::general_purpose::STANDARD.encode(&w.bytes) })
@@ -823,6 +825,22 @@ pub fn upload_profile(
         .send_json(json!({ "name": profile.name, "settings": settings, "wallpaper": wallpaper }))
         .map_err(|e| unreachable_hub(base, &e))?;
     check_profile_status(&mut answer)
+}
+
+/// The id goes into a Hub address, and a profile file from another admin can hold any `hub_id`,
+/// so one with a `/`, `..` or `?` must not steer the admin's token to another Hub route. It is
+/// also a folder name when a profile is loaded.
+pub(crate) fn check_profile_id(id: &str) -> Result<(), Error> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(Error::Hub(
+            "the Hub gave a profile id that cannot be used as a folder name".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn unreachable_hub(base: &str, error: &ureq::Error) -> Error {
@@ -901,6 +919,31 @@ mod tests {
         assert!(!safe_for_password("http://localhost:80@evil.org"));
         assert!(!safe_for_password("http://localhost@evil.org/"));
         assert!(!safe_for_password("hub.example.org"));
+    }
+
+    #[test]
+    fn a_profile_id_cannot_steer_the_request_to_another_hub_route() {
+        let session = HubSession::restore("token".to_owned(), "a@example.test".to_owned());
+        // Port 1 is closed: a request that was sent would say "cannot reach", not "profile id".
+        let hub = "http://127.0.0.1:1";
+        let profile = super::HubProfile {
+            name: String::new(),
+            settings: serde_json::from_value(serde_json::json!({})).unwrap_or_default(),
+            stick_key_window: None,
+            wallpaper: None,
+        };
+        for id in ["../me", "a/b", "a?b", ""] {
+            let fetched = super::fetch_profile(hub, &session, id)
+                .unwrap_err()
+                .to_string();
+            let sent = super::upload_profile(hub, &session, id, &profile)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                fetched.contains("profile id") && sent.contains("profile id"),
+                "{id}"
+            );
+        }
     }
 
     #[test]
