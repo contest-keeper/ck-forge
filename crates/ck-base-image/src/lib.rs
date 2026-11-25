@@ -107,12 +107,22 @@ pub fn create_base_image(
             return Err(error);
         }
     };
-    fs::rename(&partial, &options.out).map_err(|e| Error::io("naming the finished image", e))?;
+    publish(&partial, &options.out)?;
     let text = serde_json::to_string_pretty(&record)?;
     fs::write(record_path(&options.out), text).map_err(|e| Error::io("writing the record", e))?;
     // The logs are only for a failed build.
     let _ = fs::remove_dir_all(&work);
     Ok(record)
+}
+
+/// Gives the finished image its name without replacing a file that appeared there since the start
+/// of the build: a hard link fails when `out` exists, where a rename would silently replace it.
+fn publish(partial: &Path, out: &Path) -> Result<(), Error> {
+    fs::hard_link(partial, out).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => Error::Exists(out.display().to_string()),
+        _ => Error::io("naming the finished image", e),
+    })?;
+    fs::remove_file(partial).map_err(|e| Error::io("removing the unfinished image name", e))
 }
 
 fn build(
@@ -166,4 +176,23 @@ fn build(
         size_bytes,
         image_sha256: sha256_file(image)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_finished_image_never_replaces_a_file_that_appeared_meanwhile() {
+        let dir = tempfile::tempdir().expect("folder");
+        let (partial, out) = (dir.path().join("a.partial"), dir.path().join("a.img"));
+        fs::write(&partial, b"new").expect("partial");
+        fs::write(&out, b"mine").expect("existing");
+        assert!(matches!(publish(&partial, &out), Err(Error::Exists(_))));
+        assert_eq!(fs::read(&out).expect("kept"), b"mine");
+        fs::remove_file(&out).expect("remove");
+        publish(&partial, &out).expect("publish");
+        assert_eq!(fs::read(&out).expect("image"), b"new");
+        assert!(!partial.exists());
+    }
 }
