@@ -141,3 +141,8 @@ export function wholeNumber(value: unknown, min: number): number {
   const number = Math.trunc(Number(value));
   return Number.isFinite(number) && number >= min ? number : min;
 }
+
+/** What Codeforces uses for a contest number: digits only. Same rule as the Rust side's `is_codeforces_id`. */
+export function isCodeforcesId(id: string): boolean {
+  return /^[0-9]+$/.test(id.trim());
+}

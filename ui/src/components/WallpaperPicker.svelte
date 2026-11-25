@@ -10,16 +10,13 @@
   let preview = $state<string | null>(null);
   let failure = $state('');
   let busy = $state(false);
-  // Choosing a picture of the same type replaces the file but not its name, so the preview needs
-  // its own reason to load again.
-  let changes = $state(0);
-
   const name = $derived(settings.branding.wallpaper);
 
   $effect(() => {
     const path = app.profilePath;
     const file = name;
-    void changes;
+    // Choosing a picture of the same type replaces the file but not its name: load again.
+    void app.wallpaperRevision;
     preview = null;
     if (!path || !file) return;
     let current = true;
@@ -45,7 +42,7 @@
       // The picture goes next to the profile, so the profile needs a place first.
       const path = await saveProfile();
       settings.branding.wallpaper = await api.addWallpaper(path, source);
-      changes += 1;
+      app.wallpaperRevision += 1;
     } catch (error) {
       failure = describeError(error);
     } finally {

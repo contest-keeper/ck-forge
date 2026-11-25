@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContestPreview from '../components/ContestPreview.svelte';
   import Field from '../components/Field.svelte';
   import Messages from '../components/Messages.svelte';
   import { describeError } from '../core/format';
@@ -9,7 +10,7 @@
     type StickKeyWindow,
   } from '../core/profile';
   import * as api from '../lib/api';
-  import { app, saveProfile } from '../state.svelte';
+  import { app, saveProfile, useProfile } from '../state.svelte';
   import BrandingForm from './BrandingForm.svelte';
   import ContestForm from './ContestForm.svelte';
   import NetworkForm from './NetworkForm.svelte';
@@ -63,8 +64,7 @@
 
   const create = () =>
     run(async () => {
-      app.profile = await api.newProfile();
-      app.profilePath = null;
+      useProfile(await api.newProfile(), null);
       return 'A new profile. Save it to build sticks.';
     });
 
@@ -72,8 +72,7 @@
     run(async () => {
       const path = await api.chooseProfileToOpen();
       if (!path) return '';
-      app.profile = await api.openProfile(path);
-      app.profilePath = path;
+      useProfile(await api.openProfile(path), path);
       return `Opened ${path}`;
     });
 
@@ -88,8 +87,7 @@
   const loadFromHub = (id: string) =>
     run(async () => {
       const loaded = await api.hubLoadProfile(id);
-      app.profile = loaded.profile;
-      app.profilePath = loaded.path;
+      useProfile(loaded.profile, loaded.path);
       hubProfiles = null;
       return `Loaded ${loaded.profile.name} from the Hub`;
     });
@@ -98,7 +96,7 @@
     run(async () => {
       if (!app.profile) return '';
       const path = await saveProfile();
-      app.profile = await api.hubSaveProfile(path, $state.snapshot(app.profile));
+      useProfile(await api.hubSaveProfile(path, $state.snapshot(app.profile)), path);
       return `Saved ${app.profile.name} to the Hub`;
     });
 
@@ -116,9 +114,6 @@
         Save to Hub
       </button>
     {/if}
-    <span class="where">
-      {app.profilePath ?? 'Not saved yet. Continue saves it in the Keeper Forge folder.'}
-    </span>
   </div>
 
   {#if hubProfiles && hubProfiles.length > 0}
@@ -146,6 +141,7 @@
       </Field>
     </div>
     <ContestForm bind:settings={app.profile.settings} />
+    <ContestPreview name={app.profile.name} settings={app.profile.settings} />
     <div class="card">
       <label class="check">
         <input
@@ -228,10 +224,5 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: var(--gap);
-  }
-  .where {
-    color: var(--muted);
-    font-size: 0.85rem;
-    overflow-wrap: anywhere;
   }
 </style>

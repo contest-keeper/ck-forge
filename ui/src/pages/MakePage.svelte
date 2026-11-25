@@ -334,7 +334,9 @@
                 </span>
               {/if}
             </span>
-            {#if disk.refused !== null}
+            {#if disk.too_small}
+              <span class="pill warn">Too small</span>
+            {:else if disk.refused !== null}
               <span class="pill no">Protected</span>
             {:else if earlier[disk.number]}
               <span class="pill warn">Rewrite</span>
@@ -360,6 +362,14 @@
     </header>
 
     {#if chosen.length > 0}
+      <dl class="sum" aria-label="What will be written">
+        <dt>Sticks</dt>
+        <dd>{chosen.length} ({chosen.length === 1 ? 'disk' : 'disks'} {names})</dd>
+        <dt>Base image</dt>
+        <dd>{app.basePath ? fileName(app.basePath) : 'none chosen'}</dd>
+        <dt>Profile</dt>
+        <dd>{app.profile?.name || 'unnamed'}</dd>
+      </dl>
       <div class="danger">
         <div class="grow">
           <div class="dh">
@@ -393,6 +403,11 @@
       <p class="hint">Choose at least one stick above.</p>
     {/if}
 
+    {#if app.busy}
+      <p class="note error" role="status">
+        Do not unplug the sticks or close this window until the write is finished.
+      </p>
+    {/if}
     <ProgressBar {progress} />
     {#if failure}<p class="note error" role="alert">{failure}</p>{/if}
     {#if hash}

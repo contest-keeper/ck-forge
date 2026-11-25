@@ -34,6 +34,8 @@ export type DiskView = {
   size: string;
   bus: string;
   refused: string | null;
+  /** The disk is smaller than the base image. */
+  too_small: boolean;
 };
 
 export type Progress = {

@@ -242,6 +242,8 @@ pub struct DiskView {
     bus: String,
     /// Why this disk is never written, or nothing when it may be.
     refused: Option<String>,
+    /// The disk is smaller than the image, so the window can say so and not just "protected".
+    too_small: bool,
 }
 
 #[tauri::command]
@@ -251,20 +253,24 @@ pub async fn list_disks(base: PathBuf, allow_virtual: bool) -> Result<Vec<DiskVi
         let disks = ck_writer::list_disks().map_err(|e| e.to_string())?;
         Ok(disks
             .iter()
-            .map(|disk| DiskView {
-                number: disk.number,
-                name: disk.friendly_name.clone().unwrap_or_default(),
-                serial: disk
-                    .serial_number
-                    .clone()
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned(),
-                hardware_id: HardwareId::of(disk)
-                    .map(|id| id.fingerprint.chars().take(8).collect()),
-                size: disk.size_text(),
-                bus: disk.bus_type.clone(),
-                refused: disk.check(size, allow_virtual).err().map(|e| e.to_string()),
+            .map(|disk| {
+                let refusal = disk.check(size, allow_virtual).err();
+                DiskView {
+                    number: disk.number,
+                    name: disk.friendly_name.clone().unwrap_or_default(),
+                    serial: disk
+                        .serial_number
+                        .clone()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned(),
+                    hardware_id: HardwareId::of(disk)
+                        .map(|id| id.fingerprint.chars().take(8).collect()),
+                    size: disk.size_text(),
+                    bus: disk.bus_type.clone(),
+                    refused: refusal.as_ref().map(ToString::to_string),
+                    too_small: matches!(refusal, Some(ck_writer::Error::TooSmall { .. })),
+                }
             })
             .collect())
     })
