@@ -30,6 +30,8 @@ ck-admin-core = { path = "../crates/ck-admin-core" }
 ck-writer = { path = "../crates/ck-writer" }
 ck-protocol = { git = "https://github.com/contest-keeper/ck-protocol", rev = "9af064ac5e9b1d1fd788485a329c98ac46c1f98a", version = "0.1.0" }
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+base64 = "0.22.1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
 open = "5"
 
 [dev-dependencies]

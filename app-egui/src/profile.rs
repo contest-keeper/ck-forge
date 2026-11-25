@@ -3,7 +3,8 @@
 
 use std::path::PathBuf;
 
-use ck_admin_core::{Profile, add_wallpaper};
+use base64::Engine;
+use ck_admin_core::{Profile, add_wallpaper, wallpaper_data_url};
 use ck_protocol::{Bookmark, LocalDateTime, RecordingMode, UploadMode, Wifi};
 
 #[derive(Default)]
@@ -19,6 +20,8 @@ pub struct Screen {
     /// saved in the profile.
     ssid: String,
     wallpaper_source: String,
+    /// The wallpaper as a picture, made once when it changes and not on every frame.
+    preview: Option<eframe::egui::TextureHandle>,
     /// What the last open, save or picture said.
     message: String,
 }
@@ -198,6 +201,28 @@ fn contest_end_wifi_recording_ui(
     recording_ui(ui, &mut profile.settings.recording);
 }
 
+/// The longest side of the preview picture, so a large wallpaper never exceeds a texture size.
+const PREVIEW_SIDE: u32 = 1024;
+
+/// The picture inside a `data:<type>;base64,<data>` address, made small enough to show.
+fn picture_of(data_url: &str) -> Option<eframe::egui::ColorImage> {
+    let (_, encoded) = data_url.split_once(";base64,")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let mut picture = image::load_from_memory(&bytes).ok()?;
+    // `thumbnail` also enlarges, which a small picture does not need.
+    if picture.width() > PREVIEW_SIDE || picture.height() > PREVIEW_SIDE {
+        picture = picture.thumbnail(PREVIEW_SIDE, PREVIEW_SIDE);
+    }
+    let picture = picture.to_rgba8();
+    let size = [picture.width() as usize, picture.height() as usize];
+    Some(eframe::egui::ColorImage::from_rgba_unmultiplied(
+        size,
+        picture.as_raw(),
+    ))
+}
+
 /// Whether the typed contest end is empty (none) or a date and time.
 fn end_is_valid(text: &str) -> bool {
     text.trim().is_empty() || text.parse::<LocalDateTime>().is_ok()
@@ -215,13 +240,22 @@ impl Screen {
                 self.set(Profile::template(), "A new profile");
             }
             if ui.button("Open").clicked() {
-                self.open();
+                self.open(ui.ctx());
             }
             if ui
                 .add_enabled(self.profile.is_some(), eframe::egui::Button::new("Save"))
                 .clicked()
             {
                 self.save();
+            }
+            if ui
+                .add_enabled(
+                    self.profile.is_some(),
+                    eframe::egui::Button::new("Save in the Forge folder"),
+                )
+                .clicked()
+            {
+                self.save_in_forge_folder();
             }
         });
         if !self.message.is_empty() {
@@ -290,11 +324,15 @@ impl Screen {
             ui.colored_label(ui.visuals().warn_fg_color, warning);
         }
         ui.separator();
+        self.wallpaper_ui(ui);
+    }
+
+    fn wallpaper_ui(&mut self, ui: &mut eframe::egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Wallpaper picture");
             ui.text_edit_singleline(&mut self.wallpaper_source);
             if ui.button("Use").clicked() {
-                self.use_wallpaper();
+                self.use_wallpaper(ui.ctx());
             }
         });
         if let Some(name) = self
@@ -303,6 +341,9 @@ impl Screen {
             .and_then(|profile| profile.settings.branding.wallpaper.as_ref())
         {
             ui.label(format!("Wallpaper: {name}"));
+        }
+        if let Some(preview) = &self.preview {
+            ui.add(eframe::egui::Image::new(preview).max_width(320.0));
         }
     }
 
@@ -324,10 +365,32 @@ impl Screen {
         message.clone_into(&mut self.message);
     }
 
-    fn open(&mut self) {
+    fn open(&mut self, ctx: &eframe::egui::Context) {
         match Profile::load(&PathBuf::from(self.path.trim())) {
-            Ok(profile) => self.set(profile, "Opened"),
+            Ok(profile) => {
+                self.set(profile, "Opened");
+                self.refresh_preview(ctx);
+            }
             Err(error) => self.message = error.to_string(),
+        }
+    }
+
+    /// Saves a profile that has no file yet in the Forge folder, which is also where the Svelte
+    /// window keeps profiles, and makes that file the one being edited.
+    fn save_in_forge_folder(&mut self) {
+        let Some(profile) = &self.profile else {
+            return;
+        };
+        let Some(data) = crate::folder::data_dir() else {
+            "Could not find the Forge folder".clone_into(&mut self.message);
+            return;
+        };
+        match crate::folder::save_in(&data, profile) {
+            Ok(path) => {
+                self.path = path.display().to_string();
+                self.message = format!("Saved in {}", path.display());
+            }
+            Err(why) => self.message = why,
         }
     }
 
@@ -347,7 +410,24 @@ impl Screen {
         };
     }
 
-    fn use_wallpaper(&mut self) {
+    /// Makes the picture of the profile's wallpaper, or none when there is no picture or it is too
+    /// large or not readable. The texture is replaced, so a new picture is never shown stale.
+    fn refresh_preview(&mut self, ctx: &eframe::egui::Context) {
+        self.preview = None;
+        let Some(name) = self
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.settings.branding.wallpaper.clone())
+        else {
+            return;
+        };
+        let url = wallpaper_data_url(&PathBuf::from(self.path.trim()), &name);
+        self.preview = url.as_deref().and_then(picture_of).map(|picture| {
+            ctx.load_texture("wallpaper", picture, eframe::egui::TextureOptions::LINEAR)
+        });
+    }
+
+    fn use_wallpaper(&mut self, ctx: &eframe::egui::Context) {
         let Some(profile) = &mut self.profile else {
             return;
         };
@@ -356,6 +436,7 @@ impl Screen {
             Ok(name) => {
                 profile.settings.branding.wallpaper = Some(name);
                 "The picture was copied next to the profile".clone_into(&mut self.message);
+                self.refresh_preview(ctx);
             }
             Err(error) => self.message = error.to_string(),
         }
@@ -390,6 +471,20 @@ mod tests {
         let wifi = wifi_for(" venue ").expect("a network");
         assert_eq!(wifi.ssid, "venue");
         assert!(wifi.password.is_none());
+    }
+
+    #[test]
+    fn a_wallpaper_address_becomes_a_picture_and_garbage_does_not() {
+        // A 2 by 1 PNG made in memory, then handed over as the data address the engine builds.
+        let mut png = Vec::new();
+        image::DynamicImage::new_rgba8(2, 1)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("png");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        let picture = picture_of(&format!("data:image/png;base64,{encoded}")).expect("picture");
+        assert_eq!(picture.size, [2, 1]);
+        assert!(picture_of("data:image/png;base64,@@@").is_none());
+        assert!(picture_of("not an address").is_none());
     }
 
     #[test]
@@ -452,7 +547,7 @@ mod tests {
             path: screen.path.clone(),
             ..Screen::default()
         };
-        again.open();
+        again.open(&eframe::egui::Context::default());
         assert_eq!(again.domains, "a.example.org\nb.example.org");
         std::fs::remove_dir_all(&dir).expect("cleanup");
     }

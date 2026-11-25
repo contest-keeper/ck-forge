@@ -1,6 +1,7 @@
 //! The Keeper Forge window, in egui. It only calls `ck-admin-core`, like the command line does.
 
 mod app;
+mod folder;
 mod hub;
 mod images;
 mod profile;
