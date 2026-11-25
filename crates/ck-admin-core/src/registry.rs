@@ -124,6 +124,24 @@ impl Registry {
         Ok(true)
     }
 
+    /// Takes a stick out of the registry file. A stick whose write failed must not stay there: every
+    /// later push sends the whole file, so the Hub would take in a stick that was never written.
+    /// Returns false when the file or the stick is not there.
+    pub fn remove(path: &Path, id: &StickId) -> Result<bool, Error> {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let _lock = Lock::acquire(path)?;
+        let mut registry = Self::load(path)?;
+        let before = registry.sticks.len();
+        registry.sticks.retain(|entry| &entry.stick_id != id);
+        if registry.sticks.len() == before {
+            return Ok(false);
+        }
+        registry.save(path)?;
+        Ok(true)
+    }
+
     /// The number for the next stick of `contest`: one more than any number used so far, and never
     /// less than the count of sticks already made for it, so older entries without a number are
     /// not given the same number twice.
@@ -167,6 +185,31 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(id: &str) -> RegistryEntry {
+        serde_json::from_value(serde_json::json!({
+            "stick_id": id, "token": "0123456789abcdef", "team": "", "site": "",
+            "contest": "Contest", "image": "", "created_at": "2026-11-19T11:08:13"
+        }))
+        .expect("entry")
+    }
+
+    #[test]
+    fn a_removed_stick_is_gone_from_the_file_and_the_others_stay() {
+        let folder = tempfile::tempdir().expect("temp folder");
+        let path = folder.path().join("registry.json");
+        let (a, b) = (
+            StickId::parse("stick-a").expect("id"),
+            StickId::parse("stick-b").expect("id"),
+        );
+        assert!(!Registry::remove(&path, &a).expect("no file"));
+        Registry::register(&path, entry("stick-a")).expect("add a");
+        Registry::register(&path, entry("stick-b")).expect("add b");
+        assert!(Registry::remove(&path, &a).expect("remove a"));
+        assert!(!Registry::remove(&path, &a).expect("remove a again"));
+        let left = Registry::load(&path).expect("registry");
+        assert!(left.find(&a).is_none() && left.find(&b).is_some());
+    }
 
     #[test]
     fn enrolment_reservations_number_each_machine_without_storing_a_credential() {

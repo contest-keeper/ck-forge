@@ -660,7 +660,7 @@ pub fn retire_stick_credential(hub: &str, session: &HubSession, id: &str) -> Res
         204 => Ok(()),
         401 => Err(Error::Hub("sign in again to retire the stick key".into())),
         403 => Err(Error::Hub("this account cannot retire stick keys".into())),
-        404 => Err(Error::Hub("this organization has no such stick".into())),
+        404 => Err(Error::NoSuchStick),
         409 => Err(Error::Hub(
             "retiring this key in Forge requires a sign-in with one organization".into(),
         )),

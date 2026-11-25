@@ -34,6 +34,8 @@ pub enum Error {
     BaseImage(#[from] ck_base_image::Error),
     #[error("{0}")]
     Hub(String),
+    #[error("this organization has no such stick")]
+    NoSuchStick,
     #[error(
         "there is no Wi-Fi network to give a password to: set one in the profile or give --wifi-ssid"
     )]

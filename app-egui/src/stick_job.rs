@@ -11,7 +11,8 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    EnrolmentBuild, HUB_URL, HardwareId, HubSession, Profile, SignSettings, Wallpaper,
+    EnrolmentBuild, Error as AdminError, HUB_URL, HardwareId, HubSession, Profile, Registry, SignSettings,
+    Wallpaper,
     build_enrolment_image, build_thin_image, enrolment_config_sha256, folder_of, local_now,
     mint_enrolment_code, push_registry_signed_in, record_config_hash, record_stick_write,
     retire_stick_credential, sign_settings, stick_config_sha256, vault,
@@ -118,20 +119,56 @@ fn write_all(
     let mut made = Vec::new();
     let result = make_and_write(request, session.as_ref(), cancel, &work, report, &mut made);
     let _ = std::fs::remove_dir_all(&work);
-    // The Hub learns of a stick when its image is built, before anything is written. A stick whose
-    // write was cancelled or failed does not exist, so it must not stay on the Hub as a live stick.
-    if let (Err(error), Some(session)) = (&result, session.as_ref()) {
+    // The registry file is written when an image is built, and every push sends the whole file. A
+    // stick whose write was cancelled or failed does not exist, so it leaves the file first: it
+    // must never reach the Hub later as a live stick.
+    let Err(error) = &result else {
+        return result;
+    };
+    let registry = registry_of(&request.profile);
+    let mut problems = unregister(&made, |id| Registry::remove(&registry, id).map(|_| ()).map_err(|e| e.to_string()));
+    // The Hub learns of a stick when its image is built, before anything is written, so it must not
+    // keep it as a live stick either. A Hub that has no such stick has nothing to retire.
+    if let Some(session) = session.as_ref() {
         let failed = retire_unwritten(&made, |id| {
-            retire_stick_credential(HUB_URL, session, id).map_err(|e| e.to_string())
+            match retire_stick_credential(HUB_URL, session, id) {
+                Ok(()) | Err(AdminError::NoSuchStick) => Ok(()),
+                Err(e) => Err(e.to_string()),
+            }
         });
         if !failed.is_empty() {
-            return Err(format!(
-                "{error}. These sticks could not be retired on the Hub, so retire them there: {}",
+            problems.push(format!(
+                "these sticks could not be retired on the Hub, so retire them there: {}",
                 failed.join(", ")
             ));
         }
     }
-    result
+    if problems.is_empty() {
+        result
+    } else {
+        Err(format!("{error}. {}", problems.join(". ")))
+    }
+}
+
+/// Takes each stick out of the registry file. A failure does not stop the others; each one that could
+/// not be removed is named, because it would reach the Hub with the next push.
+fn unregister(
+    made: &[MadeStick],
+    mut remove: impl FnMut(&StickId) -> Result<(), String>,
+) -> Vec<String> {
+    let failed: Vec<String> = made
+        .iter()
+        .filter(|stick| remove(&stick.id).is_err())
+        .map(|stick| stick.id.to_string())
+        .collect();
+    if failed.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "these sticks could not be taken out of the registry file, so delete them from it before the next push: {}",
+            failed.join(", ")
+        )]
+    }
 }
 
 /// Retires each stick the Hub knows but that was not written. A failure does not stop the others;
@@ -555,6 +592,20 @@ mod tests {
         });
         assert_eq!(tried, ["stick-a", "stick-b", "stick-d"]);
         assert_eq!(failed, ["stick-b"]);
+    }
+
+    #[test]
+    fn every_stick_of_a_failed_write_leaves_the_registry_and_the_ones_that_stay_are_named() {
+        let sticks = [made("stick-a", true), made("stick-b", false), made("stick-c", true)];
+        let mut tried = Vec::new();
+        let problems = unregister(&sticks, |id| {
+            tried.push(id.to_string());
+            if id.as_str() == "stick-b" { Err("locked".to_owned()) } else { Ok(()) }
+        });
+        assert_eq!(tried, ["stick-a", "stick-b", "stick-c"]);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("stick-b") && !problems[0].contains("stick-a"));
+        assert_eq!(unregister(&sticks, |_| Ok(())).len(), 0);
     }
 
     fn state(text: &str) -> Option<HelperState> {
