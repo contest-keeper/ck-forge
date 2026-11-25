@@ -76,7 +76,7 @@
     then used as the base image. Most admins download one instead.
   </p>
   <div class="path">
-    <label class="grow">
+    <label class="grow system">
       <span class="n">Which system</span>
       <select bind:value={distro} disabled={busy || disabled}>
         {#each catalog as item (item.id)}
@@ -108,18 +108,51 @@
   <div class="path">
     <button
       type="button"
-      class="btn"
+      class="btn pri"
       onclick={create}
       disabled={busy || disabled || !distro || !out}
     >
-      {busy ? 'Making the image…' : 'Make the base image'}
+      {busy ? 'Making the image…' : 'Make the base image…'}
     </button>
-    {#if busy && step}
-      <span class="hint">{labels[step.step]}{percent !== null ? ` · ${percent}%` : ''}</span>
-    {/if}
+    <div class="grow" role="status">
+      {#if busy && step}
+        <label class="hint" for="base-progress">
+          {labels[step.step]}{percent !== null ? ` · ${percent}%` : ''}
+        </label>
+        <progress id="base-progress" max="100" value={percent ?? undefined}></progress>
+      {:else if busy}
+        <span class="hint">Starting…</span>
+      {:else if !out}
+        <span class="hint">Choose where to save the image first.</span>
+      {:else if !distro}
+        <span class="hint">No system is available to build from.</span>
+      {/if}
+    </div>
   </div>
   {#if failure}<p class="note error" role="alert">{failure}</p>{/if}
   {#if hash}
-    <p class="note ok">Base image made and chosen. Its check value (SHA-256) is {hash}.</p>
+    <p class="note ok" role="status">
+      Base image made and chosen. Its check value (SHA-256) is {hash}.
+    </p>
   {/if}
 </div>
+
+<style>
+  .system select {
+    display: block;
+    width: 100%;
+    max-width: 320px;
+    min-height: 40px;
+    margin-top: 4px;
+    padding: 0 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--input-bg);
+    color: var(--text);
+  }
+  progress {
+    display: block;
+    width: 100%;
+    accent-color: var(--accent);
+  }
+</style>

@@ -9,6 +9,8 @@
 
   let failure = $state('');
   let working = $state<string | null>(null);
+  // The stick whose retiring waits for a second click: it cannot be undone.
+  let asking = $state<string | null>(null);
 
   // For a stick the Hub could not match to a disk: the Hub's own list, by team and machine.
   let others = $state<api.HubStick[] | null>(null);
@@ -26,6 +28,7 @@
 
   async function retire(stick: api.HubStick) {
     failure = '';
+    asking = null;
     working = stick.stick_id;
     try {
       await api.hubRetireStick(stick.stick_id);
@@ -53,6 +56,19 @@
   const chosen = $derived(open.find((stick) => stick.stick_id === otherId));
 </script>
 
+{#snippet sure(stick: api.HubStick)}
+  <div class="sure" role="group" aria-label="Confirm retiring this key">
+    <span>Retire this key for good? That stick can no longer report to the Hub.</span>
+    <button type="button" class="btn sm dng" onclick={() => retire(stick)}>Retire the key</button>
+    <button
+      type="button"
+      class="btn sm"
+      onclick={() => (asking = null)}
+      {@attach (el) => el.focus()}>Keep it</button
+    >
+  </div>
+{/snippet}
+
 {#if app.hubEmail}
   <section class="card">
     <h2>Retire old keys</h2>
@@ -78,13 +94,14 @@
           <button
             type="button"
             class="btn sm"
-            onclick={() => retire(stick)}
+            onclick={() => (asking = stick.stick_id)}
             disabled={app.busy || working !== null}
           >
-            {working === stick.stick_id ? 'Retiring…' : 'Retire its old key'}
+            {working === stick.stick_id ? 'Retiring…' : 'Retire its old key…'}
           </button>
         {/if}
       </div>
+      {#if asking === stick.stick_id}{@render sure(stick)}{/if}
     {/each}
 
     <details>
@@ -117,12 +134,15 @@
             <button
               type="button"
               class="btn sm"
-              onclick={() => chosen && retire(chosen)}
+              onclick={() => chosen && (asking = chosen.stick_id)}
               disabled={!chosen || app.busy || working !== null}
+              aria-describedby="why-retire"
             >
-              Retire its key
+              {working !== null && working === otherId ? 'Retiring…' : 'Retire its key…'}
             </button>
+            {#if !chosen}<span id="why-retire" class="hint">Choose a stick first.</span>{/if}
           </div>
+          {#if chosen && asking === chosen.stick_id}{@render sure(chosen)}{/if}
         {/if}
       </div>
     </details>
@@ -141,6 +161,20 @@
   summary {
     cursor: pointer;
     font-weight: 600;
+  }
+  .sure {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--danger-line);
+    border-radius: var(--radius);
+    background: var(--danger-bg);
+    color: var(--danger-text);
+  }
+  .sure span {
+    flex: 1 1 240px;
   }
   .pickone {
     display: flex;

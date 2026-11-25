@@ -129,6 +129,7 @@
   filter: brightness(1.08);
 }
 [data-theme='modern'] .btn.dng {
+  background: var(--danger-solid);
   box-shadow: none;
 }
 [data-theme='modern'] .btn.dng:hover:not(:disabled) {
