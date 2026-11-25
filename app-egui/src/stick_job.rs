@@ -61,6 +61,9 @@ struct MadeStick {
     config_sha256: String,
     /// The disk it goes to, for a stick that already has its key.
     disk: Option<HardwareId>,
+    /// Whether the Hub already knows this stick id. A first-boot enrolment stick is not known until it
+    /// claims its code (the Hub picks the id then), and the code runs out by itself.
+    registered: bool,
 }
 
 /// The registry file that goes with a profile file.
@@ -117,21 +120,33 @@ fn write_all(
     let _ = std::fs::remove_dir_all(&work);
     // The Hub learns of a stick when its image is built, before anything is written. A stick whose
     // write was cancelled or failed does not exist, so it must not stay on the Hub as a live stick.
-    if result.is_err()
-        && let Some(session) = session.as_ref()
-    {
-        retire_unwritten(&made, |id| {
-            let _ = retire_stick_credential(HUB_URL, session, id);
+    if let (Err(error), Some(session)) = (&result, session.as_ref()) {
+        let failed = retire_unwritten(&made, |id| {
+            retire_stick_credential(HUB_URL, session, id).map_err(|e| e.to_string())
         });
+        if !failed.is_empty() {
+            return Err(format!(
+                "{error}. These sticks could not be retired on the Hub, so retire them there: {}",
+                failed.join(", ")
+            ));
+        }
     }
     result
 }
 
-/// Calls `retire` with the id of each stick that was registered but not written.
-fn retire_unwritten(made: &[MadeStick], mut retire: impl FnMut(&str)) {
-    for stick in made {
-        retire(stick.id.as_str());
+/// Retires each stick the Hub knows but that was not written. A failure does not stop the others;
+/// the ids that could not be retired are returned so the window can say so.
+fn retire_unwritten(
+    made: &[MadeStick],
+    mut retire: impl FnMut(&str) -> Result<(), String>,
+) -> Vec<String> {
+    let mut failed = Vec::new();
+    for stick in made.iter().filter(|stick| stick.registered) {
+        if retire(stick.id.as_str()).is_err() {
+            failed.push(stick.id.to_string());
+        }
     }
+    failed
 }
 
 /// `made` gets each stick as soon as its image is built, so the caller can retire them if this fails.
@@ -254,6 +269,7 @@ fn build_stick(
             config_sha256: enrolment_config_sha256(&config),
             id: config.stick_id,
             disk: None,
+            registered: false,
         });
     }
     let built = build_thin_image(
@@ -275,6 +291,7 @@ fn build_stick(
         config_sha256: stick_config_sha256(&built.config),
         id: built.config.stick_id,
         disk: hardware.cloned(),
+        registered: session.is_some(),
     })
 }
 
@@ -509,19 +526,35 @@ fn write_elevated(
 mod tests {
     use super::*;
 
+    fn made(name: &str, registered: bool) -> MadeStick {
+        MadeStick {
+            id: StickId::parse(name).expect("id"),
+            config_sha256: String::new(),
+            disk: None,
+            registered,
+        }
+    }
+
     #[test]
-    fn every_registered_stick_is_retired_when_the_write_does_not_finish() {
-        let made: Vec<MadeStick> = ["stick-a", "stick-b"]
-            .iter()
-            .map(|name| MadeStick {
-                id: StickId::parse(name).expect("id"),
-                config_sha256: String::new(),
-                disk: None,
-            })
-            .collect();
-        let mut retired = Vec::new();
-        retire_unwritten(&made, |id| retired.push(id.to_owned()));
-        assert_eq!(retired, ["stick-a", "stick-b"]);
+    fn a_failed_write_retires_every_stick_the_hub_knows_and_reports_the_ones_it_could_not() {
+        let sticks = [
+            made("stick-a", true),
+            made("stick-b", true),
+            // A first-boot enrolment stick: the Hub has no stick of that id to retire.
+            made("stick-c", false),
+            made("stick-d", true),
+        ];
+        let mut tried = Vec::new();
+        let failed = retire_unwritten(&sticks, |id| {
+            tried.push(id.to_owned());
+            if id == "stick-b" {
+                Err("hub down".to_owned())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(tried, ["stick-a", "stick-b", "stick-d"]);
+        assert_eq!(failed, ["stick-b"]);
     }
 
     fn state(text: &str) -> Option<HelperState> {
