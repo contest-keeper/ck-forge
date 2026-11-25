@@ -20,12 +20,18 @@ pub(crate) fn image_catalog() -> Result<String, Error> {
     Ok(text)
 }
 
-/// Downloads under the user's local data folder, so a second build does not download again.
+/// Downloads under the user's local data folder (the caches folder on macOS), so a second build
+/// does not download again.
 pub(crate) fn default_cache() -> PathBuf {
-    match std::env::var_os("LOCALAPPDATA") {
-        Some(base) => PathBuf::from(base).join("ck-forge").join("cache"),
-        None => PathBuf::from("ck-forge-cache"),
+    if let Some(base) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(base).join("ck-forge").join("cache");
     }
+    if cfg!(target_os = "macos")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join("Library/Caches/ck-forge");
+    }
+    PathBuf::from("ck-forge-cache")
 }
 
 pub(crate) fn image_import(archive: &Path, out: &Path, sha256: &str) -> Result<String, Error> {

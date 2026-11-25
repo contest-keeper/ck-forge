@@ -1,9 +1,10 @@
-//! Keeps the Hub sign-in between runs, in the Windows Credential Manager. Other systems keep
-//! nothing: the admin signs in again each time. The window and the command line share the entry.
+//! Keeps the Hub sign-in between runs, in the Windows Credential Manager or the macOS Keychain.
+//! Other systems keep nothing: the admin signs in again each time. The window and the command line
+//! share the entry.
 
 use crate::hub::HubSession;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod store {
     use super::HubSession;
 
@@ -32,7 +33,7 @@ mod store {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 mod store {
     use super::HubSession;
 
