@@ -59,12 +59,16 @@ impl Default for Screen {
     }
 }
 
+/// The installation step counts seconds up to the time limit, not bytes: its "done" is the time
+/// that has passed and its "total" the longest it may take.
+const PROVISION: &str = "installing the desktop and tools";
+
 /// The words for what a step of making an image is doing.
 fn step_name(step: CreateStep) -> &'static str {
     match step {
         CreateStep::Download => "downloading",
         CreateStep::Convert => "converting to a raw disk",
-        CreateStep::Provision => "installing the desktop and tools",
+        CreateStep::Provision => PROVISION,
         CreateStep::Patch => "applying the Keeper OS patch",
         CreateStep::Hash => "checking the finished image",
     }
@@ -72,6 +76,13 @@ fn step_name(step: CreateStep) -> &'static str {
 
 /// "downloading: 40%" for a step with a known total, and just the step when the total is not known.
 fn progress_text(phase: &str, done: u64, total: u64) -> String {
+    if phase == PROVISION {
+        return format!(
+            "{phase}: {} min so far (at most {} min)",
+            done / 60,
+            total / 60
+        );
+    }
     match (done.min(total) * 100).checked_div(total) {
         Some(percent) => format!("{phase}: {percent}%"),
         None => phase.to_owned(),
@@ -264,6 +275,14 @@ mod tests {
     fn empty_text_is_no_path() {
         assert_eq!(typed("  "), None);
         assert_eq!(typed(" a.img "), Some(PathBuf::from("a.img")));
+    }
+
+    #[test]
+    fn the_installation_shows_the_time_that_passed_and_not_a_percentage() {
+        assert_eq!(
+            progress_text(PROVISION, 15 * 60, 90 * 60),
+            "installing the desktop and tools: 15 min so far (at most 90 min)"
+        );
     }
 
     #[test]
