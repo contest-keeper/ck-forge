@@ -374,6 +374,11 @@ impl Screen {
                     profile.hub_id = id;
                 }
             }
+            Some(Outcome::Assigned(id)) => {
+                if let Some(profile) = &mut self.profile {
+                    profile.hub_id.get_or_insert(id);
+                }
+            }
             None => {}
         }
     }

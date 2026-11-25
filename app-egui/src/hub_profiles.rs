@@ -7,7 +7,7 @@ use std::thread;
 
 use ck_admin_core::{
     HUB_URL, LoadedProfile, Profile, ProfileSummary, list_profiles, load_hub_profile,
-    save_hub_profile, vault,
+    new_profile_id, save_hub_profile, vault,
 };
 
 /// What a worker thread reports.
@@ -23,6 +23,9 @@ pub enum Outcome {
     Loaded(Box<LoadedProfile>),
     /// The profile was saved on the Hub, which gave it this id.
     Saved(Option<String>),
+    /// A save was started under this id. It is kept even if the save fails, so that a retry updates
+    /// the same Hub profile and does not make another one.
+    Assigned(String),
 }
 
 pub struct Panel {
@@ -72,7 +75,8 @@ impl Panel {
         current: Option<(&Profile, &str)>,
         save_blocked: Option<&str>,
     ) -> Option<Outcome> {
-        let outcome = self.receive();
+        let mut outcome = self.receive();
+        let mut assigned = None;
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!self.busy, eframe::egui::Button::new("List Hub profiles"))
@@ -92,7 +96,9 @@ impl Panel {
                     None => save,
                 };
                 if save.clicked() {
-                    self.save(ui.ctx(), profile.clone(), path);
+                    assigned = self
+                        .save(ui.ctx(), profile.clone(), path)
+                        .map(Outcome::Assigned);
                 }
             }
         });
@@ -113,6 +119,9 @@ impl Panel {
         }
         if !self.message.is_empty() {
             ui.label(&self.message);
+        }
+        if outcome.is_none() {
+            outcome = assigned;
         }
         outcome
     }
@@ -166,17 +175,28 @@ impl Panel {
         });
     }
 
-    fn save(&mut self, ctx: &eframe::egui::Context, profile: Profile, path: &str) {
+    /// Starts a save and returns the id it runs under when the profile had none yet.
+    fn save(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        mut profile: Profile,
+        path: &str,
+    ) -> Option<String> {
         let path = PathBuf::from(path.trim());
         if path.as_os_str().is_empty() {
             "Save the profile to a file first: the Hub copy takes its wallpaper from beside it"
                 .clone_into(&mut self.message);
-            return;
+            return None;
+        }
+        let assigned = profile.hub_id.is_none().then(new_profile_id);
+        if assigned.is_some() {
+            profile.hub_id.clone_from(&assigned);
         }
         self.start(ctx, move |sender| {
             let result = as_admin(|session| save_hub_profile(HUB_URL, session, &path, profile));
             Event::Saved(result).send(sender);
         });
+        assigned
     }
 }
 
@@ -194,7 +214,10 @@ mod tests {
     #[test]
     fn a_save_without_a_file_does_not_start() {
         let mut panel = Panel::default();
-        panel.save(&eframe::egui::Context::default(), Profile::template(), "  ");
+        assert_eq!(
+            panel.save(&eframe::egui::Context::default(), Profile::template(), "  "),
+            None
+        );
         assert!(!panel.busy);
         assert!(panel.message.contains("Save the profile to a file first"));
     }
