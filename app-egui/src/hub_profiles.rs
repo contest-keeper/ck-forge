@@ -103,17 +103,23 @@ impl Panel {
             }
         });
         let mut chosen = None;
-        for summary in &self.profiles {
-            ui.horizontal(|ui| {
-                ui.label(&summary.name);
-                if ui
-                    .add_enabled(!self.busy, eframe::egui::Button::new("Load"))
-                    .clicked()
-                {
-                    chosen = Some(summary.id.clone());
+        // A long list scrolls, so every Load button can be reached.
+        eframe::egui::ScrollArea::vertical()
+            .max_height(200.0)
+            .id_salt("hub-profiles")
+            .show(ui, |ui| {
+                for summary in &self.profiles {
+                    ui.horizontal(|ui| {
+                        ui.label(&summary.name);
+                        if ui
+                            .add_enabled(!self.busy, eframe::egui::Button::new("Load"))
+                            .clicked()
+                        {
+                            chosen = Some(summary.id.clone());
+                        }
+                    });
                 }
             });
-        }
         if let Some(id) = chosen {
             self.load(ui.ctx(), id);
         }
@@ -188,6 +194,13 @@ impl Panel {
                 .clone_into(&mut self.message);
             return None;
         }
+        // The Hub copy is replaced before the local file is checked, so a profile with problems must
+        // never be sent: the same check as a local save.
+        if !profile.problems().is_empty() {
+            "Fix the problems of the profile first: the Hub must not get settings that cannot be saved"
+                .clone_into(&mut self.message);
+            return None;
+        }
         let assigned = profile.hub_id.is_none().then(new_profile_id);
         if assigned.is_some() {
             profile.hub_id.clone_from(&assigned);
@@ -220,6 +233,24 @@ mod tests {
         );
         assert!(!panel.busy);
         assert!(panel.message.contains("Save the profile to a file first"));
+    }
+
+    #[test]
+    fn a_profile_with_problems_is_not_sent_to_the_hub() {
+        let mut panel = Panel::default();
+        let mut profile = Profile::template();
+        profile
+            .settings
+            .branding
+            .bookmarks
+            .push(ck_protocol::Bookmark {
+                title: String::new(),
+                url: String::new(),
+            });
+        let assigned = panel.save(&eframe::egui::Context::default(), profile, "p.json");
+        assert_eq!(assigned, None);
+        assert!(!panel.busy);
+        assert!(panel.message.contains("Fix the problems"));
     }
 
     #[test]
