@@ -1,4 +1,4 @@
-use crate::{base_image, hub, images, profile, sticks, write};
+use crate::{base_image, hub, images, profile, sticks, update_banner, write};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Page {
@@ -13,6 +13,7 @@ enum Page {
 /// image picker and download, write sticks, retire and re-key.
 pub struct Forge {
     page: Page,
+    update: update_banner::Banner,
     hub: hub::Screen,
     profile: profile::Screen,
     images: images::Screen,
@@ -25,6 +26,7 @@ impl Default for Forge {
     fn default() -> Self {
         Self {
             page: Page::Hub,
+            update: update_banner::Banner::default(),
             hub: hub::Screen::default(),
             profile: profile::Screen::default(),
             images: images::Screen::default(),
@@ -37,6 +39,15 @@ impl Default for Forge {
 
 impl eframe::App for Forge {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
+        self.update.poll(ui.ctx());
+        let blocked = self.update.blocks();
+        if self.update.visible() {
+            eframe::egui::Panel::top("update").show(ui, |ui| self.update.show(ui));
+        }
+        // A build that is too old shows nothing but the update, until it is installed.
+        if blocked {
+            return;
+        }
         eframe::egui::Panel::top("pages").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.page, Page::Hub, "Hub");

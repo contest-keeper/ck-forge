@@ -19,7 +19,7 @@ a `ck-forge` command already, so a screen only calls the function.
 | Write sticks | `list_disks`, `write_stick` | `ck_writer::list_disks`, the elevated `ck-forge stick write` with its JSON progress file | `stick list`, `stick write` | [x] built, Windows test pending (UAC prompt, progress and cancel need a real run) |
 | Retire and re-key | `hub_list_sticks`, `hub_retire_stick` | `list_sticks`, `retire_stick_credential` | `hub sticks`, `hub retire` | [x] |
 
-Also to carry over: the updater (`app/src/update.rs`).
+Also carried over: the updater (`app/src/update.rs`, now `app-egui/src/update.rs`): built, Windows test pending. It looks at the feed named by `CK_UPDATE_FEED`, only when `CK_UPDATE_PUBKEY` was set at build time, and installs only an installer whose minisign signature checks out.
 
 ## R6.3 checklist (prepared, not done)
 
