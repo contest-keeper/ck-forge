@@ -78,11 +78,31 @@ fn progress_text(phase: &str, done: u64, total: u64) -> String {
     }
 }
 
-/// Downloads are kept between builds, so a second image does not download again.
+/// Downloads are kept between builds, so a second image does not download again: under the local
+/// data folder on Windows, in the caches folder on macOS (the same places `ck-forge image create`
+/// uses), and in the Forge folder elsewhere.
 fn cache_folder() -> PathBuf {
-    match std::env::var_os("LOCALAPPDATA") {
-        Some(base) => PathBuf::from(base).join("ck-forge").join("cache"),
-        None => PathBuf::from("ck-forge-cache"),
+    if let Some(base) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(base).join("ck-forge").join("cache");
+    }
+    if cfg!(target_os = "macos")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join("Library/Caches/ck-forge");
+    }
+    crate::folder::data_dir()
+        .map_or_else(|| PathBuf::from("ck-forge-cache"), |dir| dir.join("cache"))
+}
+
+/// The accelerator QEMU uses to install the image: the Windows hypervisor, the macOS one on an Intel
+/// Mac (the guest is x86), and plain emulation anywhere else, which is slow but works.
+fn accelerator() -> &'static str {
+    if cfg!(windows) {
+        "whpx"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "hvf"
+    } else {
+        "tcg"
     }
 }
 
@@ -182,7 +202,7 @@ impl Screen {
             out,
             cache: cache_folder(),
             qemu_dir: None,
-            accel: if cfg!(windows) { "whpx" } else { "tcg" }.to_owned(),
+            accel: accelerator().to_owned(),
             memory_mb: 4096,
             timeout: Duration::from_secs(90 * 60),
             patch: typed(&self.patch),
