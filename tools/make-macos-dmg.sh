@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Makes keeper-forge-macos-universal.zip: the Keeper Forge window as a macOS app that runs on Intel
+# Makes keeper-forge-macos-universal.dmg: the Keeper Forge window as a macOS app that runs on Intel
 # and Apple silicon, with the command line tool beside it. Run on a Mac, from the repository root.
-# Usage: make-macos-zip.sh <version> <output zip>
+# Usage: make-macos-dmg.sh <version> <output dmg>
 #
 # Needs cargo-about (for the licence notices that must come with the program).
 # The app is signed ad hoc (no certificate): macOS runs it after the person allows it once in
@@ -50,5 +50,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 
 codesign --force --deep --sign - "$app"
-ditto -c -k --keepParent "$app" "$output"
+# The disk image shows the app next to a shortcut to Applications, to drag it there.
+ln -s /Applications "$work/Applications"
+rm -f "$output"
+hdiutil create -volname "Keeper Forge" -srcfolder "$work" -format UDZO -ov "$output"
 echo "Wrote $output"
