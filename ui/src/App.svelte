@@ -6,7 +6,7 @@
   import * as api from './lib/api';
   import ContestPage from './pages/ContestPage.svelte';
   import MakePage from './pages/MakePage.svelte';
-  import { app, saveProfile } from './state.svelte';
+  import { app, isUnsaved, saveProfile } from './state.svelte';
 
   const tabs = [
     {
@@ -30,6 +30,14 @@
   let leaving = $state(false);
   let leaveFailure = $state('');
   const tab = $derived(tabs[index] ?? tabs[0]);
+  // What the bar at the bottom tells about the profile: saved, changed since, or never saved.
+  const saveState = $derived(
+    app.profilePath === null
+      ? 'Not saved yet. Continue saves it in the Keeper Forge folder.'
+      : isUnsaved()
+        ? 'Unsaved changes. Continue saves them.'
+        : `Saved in ${app.profilePath}`,
+  );
   const done = $derived([app.profilePath !== null, app.written]);
 
   // A profile is ready to fill in from the start; the admin does not have to ask for one first.
@@ -138,8 +146,8 @@
       {/if}
       {#if leaveFailure}
         <p class="note error leave" role="alert">{leaveFailure}</p>
-      {:else if index === 0 && app.profilePath === null}
-        <span class="hint">Continue saves this profile in the Keeper Forge folder.</span>
+      {:else if index === 0}
+        <span class="hint saved" role="status">{saveState}</span>
       {/if}
       <span class="grow"></span>
       {#if index < tabs.length - 1}
@@ -155,6 +163,9 @@
   .sr-only {
     position: absolute;
     left: -9999px;
+  }
+  .saved {
+    overflow-wrap: anywhere;
   }
   .leave {
     margin: 0;

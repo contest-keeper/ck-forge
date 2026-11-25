@@ -12,6 +12,7 @@ import {
 import {
   RECORDING_MODES,
   defaultKeyWindow,
+  isCodeforcesId,
   linesToList,
   localInputToUtc,
   optionalCount,
@@ -125,6 +126,15 @@ describe('recording settings by mode', () => {
 });
 
 describe('profile helpers', () => {
+  it('takes digits only as a Codeforces contest number', () => {
+    expect(isCodeforcesId(' 1985 ')).toBe(true);
+    expect([isCodeforcesId('12x4'), isCodeforcesId(''), isCodeforcesId('-5')]).toEqual([
+      false,
+      false,
+      false,
+    ]);
+  });
+
   it('turns lines into a list', () => {
     expect(linesToList(' a.org \n\n b.org\n')).toEqual(['a.org', 'b.org']);
   });
