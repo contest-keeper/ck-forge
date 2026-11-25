@@ -9,9 +9,9 @@ a `ck-forge` command already, so a screen only calls the function.
 |---|---|---|---|---|
 | Hub sign-in | `hub_sign_in`, `hub_sign_out`, `hub_status` | `sign_in_url`, `sign_in_with_code`, `sign_out`, `vault` | `hub sign-in`, `hub sign-out`, `hub status` | [x] |
 | Profile editor | `new_profile`, `open_profile`, `save_profile`, `check_profile` | `Profile` | `profile new`, `profile check` | [x] (fields: name, contest, team, site, computer name, USB label, server, sites, home page, welcome text, bookmarks, Bluetooth, contest end, Wi-Fi name, recording: built, Windows test pending; the Wi-Fi password is typed when sticks are written, never saved in the profile) |
-| Profile editor | `save_profile_in_forge_folder` | `Profile::save` into the app data folder | none needed | [ ] |
+| Profile editor | `save_profile_in_forge_folder` | `Profile::save` into the app data folder | none needed | [x] built, Windows test pending |
 | Profile editor | `add_wallpaper` | `add_wallpaper` | `profile wallpaper` | [x] |
-| Profile editor | `wallpaper_preview` | `wallpaper_data_url` | none needed | [ ] |
+| Profile editor | `wallpaper_preview` | `wallpaper_data_url` | none needed | [x] built, Windows test pending |
 | Profile editor | `hub_list_profiles`, `hub_load_profile`, `hub_save_profile` | `list_profiles`, `load_hub_profile`, `save_hub_profile` | `hub profiles`, `hub pull`, `hub push` | [ ] |
 | Image picker | `list_catalog`, `make_base_image`, `import_base_image` | `catalog`, `create_base_image`, `import_image` | `image catalog`, `image create`, `image import` | [ ] |
 | Image picker | `list_hub_images`, `download_hub_image` | `list_hub_images`, `download_hub_image` | `hub images`, `hub download` | [x] |
