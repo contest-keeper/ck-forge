@@ -40,7 +40,9 @@ mod store {
 mod store {
     use super::HubSession;
 
-    pub fn save(_: &HubSession) {}
+    pub fn save(_: &HubSession) -> bool {
+        false
+    }
     pub fn load() -> Option<HubSession> {
         None
     }
