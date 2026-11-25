@@ -14,7 +14,7 @@ use ck_admin_core::{
     EnrolmentBuild, HUB_URL, HardwareId, HubSession, Profile, SignSettings, Wallpaper,
     build_enrolment_image, build_thin_image, enrolment_config_sha256, folder_of, local_now,
     mint_enrolment_code, push_registry_signed_in, record_config_hash, record_stick_write,
-    sign_settings, stick_config_sha256, vault,
+    retire_stick_credential, sign_settings, stick_config_sha256, vault,
 };
 use ck_protocol::{StickId, WifiPassword};
 use serde::Deserialize;
@@ -112,19 +112,38 @@ fn write_all(
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)
         .map_err(|e| format!("could not make {}: {e}", work.display()))?;
-    let result = make_and_write(request, session.as_ref(), cancel, &work, report);
+    let mut made = Vec::new();
+    let result = make_and_write(request, session.as_ref(), cancel, &work, report, &mut made);
     let _ = std::fs::remove_dir_all(&work);
+    // The Hub learns of a stick when its image is built, before anything is written. A stick whose
+    // write was cancelled or failed does not exist, so it must not stay on the Hub as a live stick.
+    if result.is_err()
+        && let Some(session) = session.as_ref()
+    {
+        retire_unwritten(&made, |id| {
+            let _ = retire_stick_credential(HUB_URL, session, id);
+        });
+    }
     result
 }
 
+/// Calls `retire` with the id of each stick that was registered but not written.
+fn retire_unwritten(made: &[MadeStick], mut retire: impl FnMut(&str)) {
+    for stick in made {
+        retire(stick.id.as_str());
+    }
+}
+
+/// `made` gets each stick as soon as its image is built, so the caller can retire them if this fails.
 fn make_and_write(
     request: &Request,
     session: Option<&HubSession>,
     cancel: &AtomicBool,
     work: &Path,
     report: &dyn Fn(Progress),
+    made: &mut Vec<MadeStick>,
 ) -> Result<String, String> {
-    let (images, made) = build_images(request, session, cancel, work, report)?;
+    let images = build_images(request, session, cancel, work, report, made)?;
     // A cancel during the last image must not start the write either.
     if cancel.load(Ordering::Relaxed) {
         return Err(CANCELLED_BEFORE_WRITING.to_owned());
@@ -137,7 +156,7 @@ fn make_and_write(
     // Only now that everything was written and checked, so a refused permission prompt or a failed
     // disk never counts.
     if let Some(session) = session {
-        record_written(session, &made);
+        record_written(session, made);
     }
     Ok(hash)
 }
@@ -149,13 +168,14 @@ fn build_images(
     cancel: &AtomicBool,
     work: &Path,
     report: &dyn Fn(Progress),
-) -> Result<(Vec<PathBuf>, Vec<MadeStick>), String> {
+    made: &mut Vec<MadeStick>,
+) -> Result<Vec<PathBuf>, String> {
     let hardware = if request.to_file.is_some() {
         Vec::new()
     } else {
         hardware_of(&request.disks)
     };
-    let (mut images, mut made) = (Vec::new(), Vec::new());
+    let mut images = Vec::new();
     for n in 1..=request.disks.len().max(1) {
         if cancel.load(Ordering::Relaxed) {
             return Err(CANCELLED_BEFORE_WRITING.to_owned());
@@ -165,7 +185,7 @@ fn build_images(
         made.push(build_stick(request, session, &image, disk, report)?);
         images.push(image);
     }
-    Ok((images, made))
+    Ok(images)
 }
 
 const CANCELLED_BEFORE_WRITING: &str = "cancelled: nothing was written";
@@ -489,6 +509,21 @@ fn write_elevated(
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_registered_stick_is_retired_when_the_write_does_not_finish() {
+        let made: Vec<MadeStick> = ["stick-a", "stick-b"]
+            .iter()
+            .map(|name| MadeStick {
+                id: StickId::parse(name).expect("id"),
+                config_sha256: String::new(),
+                disk: None,
+            })
+            .collect();
+        let mut retired = Vec::new();
+        retire_unwritten(&made, |id| retired.push(id.to_owned()));
+        assert_eq!(retired, ["stick-a", "stick-b"]);
+    }
+
     fn state(text: &str) -> Option<HelperState> {
         serde_json::from_str(text).ok()
     }
@@ -597,7 +632,14 @@ mod tests {
         };
         let cancel = AtomicBool::new(true);
         let work = tempfile::tempdir().expect("folder");
-        let result = make_and_write(&request, None, &cancel, work.path(), &|_| {});
+        let result = make_and_write(
+            &request,
+            None,
+            &cancel,
+            work.path(),
+            &|_| {},
+            &mut Vec::new(),
+        );
         assert_eq!(result, Err(CANCELLED_BEFORE_WRITING.to_owned()));
     }
 }
