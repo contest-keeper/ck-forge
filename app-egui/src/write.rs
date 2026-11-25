@@ -110,10 +110,23 @@ fn command_line(image: &str, number: &str) -> String {
     } else {
         quote_posix(image.trim())
     };
-    format!(
-        "{sudo}ck-forge stick write {image} --disk {}",
-        number.trim()
-    )
+    let tool = if cfg!(target_os = "macos") {
+        bundled_tool(std::env::current_exe().ok().as_deref())
+    } else {
+        "ck-forge".to_owned()
+    };
+    format!("{sudo}{tool} stick write {image} --disk {}", number.trim())
+}
+
+/// The command line tool as a terminal can start it. In the macOS app it sits beside this program
+/// and is not on the PATH, so its full path is given; otherwise `ck-forge` is expected on the PATH.
+fn bundled_tool(here: Option<&std::path::Path>) -> String {
+    here.map(|here| here.with_file_name("ck-forge"))
+        .filter(|tool| tool.is_file())
+        .map_or_else(
+            || "ck-forge".to_owned(),
+            |tool| quote_posix(&tool.display().to_string()),
+        )
 }
 
 /// `text` as one single-quoted word of a POSIX shell: only the quote itself is special inside.
@@ -447,6 +460,20 @@ mod tests {
         };
         assert!(command.ends_with(&format!("ck-forge stick write {quoted} --disk 4")));
         assert_eq!(command.starts_with("sudo "), cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn the_command_names_the_tool_inside_the_app_when_it_is_there() {
+        let app = tempfile::tempdir().expect("folder");
+        let window = app.path().join("keeper-forge");
+        assert_eq!(bundled_tool(Some(&window)), "ck-forge");
+        assert_eq!(bundled_tool(None), "ck-forge");
+        std::fs::write(app.path().join("ck-forge"), b"x").expect("tool");
+        let tool = bundled_tool(Some(&window));
+        assert!(
+            tool.starts_with('\'') && tool.ends_with("ck-forge'"),
+            "{tool}"
+        );
     }
 
     #[test]
