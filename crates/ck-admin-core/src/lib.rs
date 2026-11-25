@@ -23,11 +23,11 @@ pub use error::Error;
 pub use file::folder_of;
 pub use hardware::HardwareId;
 pub use hub::{
-    HubProfile, HubSession, HubStick, HubStickDisk, MintedEnrolmentCode, ProfileSummary, Pushed,
-    fetch_profile, list_profiles, list_sticks, mint_enrolment_code, new_profile_id, new_state,
-    push_registry, push_registry_signed_in, record_config_hash, record_stick_write,
-    retire_stick_credential, sign_in_url, sign_in_with_code, sign_out, sign_settings,
-    upload_profile, wait_for_code,
+    HubProfile, HubSession, HubStick, HubStickDisk, MintedEnrolmentCode, Pairing, PairingEnd,
+    ProfileSummary, Pushed, fetch_profile, list_profiles, list_sticks, mint_enrolment_code,
+    new_profile_id, push_registry, push_registry_signed_in, record_config_hash, record_stick_write,
+    retire_stick_credential, sign_out, sign_settings, start_pairing, upload_profile,
+    wait_for_pairing, watch_pairing,
 };
 pub use hub_images::{
     HubImage, HubImageDownload, HubImageStep, download_hub_image, list_hub_images,

@@ -52,6 +52,34 @@ fn reply(status: &str, headers: &str, body: &str) -> String {
 }
 
 /// The Hub's answer about an account that belongs to one organization, `acm`.
+fn start_reply() -> String {
+    reply(
+        "200 OK",
+        "",
+        r#"{"code":"K7QM-42XP","poll_key":"secret-poll-key","expires_in":600}"#,
+    )
+}
+
+fn approved(token: &str, email: &str) -> String {
+    reply(
+        "200 OK",
+        "",
+        &format!(r#"{{"status":"approved","token":"{token}","email":"{email}"}}"#),
+    )
+}
+
+/// A session got the way Forge gets it: a pairing the fake Hub approves at once.
+fn paired(hub: &str) -> ck_admin_core::HubSession {
+    let pairing = ck_admin_core::start_pairing(hub).expect("pairing");
+    ck_admin_core::wait_for_pairing(
+        hub,
+        &pairing,
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+    )
+    .expect("session")
+}
+
 fn me() -> String {
     reply("200 OK", "", r#"{"organizations":[{"slug":"acm"}]}"#)
 }
@@ -476,57 +504,124 @@ fn a_password_is_never_sent_over_plain_http_to_another_machine() {
 }
 
 mod signed_in {
-    use super::{fake_hub, me, registry_file, reply};
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use super::{approved, fake_hub, me, paired, registry_file, reply, start_reply};
     use std::time::Duration;
 
-    use ck_admin_core::{
-        Error, new_state, push_registry_signed_in, sign_in_url, sign_in_with_code, wait_for_code,
-    };
+    use ck_admin_core::{Error, push_registry_signed_in, start_pairing, wait_for_pairing};
     use tempfile::TempDir;
 
-    fn browser(port: u16, target: &str) -> String {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-        write!(stream, "GET {target} HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n").expect("send");
-        let mut answer = String::new();
-        stream.read_to_string(&mut answer).expect("answer");
-        answer
+    const QUICK: Duration = Duration::from_millis(10);
+
+    fn waiting() -> String {
+        reply("200 OK", "", r#"{"status":"waiting"}"#)
     }
 
     #[test]
-    fn the_browser_page_carries_the_port_and_a_state_nobody_can_guess() {
-        let url = sign_in_url("https://hub.example.org/", 4000, "abc").expect("url");
-        assert_eq!(
-            url,
-            "https://hub.example.org/forge/connect?port=4000&state=abc"
-        );
-        assert_ne!(new_state(), new_state());
-        assert_eq!(new_state().len(), 64);
-        assert!(sign_in_url("http://hub.example.org", 4000, "abc").is_err());
+    fn the_hub_gives_a_code_and_the_page_that_shows_the_same_code() {
+        let (hub, handle) = fake_hub(vec![start_reply()]);
+        let pairing = start_pairing(&hub).expect("pairing");
+        assert_eq!(pairing.code, "K7QM-42XP");
+        assert_eq!(pairing.url, format!("{hub}/forge/connect?code=K7QM-42XP"));
+        // The secret Forge asks with never shows in what can be printed.
+        assert!(!format!("{pairing:?}").contains("secret-poll-key"));
+        assert!(handle.join().expect("hub")[0].starts_with("POST /api/v1/forge/pairings"));
+        assert!(start_pairing("http://hub.example.org").is_err());
     }
 
     #[test]
-    fn the_code_is_taken_only_from_a_request_with_the_right_state() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().expect("address").port();
-        let waiting = std::thread::spawn(move || {
-            wait_for_code(&listener, "right-state", Duration::from_secs(10))
-        });
-        assert!(browser(port, "/callback?code=evil&state=wrong").contains("400"));
-        assert!(browser(port, "/favicon.ico").contains("400"));
-        assert!(browser(port, "/callback?code=a%20b&state=right-state").contains("400"));
-        assert!(browser(port, "/callback?code=good_code-1&state=right-state").contains("200"));
-        assert_eq!(
-            waiting.join().expect("thread").expect("code"),
-            "good_code-1"
-        );
+    fn a_code_that_cannot_go_into_an_address_is_not_followed() {
+        let (hub, _handle) = fake_hub(vec![reply(
+            "200 OK",
+            "",
+            r#"{"code":"X&evil=1","poll_key":"k","expires_in":600}"#,
+        )]);
+        assert!(start_pairing(&hub).is_err());
     }
 
     #[test]
-    fn it_gives_up_when_the_browser_never_comes_back() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let error = wait_for_code(&listener, "s", Duration::from_millis(300)).unwrap_err();
+    fn a_hub_that_has_no_pairing_is_said_to_be_too_old() {
+        let (hub, _handle) = fake_hub(vec![reply("404 Not Found", "", "")]);
+        let error = start_pairing(&hub).unwrap_err();
+        assert!(error.to_string().contains("too old"));
+    }
+
+    #[test]
+    fn it_asks_until_the_admin_agrees_and_then_has_the_session() {
+        let (hub, handle) = fake_hub(vec![
+            start_reply(),
+            waiting(),
+            waiting(),
+            reply(
+                "200 OK",
+                "",
+                r#"{"status":"approved","token":"tok123","email":"ana@example.org","expires_in":43200}"#,
+            ),
+        ]);
+        let pairing = start_pairing(&hub).expect("pairing");
+        let session =
+            wait_for_pairing(&hub, &pairing, Duration::from_secs(5), QUICK).expect("session");
+        assert_eq!(session.email, "ana@example.org");
+        assert!(!format!("{session:?}").contains("tok123"));
+        let seen = handle.join().expect("hub");
+        for poll in &seen[1..] {
+            assert!(poll.starts_with("POST /api/v1/forge/pairings/poll"));
+            assert!(poll.contains(r#""poll_key": "secret-poll-key""#), "{poll}");
+        }
+    }
+
+    #[test]
+    fn a_refused_or_ended_pairing_says_to_try_again() {
+        let (hub, _handle) = fake_hub(vec![start_reply(), reply("410 Gone", "", "{}")]);
+        let pairing = start_pairing(&hub).expect("pairing");
+        let error = wait_for_pairing(&hub, &pairing, Duration::from_secs(5), QUICK).unwrap_err();
+        assert!(error.to_string().contains("refused or ran out of time"));
+    }
+
+    #[test]
+    fn a_pairing_ends_approved_gone_timed_out_or_cancelled() {
+        use ck_admin_core::{PairingEnd, watch_pairing};
+        const LONG: Duration = Duration::from_secs(5);
+        use std::sync::atomic::AtomicBool;
+        let end = |polls: Vec<String>, cancel: bool, wait: Duration| {
+            let mut replies = vec![start_reply()];
+            replies.extend(polls);
+            let (hub, _handle) = fake_hub(replies);
+            let pairing = start_pairing(&hub).expect("pairing");
+            let cancel = AtomicBool::new(cancel);
+            watch_pairing(&hub, &pairing, wait, QUICK, &cancel).expect("end")
+        };
+        assert!(matches!(
+            end(
+                vec![waiting(), approved("tok123", "ana@example.org")],
+                false,
+                LONG
+            ),
+            PairingEnd::Approved(_)
+        ));
+        assert!(matches!(
+            end(vec![waiting(), reply("410 Gone", "", "{}")], false, LONG),
+            PairingEnd::Gone
+        ));
+        assert!(matches!(
+            end(
+                (0..100).map(|_| waiting()).collect(),
+                false,
+                Duration::from_millis(300)
+            ),
+            PairingEnd::TimedOut
+        ));
+        // Cancelled before the first poll: the Hub is not asked at all.
+        assert!(matches!(end(Vec::new(), true, LONG), PairingEnd::Cancelled));
+    }
+
+    #[test]
+    fn it_gives_up_when_the_admin_never_agrees() {
+        let mut replies = vec![start_reply()];
+        replies.extend((0..100).map(|_| waiting()));
+        let (hub, _handle) = fake_hub(replies);
+        let pairing = start_pairing(&hub).expect("pairing");
+        let error =
+            wait_for_pairing(&hub, &pairing, Duration::from_millis(300), QUICK).unwrap_err();
         assert!(error.to_string().contains("not finished in time"));
     }
 
@@ -534,11 +629,8 @@ mod signed_in {
     fn the_code_gives_a_session_that_sends_the_registry_as_a_bearer() {
         let dir = TempDir::new().expect("dir");
         let (hub, handle) = fake_hub(vec![
-            reply(
-                "200 OK",
-                "",
-                r#"{"token":"tok123","email":"ana@example.org","expires_in":43200}"#,
-            ),
+            start_reply(),
+            approved("tok123", "ana@example.org"),
             me(),
             reply(
                 "200 OK",
@@ -546,18 +638,16 @@ mod signed_in {
                 r#"{"added":1,"already_known":0,"conflicts":[]}"#,
             ),
         ]);
-        let session = sign_in_with_code(&hub, "the-code").expect("session");
+        let session = paired(&hub);
         assert_eq!(session.email, "ana@example.org");
         assert!(!format!("{session:?}").contains("tok123"));
         let pushed = push_registry_signed_in(&hub, &session, &registry_file(&dir)).expect("push");
         assert_eq!(pushed.added, 1);
 
         let seen = handle.join().expect("hub");
-        assert!(seen[0].starts_with("POST /api/v1/forge/token"));
-        assert!(seen[0].contains(r#""code": "the-code""#), "{}", seen[0]);
-        assert!(seen[1].starts_with("GET /api/v1/me"));
-        assert!(seen[2].starts_with("POST /api/v1/orgs/acm/sticks"));
-        for request in &seen[1..] {
+        assert!(seen[2].starts_with("GET /api/v1/me"));
+        assert!(seen[3].starts_with("POST /api/v1/orgs/acm/sticks"));
+        for request in &seen[2..] {
             assert!(
                 request
                     .to_lowercase()
@@ -567,17 +657,14 @@ mod signed_in {
     }
 
     #[test]
-    fn an_old_code_or_an_ended_session_says_to_sign_in_again() {
-        let (hub, _handle) = fake_hub(vec![reply("400 Bad Request", "", "{}")]);
-        let error = sign_in_with_code(&hub, "old").unwrap_err();
-        assert!(error.to_string().contains("sign in again"));
-
+    fn an_ended_session_says_to_sign_in_again() {
         let dir = TempDir::new().expect("dir");
         let (hub, _handle) = fake_hub(vec![
-            reply("200 OK", "", r#"{"token":"t","email":"a@b.c"}"#),
+            start_reply(),
+            approved("t", "a@b.c"),
             reply("401 Unauthorized", "", "{}"),
         ]);
-        let session = sign_in_with_code(&hub, "c").expect("session");
+        let session = paired(&hub);
         let error = push_registry_signed_in(&hub, &session, &registry_file(&dir)).unwrap_err();
         assert!(matches!(error, Error::Hub(text) if text.contains("sign in again")));
     }
@@ -586,13 +673,13 @@ mod signed_in {
 mod profiles {
     use ck_admin_core::{
         Profile, fetch_profile, list_profiles, load_hub_profile, retire_stick_credential,
-        sign_in_with_code, upload_profile,
+        upload_profile,
     };
 
-    use super::{fake_hub, me, reply};
+    use super::{approved, fake_hub, me, paired, reply, start_reply};
 
     fn signed_in_replies() -> Vec<String> {
-        vec![reply("200 OK", "", r#"{"token":"tok123","email":"a@b.c"}"#)]
+        vec![start_reply(), approved("tok123", "a@b.c")]
     }
 
     #[test]
@@ -616,7 +703,7 @@ mod profiles {
         replies.push(reply("204 No Content", "", ""));
         let (hub, handle) = fake_hub(replies);
 
-        let session = sign_in_with_code(&hub, "c").expect("session");
+        let session = paired(&hub);
         let list = list_profiles(&hub, &session).expect("list");
         assert_eq!(
             (list[0].id.as_str(), list[0].name.as_str()),
@@ -645,22 +732,22 @@ mod profiles {
         });
         upload_profile(&hub, &session, "p1", &loaded).expect("upload");
         let seen = handle.join().expect("hub");
-        assert!(seen[1].starts_with("GET /api/v1/profiles "));
-        assert!(seen[4].starts_with("PUT /api/v1/profiles/p1"));
+        assert!(seen[2].starts_with("GET /api/v1/profiles "));
+        assert!(seen[5].starts_with("PUT /api/v1/profiles/p1"));
         assert!(
-            seen[4].contains("UE5HQllURVM="),
+            seen[5].contains("UE5HQllURVM="),
             "wallpaper goes as base64: {}",
-            seen[4]
+            seen[5]
         );
-        assert!(seen[4].contains("venue"), "the network name is shared");
-        assert!(seen[4].contains("2026-11-19T13:00:00Z"));
+        assert!(seen[5].contains("venue"), "the network name is shared");
+        assert!(seen[5].contains("2026-11-19T13:00:00Z"));
         assert!(
             !seen.iter().any(|r| r.contains("hunter2")),
             "the Wi-Fi password never goes to the Hub"
         );
         assert!(
             seen.iter()
-                .skip(1)
+                .skip(2)
                 .all(|r| r.to_lowercase().contains("authorization: bearer tok123"))
         );
     }
@@ -685,7 +772,7 @@ mod profiles {
         replies.push(profile_reply("../w.png"));
         replies.push(reply("200 OK", "", "PNGBYTES"));
         let (hub, _handle) = fake_hub(replies);
-        let session = sign_in_with_code(&hub, "c").expect("session");
+        let session = paired(&hub);
 
         let loaded = load_hub_profile(&hub, &session, "p1", dir.path()).expect("load");
         assert_eq!(
@@ -710,13 +797,13 @@ mod profiles {
         replies.push(me());
         replies.push(reply("204 No Content", "", ""));
         let (hub, handle) = fake_hub(replies);
-        let session = sign_in_with_code(&hub, "c").expect("session");
+        let session = paired(&hub);
         assert!(retire_stick_credential(&hub, &session, "../another-stick").is_err());
         retire_stick_credential(&hub, &session, "old-stick").expect("retire");
         let seen = handle.join().expect("hub");
-        assert!(seen[2].starts_with("DELETE /api/v1/orgs/acm/sticks/old-stick/credential "));
+        assert!(seen[3].starts_with("DELETE /api/v1/orgs/acm/sticks/old-stick/credential "));
         assert!(
-            seen[2]
+            seen[3]
                 .to_lowercase()
                 .contains("authorization: bearer tok123")
         );
@@ -735,7 +822,7 @@ mod profiles {
             let mut replies = signed_in_replies();
             replies.push(reply("200 OK", "", answer));
             let (hub, _handle) = fake_hub(replies);
-            let session = sign_in_with_code(&hub, "c").expect("session");
+            let session = paired(&hub);
             let error = retire_stick_credential(&hub, &session, "old-stick").unwrap_err();
             assert!(error.to_string().contains(words), "{answer}: {error}");
         }
@@ -746,7 +833,7 @@ mod profiles {
         let mut replies = signed_in_replies();
         replies.push(reply("403 Forbidden", "", "{}"));
         let (hub, _handle) = fake_hub(replies);
-        let session = sign_in_with_code(&hub, "c").expect("session");
+        let session = paired(&hub);
         let error = list_profiles(&hub, &session).unwrap_err();
         assert!(error.to_string().contains("not an admin"), "{error}");
     }
