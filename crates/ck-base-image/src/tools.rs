@@ -169,8 +169,8 @@ mod tests {
     fn a_folder_with_only_one_of_the_two_files_is_not_taken_and_the_error_names_the_places() {
         let prefix = tempfile::tempdir().expect("folder");
         let bin = prefix.path().join("bin");
-        std::fs::create_dir_all(&bin).expect("bin");
-        touch(&prefix.path().join("share").join(FIRMWARE_CODE));
+        // `bin/share` is looked at, and holds the code but not the variables.
+        touch(&bin.join("share").join(FIRMWARE_CODE));
         let error = Qemu::new(Some(bin)).firmware().unwrap_err().to_string();
         assert!(error.contains(FIRMWARE_VARS), "{error}");
         assert!(error.contains("share"), "{error}");
