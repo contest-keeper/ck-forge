@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import HubSignIn from './components/HubSignIn.svelte';
+  import Settings from './components/Settings.svelte';
   import { describeError } from './core/format';
   import * as api from './lib/api';
   import ContestPage from './pages/ContestPage.svelte';
   import MakePage from './pages/MakePage.svelte';
   import { app, saveProfile } from './state.svelte';
-  import { look, setTheme } from './theme/theme.svelte';
 
   const tabs = [
     {
@@ -116,18 +116,7 @@
     <div class="side-foot">
       <HubSignIn />
       <b>{app.profile?.name || 'No profile yet'}</b>
-      <div class="seg" role="group" aria-label="Look">
-        <button
-          type="button"
-          aria-pressed={look.theme === 'classic'}
-          onclick={() => setTheme('classic')}>Classic</button
-        >
-        <button
-          type="button"
-          aria-pressed={look.theme === 'modern'}
-          onclick={() => setTheme('modern')}>Modern</button
-        >
-      </div>
+      <Settings />
     </div>
   </aside>
 
