@@ -1,4 +1,4 @@
-use crate::{hub, images, profile, sticks, write};
+use crate::{base_image, hub, images, profile, sticks, write};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Page {
@@ -16,6 +16,7 @@ pub struct Forge {
     hub: hub::Screen,
     profile: profile::Screen,
     images: images::Screen,
+    base_image: base_image::Screen,
     sticks: sticks::Screen,
     write: write::Screen,
 }
@@ -27,6 +28,7 @@ impl Default for Forge {
             hub: hub::Screen::default(),
             profile: profile::Screen::default(),
             images: images::Screen::default(),
+            base_image: base_image::Screen::default(),
             sticks: sticks::Screen::default(),
             write: write::Screen::default(),
         }
@@ -44,12 +46,21 @@ impl eframe::App for Forge {
                 ui.selectable_value(&mut self.page, Page::Write, "Write");
             });
         });
-        eframe::egui::CentralPanel::default().show(ui, |ui| match self.page {
-            Page::Hub => self.hub.show(ui),
-            Page::Profile => self.profile.show(ui),
-            Page::Images => self.images.show(ui),
-            Page::Sticks => self.sticks.show(ui),
-            Page::Write => self.write.show(ui),
+        eframe::egui::CentralPanel::default().show(ui, |ui| {
+            // The profile and image pages are longer than a small window.
+            eframe::egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, |ui| match self.page {
+                    Page::Hub => self.hub.show(ui),
+                    Page::Profile => self.profile.show(ui),
+                    Page::Images => {
+                        self.images.show(ui);
+                        ui.separator();
+                        self.base_image.show(ui);
+                    }
+                    Page::Sticks => self.sticks.show(ui),
+                    Page::Write => self.write.show(ui),
+                });
         });
     }
 }
