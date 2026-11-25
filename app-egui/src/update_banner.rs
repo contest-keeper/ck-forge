@@ -19,11 +19,15 @@ enum State {
     Quiet,
     Offer(Available),
     Downloading(u64, u64),
+    /// The download or the start failed: the update stays, so it can be tried again.
     Failed(String),
 }
 
 pub struct Banner {
     state: State,
+    /// The update that was offered, kept while it downloads or after it failed: a mandatory one
+    /// keeps the window blocked and any one can be tried again.
+    pending: Option<Available>,
     started: bool,
     events: Receiver<Event>,
     sender: Sender<Event>,
@@ -34,6 +38,7 @@ impl Default for Banner {
         let (sender, events) = channel();
         Self {
             state: State::Quiet,
+            pending: None,
             started: false,
             events,
             sender,
@@ -44,7 +49,7 @@ impl Default for Banner {
 impl Banner {
     /// Whether this build is too old to be used until it has updated.
     pub fn blocks(&self) -> bool {
-        matches!(&self.state, State::Offer(update) if update.mandatory)
+        !matches!(self.state, State::Quiet) && self.pending.as_ref().is_some_and(|u| u.mandatory)
     }
 
     /// Starts the check the first time and takes what the worker threads reported. Closes the
@@ -76,6 +81,11 @@ impl Banner {
             }
             State::Failed(why) => {
                 ui.colored_label(ui.visuals().error_fg_color, format!("Update: {why}"));
+                if let Some(update) = self.pending.clone()
+                    && ui.button("Try again").clicked()
+                {
+                    self.download(update, ui.ctx().clone());
+                }
             }
         }
     }
@@ -108,9 +118,11 @@ impl Banner {
                         let _ = update::remember_skipped(&folder, &update.version);
                     }
                     self.state = State::Quiet;
+                    self.pending = None;
                 }
                 if ui.button("Later").clicked() {
                     self.state = State::Quiet;
+                    self.pending = None;
                 }
             }
         });
@@ -123,6 +135,7 @@ impl Banner {
                     let skipped = crate::folder::data_dir()
                         .and_then(|folder| update::skipped_version(&folder));
                     if update::worth_offering(&update, skipped.as_deref()) {
+                        self.pending = Some(update.clone());
                         self.state = State::Offer(update);
                     }
                 }

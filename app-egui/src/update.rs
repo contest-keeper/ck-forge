@@ -160,6 +160,20 @@ fn verify(data: &mut impl Read, pubkey_b64: &str, signature_b64: &str) -> Result
         .map_err(|_| "the download does not match its signature".to_owned())
 }
 
+/// Deletes the downloaded installer unless it was kept: every failed path leaves nothing behind.
+struct Partial {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for Partial {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Downloads the installer of `update` into `folder`, checks it against its signature and returns
 /// where it is. A download that does not check out is deleted. `progress` gets the bytes done and
 /// the total (0 when not known).
@@ -184,6 +198,10 @@ pub fn download(
         .into_reader()
         .take(MAX_INSTALLER_BYTES + 1);
     let mut file = File::create(&setup).map_err(|e| format!("could not save the update: {e}"))?;
+    let mut guard = Partial {
+        path: setup.clone(),
+        keep: false,
+    };
     let mut buffer = vec![0_u8; 1024 * 1024];
     let mut done = 0_u64;
     loop {
@@ -195,7 +213,6 @@ pub fn download(
         }
         done += count as u64;
         if done > MAX_INSTALLER_BYTES {
-            let _ = std::fs::remove_file(&setup);
             return Err("the update is larger than any installer should be".to_owned());
         }
         file.write_all(&buffer[..count])
@@ -206,10 +223,8 @@ pub fn download(
     let checked = File::open(&setup)
         .map_err(|e| format!("could not read the update: {e}"))
         .and_then(|mut file| verify(&mut file, pubkey, &update.signature));
-    if let Err(why) = checked {
-        let _ = std::fs::remove_file(&setup);
-        return Err(why);
-    }
+    checked?;
+    guard.keep = true;
     Ok(setup)
 }
 
