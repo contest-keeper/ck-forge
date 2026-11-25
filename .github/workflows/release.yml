@@ -80,6 +80,42 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  # The macOS download the website's button looks for (keeper-forge-macos-universal.zip). Off until the
+  # repository variable CK_MACOS_CI is `true`: on 2026-11-24 GitHub refused to start macOS runners for
+  # this organization. The file is put straight on the release, with a build attestation.
+  macos:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true' && vars.CK_MACOS_CI == 'true'
+    runs-on: macos-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forge-macos-release
+          workspaces: |
+            .
+            app-egui
+      - name: Build the universal app
+        run: |
+          mkdir -p out
+          tools/make-macos-zip.sh "${TAG#v}" out/keeper-forge-macos-universal.zip
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: out/keeper-forge-macos-universal.zip
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "$TAG" out/keeper-forge-macos-universal.zip --clobber --repo "$GITHUB_REPOSITORY"
+
   publish:
     needs: [release-please, windows]
     permissions:

@@ -70,6 +70,7 @@ jobs:
           workspaces: |
             .
             app
+            app-egui
       # Signs the update with the develop key kept in Azure Key Vault (made on the first run).
       - id: key
         uses: ./.github/actions/signing-key
@@ -97,6 +98,98 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           PUBKEY: ${{ steps.key.outputs.pubkey }}
           FEED: https://github.com/contest-keeper/ck-forge/releases/download/dev/update.json
+      # The egui window, the installer that is meant to replace the Tauri window, and the feed its updater
+      # reads. The Tauri window is what people install today, so none of these steps may stop its build:
+      # when one fails the egui files are left out and the rest of the build goes on.
+      - name: Install NSIS
+        id: egui_nsis
+        continue-on-error: true
+        run: |
+          choco install nsis --no-progress -y
+          echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
+        shell: bash
+      - uses: taiki-e/install-action@v2
+        id: egui_about
+        continue-on-error: true
+        with:
+          tool: cargo-about
+      - name: Build the egui window
+        id: egui_build
+        if: steps.egui_nsis.outcome == 'success' && steps.egui_about.outcome == 'success'
+        continue-on-error: true
+        # It looks for updates in the develop feed, with the same key as the Tauri window.
+        run: |
+          cargo build --release --locked --manifest-path app-egui/Cargo.toml
+          mkdir -p egui-out
+          cp app-egui/target/release/ck-forge-egui.exe egui-out/keeper-forge.exe
+          cp target/release/ck-forge.exe egui-out/ck-forge.exe
+          (cd app-egui && cargo about generate --locked -c about.toml ../about.hbs -o ../egui-out/window-licences.txt)
+          cargo about generate --locked about.hbs -o egui-out/tool-licences.txt
+          {
+            echo "Keeper Forge: third-party licences"
+            echo
+            echo "Part 1: the window program"
+            cat egui-out/window-licences.txt
+            echo
+            echo "Part 2: the command line tool"
+            cat egui-out/tool-licences.txt
+          } > egui-out/THIRD-PARTY-LICENSES.txt
+        shell: bash
+        env:
+          CK_FORGE_VERSION: ${{ steps.version.outputs.version }}
+          CK_UPDATE_PUBKEY: ${{ steps.key.outputs.pubkey }}
+          CK_UPDATE_FEED: https://github.com/contest-keeper/ck-forge/releases/download/dev/update-egui.json
+      # Code signing needs the organization's certificate, which is not in this repository's secrets
+      # yet. Until then the steps that sign are skipped and the installer is signed only with the
+      # update key (which is what the updater checks).
+      - name: Is code signing set up
+        id: codesign
+        run: |
+          if [ -n "$PFX" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"; fi
+        shell: bash
+        env:
+          PFX: ${{ secrets.CK_CODESIGN_PFX_BASE64 }}
+      - name: Sign the egui programs
+        if: steps.egui_build.outcome == 'success' && steps.codesign.outputs.enabled == 'true'
+        run: tools/codesign.ps1 egui-out/keeper-forge.exe egui-out/ck-forge.exe
+        shell: pwsh
+        env:
+          CK_CODESIGN_PFX_BASE64: ${{ secrets.CK_CODESIGN_PFX_BASE64 }}
+          CK_CODESIGN_PASSWORD: ${{ secrets.CK_CODESIGN_PASSWORD }}
+      - name: Build the egui installer
+        id: egui_installer
+        if: steps.egui_build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          makensis -V2 "-DVERSION=$VERSION" \
+            "-DAPP=$(cygpath -w egui-out/keeper-forge.exe)" \
+            "-DHELPER=$(cygpath -w egui-out/ck-forge.exe)" \
+            "-DLICENCE=$(cygpath -w LICENSE)" \
+            "-DTHIRDPARTY=$(cygpath -w egui-out/THIRD-PARTY-LICENSES.txt)" \
+            "-DOUTFILE=$(cygpath -w egui-out/keeper-forge-egui-setup-x64.exe)" \
+            app-egui/installer/keeper-forge.nsi
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+      - name: Sign the egui installer
+        if: steps.egui_installer.outcome == 'success' && steps.codesign.outputs.enabled == 'true'
+        run: tools/codesign.ps1 egui-out/keeper-forge-egui-setup-x64.exe
+        shell: pwsh
+        env:
+          CK_CODESIGN_PFX_BASE64: ${{ secrets.CK_CODESIGN_PFX_BASE64 }}
+          CK_CODESIGN_PASSWORD: ${{ secrets.CK_CODESIGN_PASSWORD }}
+      - name: Sign the egui installer for the updater and write its feed
+        id: egui_feed
+        if: steps.egui_installer.outcome == 'success'
+        continue-on-error: true
+        run: |
+          node ui/node_modules/@tauri-apps/cli/tauri.js signer sign egui-out/keeper-forge-egui-setup-x64.exe
+          tools/make-update-manifest.sh "$VERSION" \
+            https://github.com/contest-keeper/ck-forge/releases/download/dev/keeper-forge-egui-setup-x64.exe \
+            egui-out/keeper-forge-egui-setup-x64.exe.sig min-version.txt egui-out/update-egui.json
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
       - name: Collect the files under stable names
         run: |
           mkdir out
@@ -108,6 +201,10 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
+      - name: Add the egui installer and its feed
+        if: steps.egui_feed.outcome == 'success'
+        run: cp egui-out/keeper-forge-egui-setup-x64.exe egui-out/update-egui.json out/
+        shell: bash
       - uses: actions/upload-artifact@v4
         with:
           name: forge-windows

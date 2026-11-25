@@ -1,0 +1,19 @@
+# The licences of the egui window and its crates. It is the list of ../about.toml plus the two licences of
+# the fonts that egui ships (epaint_default_fonts: OFL-1.1 and Ubuntu-font-1.0). Both allow redistribution
+# when their notices come with the program, which THIRD-PARTY-LICENSES.txt does. These two are NOT in
+# ../deny.toml or in a recorded licence decision yet: the window is only built for the develop pre-release
+# until the licence owner has approved them.
+accepted = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "CDLA-Permissive-2.0",
+  "OFL-1.1",
+  "Ubuntu-font-1.0",
+]
+targets = ["x86_64-pc-windows-gnu"]
