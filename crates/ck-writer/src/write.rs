@@ -59,6 +59,20 @@ pub fn write_image(
     results.remove(0).map(|written| written.sha256)
 }
 
+/// Like [`write_image`], and stops with [`Error::Cancelled`] when `cancelled` says so.
+pub fn write_image_cancellable(
+    image: &Path,
+    target: &Path,
+    cancelled: Cancelled<'_>,
+    mut progress: impl FnMut(Phase, u64, u64),
+) -> Result<String, Error> {
+    let jobs = [(image.to_path_buf(), target.to_path_buf())];
+    let mut results = write_targets(&jobs, None, cancelled, |_, phase, done, total| {
+        progress(phase, done, total);
+    })?;
+    results.remove(0).map(|written| written.sha256)
+}
+
 /// Writes `image` to every target at once. See [`write_images`]; this is the same image for all.
 pub fn write_image_to_all(
     image: &Path,

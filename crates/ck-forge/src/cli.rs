@@ -115,6 +115,10 @@ pub(crate) enum StickCommand {
         /// written and must be written again
         #[arg(long, conflicts_with = "to")]
         cancel_file: Option<PathBuf>,
+        /// `NUMBER=TOKEN`: the disk the admin confirmed in the window, as `Disk::identity_token`
+        /// gave it. The disk with that number must still have that token, or nothing is erased
+        #[arg(long, value_name = "NUMBER=TOKEN", conflicts_with = "to")]
+        confirmed: Vec<String>,
     },
 }
 

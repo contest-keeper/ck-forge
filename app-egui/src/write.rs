@@ -428,6 +428,16 @@ impl Screen {
             } else {
                 self.chosen.iter().copied().collect()
             },
+            // What the admin saw in the confirmation, as listed: the helper erases only these.
+            confirmed: if to_file.is_some() {
+                Vec::new()
+            } else {
+                self.disks
+                    .iter()
+                    .filter(|disk| self.chosen.contains(&disk.number))
+                    .map(|disk| (disk.number, disk.identity_token()))
+                    .collect()
+            },
             to_file,
             allow_virtual: self.allow_virtual,
             wifi_password: (!password.is_empty()).then(|| WifiPassword::new(password)),

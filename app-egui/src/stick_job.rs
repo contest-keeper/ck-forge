@@ -43,6 +43,9 @@ pub struct Request {
     pub profile: PathBuf,
     /// The disks to erase and write. Empty when writing to a file.
     pub disks: Vec<u32>,
+    /// For each disk the admin confirmed: its number and `Disk::identity_token` as it was listed.
+    /// The helper refuses a disk that has another token by then.
+    pub confirmed: Vec<(u32, String)>,
     /// A file to write the first image to: a test without a stick, which needs no rights.
     pub to_file: Option<PathBuf>,
     pub allow_virtual: bool,
@@ -122,9 +125,13 @@ fn make_and_write(
     report: &dyn Fn(Progress),
 ) -> Result<String, String> {
     let (images, made) = build_images(request, session, cancel, work, report)?;
+    // A cancel during the last image must not start the write either.
+    if cancel.load(Ordering::Relaxed) {
+        return Err(CANCELLED_BEFORE_WRITING.to_owned());
+    }
     // A file needs no administrator rights, so it is written here: a test without a stick.
     if let Some(file) = &request.to_file {
-        return write_to_file(&images[0], file, report);
+        return write_to_file(&images[0], file, cancel, report);
     }
     let hash = write_elevated(&images, request, cancel, report)?;
     // Only now that everything was written and checked, so a refused permission prompt or a failed
@@ -263,11 +270,17 @@ fn record_written(session: &HubSession, written: &[MadeStick]) {
     }
 }
 
-fn write_to_file(image: &Path, file: &Path, report: &dyn Fn(Progress)) -> Result<String, String> {
+fn write_to_file(
+    image: &Path,
+    file: &Path,
+    cancel: &AtomicBool,
+    report: &dyn Fn(Progress),
+) -> Result<String, String> {
     let mut last = Instant::now();
     // How far the file is written and how far it is checked, which go on together.
     let (mut written, mut checked) = (0_u64, 0_u64);
-    ck_writer::write_image(image, file, |phase, done, total| {
+    let cancelled = || cancel.load(Ordering::Relaxed);
+    ck_writer::write_image_cancellable(image, file, &cancelled, |phase, done, total| {
         match phase {
             ck_writer::Phase::Writing => written = done,
             ck_writer::Phase::Verifying => checked = done,
@@ -287,7 +300,10 @@ fn write_to_file(image: &Path, file: &Path, report: &dyn Fn(Progress)) -> Result
             checked,
         });
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e| match e {
+        ck_writer::Error::Cancelled => "cancelled: the file is only partly written".to_owned(),
+        other => other.to_string(),
+    })
 }
 
 /// What the helper writes in its progress file.
@@ -361,6 +377,7 @@ fn quote(path: &Path) -> Result<String, String> {
 fn elevated_arguments(
     images: &[PathBuf],
     disks: &[u32],
+    confirmed: &[(u32, String)],
     allow_virtual: bool,
     progress_file: &Path,
     cancel_file: &Path,
@@ -379,6 +396,11 @@ fn elevated_arguments(
     for disk in disks {
         arguments.push("--disk".to_owned());
         arguments.push(disk.to_string());
+    }
+    // Hex only, so a token cannot add anything to the command line.
+    for (number, token) in confirmed {
+        arguments.push("--confirmed".to_owned());
+        arguments.push(format!("{number}={token}"));
     }
     if allow_virtual {
         arguments.push("--allow-virtual".to_owned());
@@ -423,6 +445,7 @@ fn write_elevated(
     let arguments = elevated_arguments(
         images,
         &request.disks,
+        &request.confirmed,
         request.allow_virtual,
         &progress_file,
         &cancel_file,
@@ -489,6 +512,7 @@ mod tests {
             base: PathBuf::from("base.img"),
             profile: PathBuf::from("p.json"),
             disks: vec![3, 4],
+            confirmed: vec![(3, "ab12".to_owned()), (4, "cd34".to_owned())],
             to_file: None,
             allow_virtual: true,
             wifi_password: Some(WifiPassword::new(secret)),
@@ -497,6 +521,7 @@ mod tests {
         let arguments = elevated_arguments(
             &[PathBuf::from("a.img"), PathBuf::from("b.img")],
             &request.disks,
+            &request.confirmed,
             request.allow_virtual,
             Path::new("progress.json"),
             Path::new("stop"),
@@ -506,7 +531,7 @@ mod tests {
         assert!(!line.contains(secret));
         assert_eq!(
             line,
-            r#"stick write "a.img" "b.img" --yes --progress-file "progress.json" --cancel-file "stop" --disk 3 --disk 4 --allow-virtual"#
+            r#"stick write "a.img" "b.img" --yes --progress-file "progress.json" --cancel-file "stop" --disk 3 --disk 4 --confirmed 3=ab12 --confirmed 4=cd34 --allow-virtual"#
         );
         // The password type hides itself even when something prints the request's parts.
         assert!(!format!("{:?}", request.wifi_password).contains(secret));
@@ -564,6 +589,7 @@ mod tests {
             profile: PathBuf::from("no-such-profile.json"),
             // A disk number that is only read about, never opened: the job stops first.
             disks: vec![99],
+            confirmed: Vec::new(),
             to_file: None,
             allow_virtual: false,
             wifi_password: None,
