@@ -199,6 +199,7 @@ fn write_targets(
         tail: &tail,
         head_len,
         total,
+        cancelled,
     };
     let outcomes = write_all_targets(&shared, writers, cancelled, &mut progress)?;
     for (index, written, read_back) in outcomes {
@@ -214,7 +215,15 @@ fn write_targets(
             }),
         });
     }
-    Ok(results.into_iter().flatten().collect())
+    // A stop in the start of the images ends one writer at a time; it is still one stop.
+    let results: Vec<_> = results.into_iter().flatten().collect();
+    if results
+        .iter()
+        .any(|result| matches!(result, Err(Error::Cancelled)))
+    {
+        return Err(Error::Cancelled);
+    }
+    Ok(results)
 }
 
 /// Checks that `images` can be written together, and returns the size of each, without writing
@@ -265,6 +274,8 @@ struct Shared<'a> {
     head_len: u64,
     /// The size of an image: its own start and the rest.
     total: u64,
+    /// Asked before each block of an image is read, the start of it included.
+    cancelled: Cancelled<'a>,
 }
 
 /// For each target, in order of the jobs: how its write went, and the SHA-256 of what was read back.
@@ -422,6 +433,9 @@ fn write_target(
         let mut buffer = vec![0_u8; BLOCK];
         let mut done = 0_u64;
         while done < head_len {
+            if (shared.cancelled)() {
+                return Err(Error::Cancelled);
+            }
             let want = block_len(head_len - done);
             head.read_exact(&mut buffer[..want])
                 .map_err(|e| Error::io(format!("reading {}", image.display()), e))?;
@@ -883,17 +897,14 @@ mod tests {
             std::fs::write(&image, vec![4_u8; 10 * BLOCK]).unwrap();
             std::fs::write(backend.raw_path(5), b"").unwrap();
 
-            let stop = std::sync::atomic::AtomicBool::new(false);
+            // Says yes from the fourth question on, whatever the threads do meanwhile.
+            let asked = std::sync::atomic::AtomicUsize::new(0);
             let error = write_disk_images_with(
                 &backend,
                 &[(image, backend.raw_path(5))],
                 &[stick()],
-                &|| stop.load(std::sync::atomic::Ordering::Relaxed),
-                |_, phase, _, _| {
-                    if phase == Phase::Writing {
-                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                },
+                &|| asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 3,
+                |_, _, _, _| {},
             )
             .unwrap_err();
             assert!(matches!(error, Error::Cancelled), "{error}");
