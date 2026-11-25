@@ -11,10 +11,11 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    EnrolmentBuild, HUB_URL, HardwareId, HubSession, Profile, SignSettings, Wallpaper,
+    EnrolmentBuild, Error as AdminError, HUB_URL, HardwareId, HubSession, Profile, Registry, SignSettings,
+    Wallpaper,
     build_enrolment_image, build_thin_image, enrolment_config_sha256, folder_of, local_now,
     mint_enrolment_code, push_registry_signed_in, record_config_hash, record_stick_write,
-    sign_settings, stick_config_sha256, vault,
+    retire_stick_credential, sign_settings, stick_config_sha256, vault,
 };
 use ck_protocol::{StickId, WifiPassword};
 use serde::Deserialize;
@@ -61,6 +62,9 @@ struct MadeStick {
     config_sha256: String,
     /// The disk it goes to, for a stick that already has its key.
     disk: Option<HardwareId>,
+    /// Whether the Hub already knows this stick id. A first-boot enrolment stick is not known until it
+    /// claims its code (the Hub picks the id then), and the code runs out by itself.
+    registered: bool,
 }
 
 /// The registry file that goes with a profile file.
@@ -112,19 +116,86 @@ fn write_all(
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)
         .map_err(|e| format!("could not make {}: {e}", work.display()))?;
-    let result = make_and_write(request, session.as_ref(), cancel, &work, report);
+    let mut made = Vec::new();
+    let result = make_and_write(request, session.as_ref(), cancel, &work, report, &mut made);
     let _ = std::fs::remove_dir_all(&work);
-    result
+    // The registry file is written when an image is built, and every push sends the whole file. A
+    // stick whose write was cancelled or failed does not exist, so it leaves the file first: it
+    // must never reach the Hub later as a live stick.
+    let Err(error) = &result else {
+        return result;
+    };
+    let registry = registry_of(&request.profile);
+    let mut problems = unregister(&made, |id| Registry::remove(&registry, id).map(|_| ()).map_err(|e| e.to_string()));
+    // The Hub learns of a stick when its image is built, before anything is written, so it must not
+    // keep it as a live stick either. A Hub that has no such stick has nothing to retire.
+    if let Some(session) = session.as_ref() {
+        let failed = retire_unwritten(&made, |id| {
+            match retire_stick_credential(HUB_URL, session, id) {
+                Ok(()) | Err(AdminError::NoSuchStick) => Ok(()),
+                Err(e) => Err(e.to_string()),
+            }
+        });
+        if !failed.is_empty() {
+            problems.push(format!(
+                "these sticks could not be retired on the Hub, so retire them there: {}",
+                failed.join(", ")
+            ));
+        }
+    }
+    if problems.is_empty() {
+        result
+    } else {
+        Err(format!("{error}. {}", problems.join(". ")))
+    }
 }
 
+/// Takes each stick out of the registry file. A failure does not stop the others; each one that could
+/// not be removed is named, because it would reach the Hub with the next push.
+fn unregister(
+    made: &[MadeStick],
+    mut remove: impl FnMut(&StickId) -> Result<(), String>,
+) -> Vec<String> {
+    let failed: Vec<String> = made
+        .iter()
+        .filter(|stick| remove(&stick.id).is_err())
+        .map(|stick| stick.id.to_string())
+        .collect();
+    if failed.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "these sticks could not be taken out of the registry file, so delete them from it before the next push: {}",
+            failed.join(", ")
+        )]
+    }
+}
+
+/// Retires each stick the Hub knows but that was not written. A failure does not stop the others;
+/// the ids that could not be retired are returned so the window can say so.
+fn retire_unwritten(
+    made: &[MadeStick],
+    mut retire: impl FnMut(&str) -> Result<(), String>,
+) -> Vec<String> {
+    let mut failed = Vec::new();
+    for stick in made.iter().filter(|stick| stick.registered) {
+        if retire(stick.id.as_str()).is_err() {
+            failed.push(stick.id.to_string());
+        }
+    }
+    failed
+}
+
+/// `made` gets each stick as soon as its image is built, so the caller can retire them if this fails.
 fn make_and_write(
     request: &Request,
     session: Option<&HubSession>,
     cancel: &AtomicBool,
     work: &Path,
     report: &dyn Fn(Progress),
+    made: &mut Vec<MadeStick>,
 ) -> Result<String, String> {
-    let (images, made) = build_images(request, session, cancel, work, report)?;
+    let images = build_images(request, session, cancel, work, report, made)?;
     // A cancel during the last image must not start the write either.
     if cancel.load(Ordering::Relaxed) {
         return Err(CANCELLED_BEFORE_WRITING.to_owned());
@@ -137,7 +208,7 @@ fn make_and_write(
     // Only now that everything was written and checked, so a refused permission prompt or a failed
     // disk never counts.
     if let Some(session) = session {
-        record_written(session, &made);
+        record_written(session, made);
     }
     Ok(hash)
 }
@@ -149,13 +220,14 @@ fn build_images(
     cancel: &AtomicBool,
     work: &Path,
     report: &dyn Fn(Progress),
-) -> Result<(Vec<PathBuf>, Vec<MadeStick>), String> {
+    made: &mut Vec<MadeStick>,
+) -> Result<Vec<PathBuf>, String> {
     let hardware = if request.to_file.is_some() {
         Vec::new()
     } else {
         hardware_of(&request.disks)
     };
-    let (mut images, mut made) = (Vec::new(), Vec::new());
+    let mut images = Vec::new();
     for n in 1..=request.disks.len().max(1) {
         if cancel.load(Ordering::Relaxed) {
             return Err(CANCELLED_BEFORE_WRITING.to_owned());
@@ -165,7 +237,7 @@ fn build_images(
         made.push(build_stick(request, session, &image, disk, report)?);
         images.push(image);
     }
-    Ok((images, made))
+    Ok(images)
 }
 
 const CANCELLED_BEFORE_WRITING: &str = "cancelled: nothing was written";
@@ -234,6 +306,7 @@ fn build_stick(
             config_sha256: enrolment_config_sha256(&config),
             id: config.stick_id,
             disk: None,
+            registered: false,
         });
     }
     let built = build_thin_image(
@@ -255,6 +328,7 @@ fn build_stick(
         config_sha256: stick_config_sha256(&built.config),
         id: built.config.stick_id,
         disk: hardware.cloned(),
+        registered: session.is_some(),
     })
 }
 
@@ -489,6 +563,51 @@ fn write_elevated(
 mod tests {
     use super::*;
 
+    fn made(name: &str, registered: bool) -> MadeStick {
+        MadeStick {
+            id: StickId::parse(name).expect("id"),
+            config_sha256: String::new(),
+            disk: None,
+            registered,
+        }
+    }
+
+    #[test]
+    fn a_failed_write_retires_every_stick_the_hub_knows_and_reports_the_ones_it_could_not() {
+        let sticks = [
+            made("stick-a", true),
+            made("stick-b", true),
+            // A first-boot enrolment stick: the Hub has no stick of that id to retire.
+            made("stick-c", false),
+            made("stick-d", true),
+        ];
+        let mut tried = Vec::new();
+        let failed = retire_unwritten(&sticks, |id| {
+            tried.push(id.to_owned());
+            if id == "stick-b" {
+                Err("hub down".to_owned())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(tried, ["stick-a", "stick-b", "stick-d"]);
+        assert_eq!(failed, ["stick-b"]);
+    }
+
+    #[test]
+    fn every_stick_of_a_failed_write_leaves_the_registry_and_the_ones_that_stay_are_named() {
+        let sticks = [made("stick-a", true), made("stick-b", false), made("stick-c", true)];
+        let mut tried = Vec::new();
+        let problems = unregister(&sticks, |id| {
+            tried.push(id.to_string());
+            if id.as_str() == "stick-b" { Err("locked".to_owned()) } else { Ok(()) }
+        });
+        assert_eq!(tried, ["stick-a", "stick-b", "stick-c"]);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("stick-b") && !problems[0].contains("stick-a"));
+        assert_eq!(unregister(&sticks, |_| Ok(())).len(), 0);
+    }
+
     fn state(text: &str) -> Option<HelperState> {
         serde_json::from_str(text).ok()
     }
@@ -597,7 +716,14 @@ mod tests {
         };
         let cancel = AtomicBool::new(true);
         let work = tempfile::tempdir().expect("folder");
-        let result = make_and_write(&request, None, &cancel, work.path(), &|_| {});
+        let result = make_and_write(
+            &request,
+            None,
+            &cancel,
+            work.path(),
+            &|_| {},
+            &mut Vec::new(),
+        );
         assert_eq!(result, Err(CANCELLED_BEFORE_WRITING.to_owned()));
     }
 }
