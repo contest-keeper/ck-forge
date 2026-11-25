@@ -1,13 +1,13 @@
 //! The Hub sign-in screen: the first of the screens, since every later one asks the Hub.
 
-use std::net::TcpListener;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::Duration;
 
 use ck_admin_core::{HUB_URL, HubSession, vault};
 
-const SIGN_IN_WAIT: Duration = Duration::from_secs(180);
+const SIGN_IN_WAIT: Duration = Duration::from_secs(600);
+const POLL_EVERY: Duration = Duration::from_secs(2);
 
 /// What the screen shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +22,8 @@ pub enum State {
 /// What the worker thread reports.
 #[derive(Debug)]
 pub enum Event {
+    /// The code to show while the admin agrees in the browser.
+    Code(String),
     SignedIn(String),
     Failed(String),
 }
@@ -33,6 +35,7 @@ impl State {
         match (self, event) {
             // A sign-out clicked while the browser was open already left this screen.
             (Self::SignedOut, _) => Self::SignedOut,
+            (state, Event::Code(_)) => state.clone(),
             (_, Event::SignedIn(email)) => Self::SignedIn(email),
             (_, Event::Failed(why)) => Self::Failed(why),
         }
@@ -41,6 +44,8 @@ impl State {
 
 pub struct Screen {
     pub state: State,
+    /// The pairing code of the sign-in in progress.
+    code: Option<String>,
     events: Receiver<Event>,
     sender: Sender<Event>,
 }
@@ -52,6 +57,7 @@ impl Default for Screen {
             vault::load().map_or(State::SignedOut, |session| State::SignedIn(session.email));
         Self {
             state,
+            code: None,
             events,
             sender,
         }
@@ -61,6 +67,9 @@ impl Default for Screen {
 impl Screen {
     pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
         while let Ok(event) = self.events.try_recv() {
+            if let Event::Code(code) = &event {
+                self.code = Some(code.clone());
+            }
             self.state = self.state.after(event);
         }
         ui.heading("Keeper Hub");
@@ -71,7 +80,11 @@ impl Screen {
                 }
             }
             State::SigningIn => {
-                ui.label("Waiting for you to sign in in the browser…");
+                ui.label("Waiting for you to agree in the browser…");
+                if let Some(code) = &self.code {
+                    ui.label("Check that the Hub page shows this code:");
+                    ui.heading(code);
+                }
                 ui.spinner();
             }
             State::SignedIn(email) => {
@@ -92,9 +105,10 @@ impl Screen {
 
     fn start_sign_in(&mut self, ctx: eframe::egui::Context) {
         self.state = State::SigningIn;
+        self.code = None;
         let sender = self.sender.clone();
         thread::spawn(move || {
-            let event = match sign_in() {
+            let event = match sign_in(&sender, &ctx) {
                 Ok(session) => {
                     vault::save(&session);
                     Event::SignedIn(session.email)
@@ -108,15 +122,14 @@ impl Screen {
     }
 }
 
-fn sign_in() -> Result<HubSession, String> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let state = ck_admin_core::new_state();
-    let url = ck_admin_core::sign_in_url(HUB_URL, port, &state).map_err(|e| e.to_string())?;
-    open::that(&url).map_err(|e| format!("could not open the browser: {e}"))?;
-    let code =
-        ck_admin_core::wait_for_code(&listener, &state, SIGN_IN_WAIT).map_err(|e| e.to_string())?;
-    ck_admin_core::sign_in_with_code(HUB_URL, &code).map_err(|e| e.to_string())
+fn sign_in(sender: &Sender<Event>, ctx: &eframe::egui::Context) -> Result<HubSession, String> {
+    let pairing = ck_admin_core::start_pairing(HUB_URL).map_err(|e| e.to_string())?;
+    // The window may be gone by now; then nobody needs the code.
+    let _ = sender.send(Event::Code(pairing.code.clone()));
+    ctx.request_repaint();
+    open::that(&pairing.url).map_err(|e| format!("could not open the browser: {e}"))?;
+    ck_admin_core::wait_for_pairing(HUB_URL, &pairing, SIGN_IN_WAIT, POLL_EVERY)
+        .map_err(|e| e.to_string())
 }
 
 fn sign_out() {
