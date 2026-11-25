@@ -65,6 +65,11 @@
       } finally {
         leaving = false;
       }
+      // The name stays editable during the save. A stick must not be written under a name that was never saved.
+      if (isUnsaved()) {
+        leaveFailure = 'The profile changed while it was being saved. Check it and continue again.';
+        return;
+      }
     }
     index++;
   }

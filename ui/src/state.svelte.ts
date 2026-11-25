@@ -19,6 +19,8 @@ export type AppState = {
   saved: string | null;
   /** Something long is running (an import, a download or a write), so other buttons wait. */
   busy: boolean;
+  /** Goes up when a wallpaper file is replaced; replacing keeps the name, so the previews watch this. */
+  wallpaperRevision: number;
 };
 
 export const app: AppState = $state({
@@ -29,6 +31,7 @@ export const app: AppState = $state({
   hubEmail: null,
   saved: null,
   busy: false,
+  wallpaperRevision: 0,
 });
 
 /** Takes a profile in as the one being edited. `path` is where it came from, `null` for a new one. */
@@ -57,13 +60,17 @@ export async function saveProfile(): Promise<string> {
   const profile = app.profile;
   if (!profile) throw new Error('There is no profile to save.');
   const snapshot = $state.snapshot(profile);
-  if (app.profilePath) {
-    await api.saveProfile(app.profilePath, snapshot);
-    app.saved = JSON.stringify(snapshot);
-    return app.profilePath;
+  const known = app.profilePath;
+  if (known) {
+    await api.saveProfile(known, snapshot);
+    // Another profile may have been opened while this one was saved; its baseline is not this save's.
+    if (app.profile === profile && app.profilePath === known) app.saved = JSON.stringify(snapshot);
+    return known;
   }
   const path = await api.saveProfileInForgeFolder(snapshot);
-  app.profilePath = path;
-  app.saved = JSON.stringify(snapshot);
+  if (app.profile === profile && app.profilePath === null) {
+    app.profilePath = path;
+    app.saved = JSON.stringify(snapshot);
+  }
   return path;
 }

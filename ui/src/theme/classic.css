@@ -187,6 +187,11 @@
   outline: 2px solid var(--text);
   outline-offset: -2px;
 }
+/* The heavy outline above is more specific than the dotted focus ring, so focus needs its own rule. */
+[data-theme='classic'] .btn.pri:focus-visible {
+  outline: 1px dotted var(--text);
+  outline-offset: -4px;
+}
 [data-theme='classic'] .btn.dng {
   background: var(--danger-solid);
   color: #fff;

@@ -15,6 +15,7 @@
   $effect(() => {
     const path = app.profilePath;
     const file = settings.branding.wallpaper;
+    void app.wallpaperRevision; // a replaced file keeps its name
     picture = null;
     if (!path || !file) return;
     let current = true;
