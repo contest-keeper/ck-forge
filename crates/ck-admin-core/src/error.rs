@@ -34,6 +34,9 @@ pub enum Error {
     BaseImage(#[from] ck_base_image::Error),
     #[error("{0}")]
     Hub(String),
+    /// The Hub said 401: the saved sign-in is over, and the admin must sign in again.
+    #[error("{0}")]
+    SignedOut(String),
     #[error("this organization has no such stick")]
     NoSuchStick,
     #[error(
