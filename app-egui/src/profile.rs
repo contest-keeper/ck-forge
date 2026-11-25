@@ -232,6 +232,10 @@ fn end_is_valid(text: &str) -> bool {
 
 impl Screen {
     pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
+        // A request to the Hub is running: nothing here can change until it has ended.
+        if self.hub.busy() {
+            ui.disable();
+        }
         ui.heading("Profile");
         ui.horizontal(|ui| {
             ui.label("File");
@@ -356,7 +360,10 @@ impl Screen {
             .profile
             .as_ref()
             .map(|profile| (profile, self.path.as_str()));
-        match self.hub.show(ui, current) {
+        // The same refusal as a local save: the typed end is not applied to the profile.
+        let blocked = (!end_is_valid(&self.contest_end))
+            .then_some("Fix the contest end first: use a date and time like 2026-11-15T09:00");
+        match self.hub.show(ui, current, blocked) {
             Some(Outcome::Loaded(loaded)) => {
                 self.path = loaded.path.display().to_string();
                 self.set(loaded.profile, "Loaded from the Hub");

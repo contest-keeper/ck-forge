@@ -59,10 +59,18 @@ fn as_admin<T>(
 impl Panel {
     /// Shows the Hub's profiles and the buttons. `current` is the profile being edited and the
     /// file it is saved in, when there is one.
+    /// Whether a request is running. The editor is locked meanwhile: a save that finishes writes the
+    /// profile it was started with to its file, which must not undo a newer edit or a new profile.
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
+    /// `save_blocked` says why the profile cannot be saved on the Hub now, when it cannot.
     pub fn show(
         &mut self,
         ui: &mut eframe::egui::Ui,
         current: Option<(&Profile, &str)>,
+        save_blocked: Option<&str>,
     ) -> Option<Outcome> {
         let outcome = self.receive();
         ui.horizontal(|ui| {
@@ -74,12 +82,18 @@ impl Panel {
                     Event::Listed(as_admin(|session| list_profiles(HUB_URL, session))).send(sender);
                 });
             }
-            if let Some((profile, path)) = current
-                && ui
-                    .add_enabled(!self.busy, eframe::egui::Button::new("Save on the Hub"))
-                    .clicked()
-            {
-                self.save(ui.ctx(), profile.clone(), path);
+            if let Some((profile, path)) = current {
+                let save = ui.add_enabled(
+                    !self.busy && save_blocked.is_none(),
+                    eframe::egui::Button::new("Save on the Hub"),
+                );
+                let save = match save_blocked {
+                    Some(why) => save.on_disabled_hover_text(why),
+                    None => save,
+                };
+                if save.clicked() {
+                    self.save(ui.ctx(), profile.clone(), path);
+                }
             }
         });
         let mut chosen = None;
