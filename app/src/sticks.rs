@@ -5,10 +5,11 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    EnrolmentBuild, HardwareId, HubImage, HubImageStep, Profile, SignSettings, Wallpaper,
-    build_enrolment_image, build_thin_image, enrolment_config_sha256, folder_of,
-    import_image, local_now, mint_enrolment_code, record_config_hash, record_stick_write,
-    requires_signed_settings, sign_settings, stick_config_sha256, supports_enrolment,
+    EnrolmentBuild, HardwareId, HubImage, HubImageStep, Profile, Registry, SignSettings, Wallpaper,
+    build_enrolment_image, build_thin_image, enrolment_config_sha256, folder_of, import_image,
+    local_now, mint_enrolment_code, record_config_hash, record_stick_write,
+    requires_signed_settings, retire_stick_credential, sign_settings, stick_config_sha256,
+    supports_enrolment,
 };
 use ck_protocol::{StickId, WifiPassword};
 use serde::{Deserialize, Serialize};
@@ -114,6 +115,7 @@ pub async fn enrolment_supported(base: PathBuf) -> Result<bool, String> {
 }
 
 /// A stick Forge made: what the Hub is told about it once its write is finished.
+#[derive(Clone)]
 struct MadeStick {
     id: StickId,
     /// The SHA-256 of the settings file on the stick.
@@ -173,14 +175,7 @@ fn build_stick(
             &options,
             |settings, machine_number, scope| {
                 hub.as_admin(|session| {
-                    mint_enrolment_code(
-                        HUB_URL,
-                        session,
-                        settings,
-                        machine_number,
-                        scope,
-                        hardware,
-                    )
+                    mint_enrolment_code(HUB_URL, session, settings, machine_number, scope, hardware)
                 })
                 .map(|minted| minted.code)
                 .map_err(ck_admin_core::Error::Hub)
@@ -312,6 +307,10 @@ struct HelperState {
     total: u64,
     sha256: Option<String>,
     message: Option<String>,
+    /// Which sticks (by position) the helper could not write. Empty when it stopped before or
+    /// without saying, so none can be trusted.
+    #[serde(default)]
+    failed: Vec<usize>,
 }
 
 fn read_state(file: &Path) -> Option<HelperState> {
@@ -548,6 +547,9 @@ fn make_and_write(
     };
     let finished = read_state(&progress_file);
     let _ = std::fs::remove_file(&progress_file);
+    let failed = finished
+        .as_ref()
+        .map_or_else(Vec::new, |state| state.failed.clone());
     match finished {
         Some(HelperState {
             state,
@@ -557,16 +559,114 @@ fn make_and_write(
             record_written(app, &written);
             Ok(hash)
         }
-        Some(HelperState {
-            message: Some(why), ..
-        }) => Err(why),
-        _ if !status.success() => {
-            Err("the administrator permission was refused, so nothing was written".to_owned())
+        other => {
+            let why = match other {
+                Some(HelperState {
+                    message: Some(why), ..
+                }) => why,
+                _ if !status.success() => {
+                    "the administrator permission was refused, so nothing was written".to_owned()
+                }
+                _ => "the writer stopped without saying why; nothing on the stick can be trusted"
+                    .to_owned(),
+            };
+            Err(settle_failure(app, profile_path, &written, &failed, why))
         }
-        _ => Err(
-            "the writer stopped without saying why; nothing on the stick can be trusted".to_owned(),
-        ),
     }
+}
+
+/// What follows a write that did not finish: the sticks that were written stay and are recorded, the
+/// others leave the registry file and the Hub. Returns the reason, with what could not be cleaned up.
+fn settle_failure(
+    app: &AppHandle,
+    profile_path: &Path,
+    written: &[MadeStick],
+    failed: &[usize],
+    why: String,
+) -> String {
+    let (kept, unwritten) = split_written(written, failed);
+    let kept: Vec<MadeStick> = kept.into_iter().cloned().collect();
+    record_written(app, &kept);
+    let hub = app.state::<HubState>();
+    let registry = registry_of(profile_path);
+    let problems = clean_up_unwritten(
+        &unwritten,
+        |id| {
+            Registry::remove(&registry, id)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        },
+        |id| {
+            if !hub.signed_in() {
+                return Ok(());
+            }
+            hub.as_admin(
+                |session| match retire_stick_credential(HUB_URL, session, id.as_str()) {
+                    Err(ck_admin_core::Error::NoSuchStick) => Ok(()),
+                    other => other,
+                },
+            )
+        },
+    );
+    if problems.is_empty() {
+        why
+    } else {
+        format!("{why}. {}", problems.join(". "))
+    }
+}
+
+/// The sticks whose write the helper confirmed, and those that must not stay: when it names no
+/// failed stick it stopped as a whole (refused, cancelled, died), so none can be trusted.
+fn split_written<'a>(
+    made: &'a [MadeStick],
+    failed: &[usize],
+) -> (Vec<&'a MadeStick>, Vec<&'a MadeStick>) {
+    if failed.is_empty() {
+        return (Vec::new(), made.iter().collect());
+    }
+    let mut parts = (Vec::new(), Vec::new());
+    for (index, stick) in made.iter().enumerate() {
+        if failed.contains(&index) {
+            parts.1.push(stick);
+        } else {
+            parts.0.push(stick);
+        }
+    }
+    parts
+}
+
+/// The registry file is written when an image is built, and every push sends the whole file; the Hub
+/// is told at the same time. A stick that was not written does not exist, so it leaves both: it must
+/// never reach the Hub later as a live stick. A failure does not stop the others; each is named.
+fn clean_up_unwritten(
+    unwritten: &[&MadeStick],
+    mut remove: impl FnMut(&StickId) -> Result<(), String>,
+    mut retire: impl FnMut(&StickId) -> Result<(), String>,
+) -> Vec<String> {
+    let mut not_removed = Vec::new();
+    let mut not_retired = Vec::new();
+    for stick in unwritten {
+        if remove(&stick.id).is_err() {
+            not_removed.push(stick.id.to_string());
+        }
+        if retire(&stick.id).is_err() {
+            not_retired.push(stick.id.to_string());
+        }
+    }
+    let mut problems = Vec::new();
+    if !not_removed.is_empty() {
+        problems.push(format!(
+            "these sticks could not be taken out of the registry file, so delete them from it before the next push: {}",
+            not_removed.join(", ")
+        ));
+    }
+    if !not_retired.is_empty() {
+        problems.push(format!(
+            "these sticks could not be retired on the Hub, so retire them there: {}",
+            not_retired.join(", ")
+        ));
+    }
+    problems
 }
 
 fn write_to_file(app: &AppHandle, image: &Path, file: &Path) -> Result<String, String> {
@@ -626,6 +726,43 @@ mod tests {
         for bad in [vec![], vec!["4=ab12".to_owned()], vec!["3=zz".to_owned()]] {
             assert!(helper_arguments(&image, progress, &[3], &bad, false).is_err());
         }
+    }
+
+    #[test]
+    fn a_failed_write_keeps_only_the_sticks_the_helper_confirmed() {
+        let stick = |id: &str| MadeStick {
+            id: StickId::parse(id).unwrap(),
+            config_sha256: String::new(),
+            disk: None,
+        };
+        let made = [stick("stick-a"), stick("stick-b"), stick("stick-c")];
+        // Stopped as a whole: refused, cancelled or died. Nothing can be trusted.
+        let (kept, gone) = split_written(&made, &[]);
+        assert!(kept.is_empty() && gone.len() == 3);
+        // One stick failed: the others were written and checked.
+        let (kept, gone) = split_written(&made, &[1]);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(gone[0].id.as_str(), "stick-b");
+
+        // Every unwritten stick leaves the registry and the Hub; one failing does not stop the rest.
+        let (mut removed, mut retired) = (Vec::new(), Vec::new());
+        let problems = clean_up_unwritten(
+            &gone,
+            |id| {
+                removed.push(id.to_string());
+                Ok(())
+            },
+            |id| {
+                retired.push(id.to_string());
+                Err("down".to_owned())
+            },
+        );
+        assert_eq!(
+            (removed, retired),
+            (vec!["stick-b".to_owned()], vec!["stick-b".to_owned()])
+        );
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("stick-b"));
     }
 
     #[test]

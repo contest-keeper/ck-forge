@@ -478,10 +478,17 @@ fn a_failing_stick_is_named_and_the_others_are_still_written() {
             "good.img",
             "--to",
             "no-such-folder/bad.img",
+            "--progress-file",
+            "p.json",
         ],
         dir.path(),
     );
     assert!(!result.status.success());
+    // The window needs to know which sticks failed, so it keeps the one that was written.
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("p.json")).expect("progress"))
+            .expect("json");
+    assert_eq!(state["failed"], serde_json::json!([1]));
     let message = text(&result.stderr);
     assert!(message.contains("1 of 2 sticks failed"), "{message}");
     assert!(message.contains("bad.img"), "{message}");
