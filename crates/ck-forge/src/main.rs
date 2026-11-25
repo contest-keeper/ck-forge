@@ -16,7 +16,6 @@ use ck_admin_core::{
     CreateOptions, Error, Profile, Wallpaper, configure_image, detect_image, folder_of,
 };
 use clap::Parser;
-use serde_json::json;
 
 use cli::{Cli, Command, ImageCommand, ProfileCommand, RegistryCommand, StickCommand};
 use hub::run_hub;
@@ -26,7 +25,7 @@ use image::{
 };
 use profile::{profile_check, profile_new, profile_wallpaper};
 use registry::{registry_list, registry_push};
-use stick::{report_progress, stick_list, stick_write};
+use stick::{stick_list, stick_write_reported};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -146,16 +145,14 @@ fn run(command: Command) -> Result<String, Error> {
             allow_virtual,
             yes,
             progress_file,
-        }) => {
-            let progress = progress_file.as_deref();
-            let result = stick_write(&images, &disk, to, allow_virtual, yes, progress);
-            if let Err(error) = &result {
-                report_progress(
-                    progress,
-                    &json!({ "state": "error", "message": error.to_string() }),
-                );
-            }
-            result
-        }
+            cancel_file,
+        }) => stick_write_reported(
+            &images,
+            &disk,
+            to,
+            allow_virtual,
+            yes,
+            (progress_file.as_deref(), cancel_file.as_deref()),
+        ),
     }
 }

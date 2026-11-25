@@ -110,6 +110,11 @@ pub(crate) enum StickCommand {
         /// this command with administrator rights and cannot read its output
         #[arg(long)]
         progress_file: Option<PathBuf>,
+        /// Stop writing when this file exists: the admin window, which cannot reach this process
+        /// once it has administrator rights, creates it to cancel. The sticks are then only partly
+        /// written and must be written again
+        #[arg(long, conflicts_with = "to")]
+        cancel_file: Option<PathBuf>,
     },
 }
 
