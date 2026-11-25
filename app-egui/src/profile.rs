@@ -362,6 +362,8 @@ impl Screen {
             .map(|wifi| wifi.ssid.clone())
             .unwrap_or_default();
         self.profile = Some(profile);
+        // The picture of the profile that was open before is not this profile's.
+        self.preview = None;
         message.clone_into(&mut self.message);
     }
 
@@ -381,11 +383,22 @@ impl Screen {
         let Some(profile) = &self.profile else {
             return;
         };
+        if !end_is_valid(&self.contest_end) {
+            "Fix the contest end first: use a date and time like 2026-11-15T09:00"
+                .clone_into(&mut self.message);
+            return;
+        }
         let Some(data) = crate::folder::data_dir() else {
             "Could not find the Forge folder".clone_into(&mut self.message);
             return;
         };
-        match crate::folder::save_in(&data, profile) {
+        // The wallpaper lies beside the file the profile was opened from: it goes along.
+        let wallpaper = profile.settings.branding.wallpaper.as_ref().map(|name| {
+            PathBuf::from(self.path.trim())
+                .parent()
+                .map_or_else(|| PathBuf::from(name), |folder| folder.join(name))
+        });
+        match crate::folder::save_in(&data, profile, wallpaper.as_deref()) {
             Ok(path) => {
                 self.path = path.display().to_string();
                 self.message = format!("Saved in {}", path.display());

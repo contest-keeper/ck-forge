@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ck_admin_core::Profile;
+use ck_admin_core::{Profile, add_wallpaper};
 
 const IDENTIFIER: &str = "org.contest-keeper.forge";
 
@@ -43,24 +43,62 @@ fn folder_name(name: &str, unique: u128) -> String {
     format!("{slug}-{:08x}", unique % 0xFFFF_FFFF)
 }
 
-/// Saves `profile` in a folder of its own under `data/profiles`, next to where its registry and
-/// wallpaper go, and says where. A profile that has problems is not saved and leaves nothing behind.
-pub fn save_in(data: &Path, profile: &Profile) -> Result<PathBuf, String> {
+/// Makes a folder of its own for a profile called `name` under `data/profiles`. The folder is
+/// created exclusively, so a name that happens to repeat never reuses (and overwrites) the folder
+/// of another profile: the next number is tried instead.
+fn new_folder(data: &Path, name: &str) -> Result<PathBuf, String> {
+    let profiles = data.join("profiles");
+    std::fs::create_dir_all(&profiles)
+        .map_err(|e| format!("could not make {}: {e}", profiles.display()))?;
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos());
-    let folder = data
-        .join("profiles")
-        .join(folder_name(&profile.name, nanos));
-    std::fs::create_dir_all(&folder)
-        .map_err(|e| format!("could not make {}: {e}", folder.display()))?;
-    let path = folder.join("contest-profile.json");
-    if let Err(error) = profile.save(&path) {
-        // Only an empty folder is removed, so nothing that was there is touched.
-        let _ = std::fs::remove_dir(&folder);
-        return Err(error.to_string());
+    for attempt in 0..100 {
+        let folder = profiles.join(folder_name(name, nanos + attempt));
+        match std::fs::create_dir(&folder) {
+            Ok(()) => return Ok(folder),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("could not make {}: {e}", folder.display())),
+        }
     }
-    Ok(path)
+    Err(format!(
+        "could not find a free folder in {}",
+        profiles.display()
+    ))
+}
+
+/// Saves `profile` in a folder of its own under `data/profiles`, next to where its registry and
+/// wallpaper go, and says where. `wallpaper` is the picture file the profile names now, which is
+/// copied along so the saved profile keeps its wallpaper. A profile that has problems is not
+/// saved and leaves nothing behind.
+pub fn save_in(
+    data: &Path,
+    profile: &Profile,
+    wallpaper: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let folder = new_folder(data, &profile.name)?;
+    let path = folder.join("contest-profile.json");
+    match save_with_wallpaper(&path, profile, wallpaper) {
+        Ok(()) => Ok(path),
+        Err(why) => {
+            // The folder was made just now by this call, so nothing else is in it.
+            let _ = std::fs::remove_dir_all(&folder);
+            Err(why)
+        }
+    }
+}
+
+fn save_with_wallpaper(
+    path: &Path,
+    profile: &Profile,
+    wallpaper: Option<&Path>,
+) -> Result<(), String> {
+    let mut profile = profile.clone();
+    if let Some(source) = wallpaper {
+        let name = add_wallpaper(path, source).map_err(|e| e.to_string())?;
+        profile.settings.branding.wallpaper = Some(name);
+    }
+    profile.save(path).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -82,20 +120,27 @@ mod tests {
 
     #[test]
     fn a_profile_is_saved_in_a_folder_of_its_own() {
-        let data = std::env::temp_dir().join(format!("ck-egui-forge-{}", std::process::id()));
-        let path = save_in(&data, &Profile::template()).expect("saved");
-        assert!(path.starts_with(data.join("profiles")));
+        let data = tempfile::tempdir().expect("folder");
+        let path = save_in(data.path(), &Profile::template(), None).expect("saved");
+        assert!(path.starts_with(data.path().join("profiles")));
         assert_eq!(
             path.file_name().and_then(|n| n.to_str()),
             Some("contest-profile.json")
         );
         assert!(Profile::load(&path).is_ok());
-        std::fs::remove_dir_all(&data).expect("cleanup");
+    }
+
+    #[test]
+    fn two_profiles_with_one_name_never_share_a_folder() {
+        let data = tempfile::tempdir().expect("folder");
+        let first = new_folder(data.path(), "Same").expect("first");
+        let second = new_folder(data.path(), "Same").expect("second");
+        assert_ne!(first, second);
     }
 
     #[test]
     fn a_profile_with_problems_leaves_no_folder() {
-        let data = std::env::temp_dir().join(format!("ck-egui-forge-bad-{}", std::process::id()));
+        let data = tempfile::tempdir().expect("folder");
         let mut profile = Profile::template();
         profile
             .settings
@@ -105,9 +150,22 @@ mod tests {
                 title: String::new(),
                 url: String::new(),
             });
-        assert!(save_in(&data, &profile).is_err());
-        let left = std::fs::read_dir(data.join("profiles")).map_or(0, Iterator::count);
+        assert!(save_in(data.path(), &profile, None).is_err());
+        let left = std::fs::read_dir(data.path().join("profiles")).map_or(0, Iterator::count);
         assert_eq!(left, 0);
-        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn the_wallpaper_goes_along_to_the_new_folder() {
+        let data = tempfile::tempdir().expect("folder");
+        let old = tempfile::tempdir().expect("old folder");
+        let picture = old.path().join("wallpaper.png");
+        std::fs::write(&picture, b"not really a picture").expect("picture");
+        let mut profile = Profile::template();
+        profile.settings.branding.wallpaper = Some("wallpaper.png".to_owned());
+        let path = save_in(data.path(), &profile, Some(&picture)).expect("saved");
+        let saved = Profile::load(&path).expect("opens");
+        let name = saved.settings.branding.wallpaper.expect("named");
+        assert!(path.with_file_name(name).is_file());
     }
 }

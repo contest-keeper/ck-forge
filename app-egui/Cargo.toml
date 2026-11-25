@@ -36,6 +36,7 @@ open = "5"
 
 [dev-dependencies]
 serde_json = "1.0.154"
+tempfile = "3.27.0"
 
 [profile.dev.package.sha2]
 opt-level = 3
