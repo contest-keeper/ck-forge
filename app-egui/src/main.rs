@@ -9,6 +9,8 @@ mod images;
 mod profile;
 mod stick_job;
 mod sticks;
+mod update;
+mod update_banner;
 mod write;
 
 fn main() -> eframe::Result {
