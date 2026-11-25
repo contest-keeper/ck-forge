@@ -3,6 +3,7 @@
 # and Apple silicon, with the command line tool beside it. Run on a Mac, from the repository root.
 # Usage: make-macos-zip.sh <version> <output zip>
 #
+# Needs cargo-about (for the licence notices that must come with the program).
 # The app is signed ad hoc (no certificate): macOS runs it after the person allows it once in
 # System Settings. A signature by a developer certificate and notarization are not done here.
 set -euo pipefail
@@ -19,7 +20,9 @@ done
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 app="$work/Keeper Forge.app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+tools/make-egui-licences.sh "$app/Contents/Resources/THIRD-PARTY-LICENSES.txt"
+cp LICENSE "$app/Contents/Resources/LICENSE.txt"
 
 lipo -create -output "$app/Contents/MacOS/keeper-forge" \
   app-egui/target/aarch64-apple-darwin/release/ck-forge-egui \

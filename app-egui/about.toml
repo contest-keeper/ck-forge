@@ -16,4 +16,5 @@ accepted = [
   "OFL-1.1",
   "Ubuntu-font-1.0",
 ]
-targets = ["x86_64-pc-windows-gnu"]
+# The window runs on Windows and on macOS (Intel and Apple silicon), so the notices cover the crates of all three.
+targets = ["x86_64-pc-windows-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin"]

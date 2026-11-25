@@ -29,6 +29,8 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_LANGUAGE "English"
 
 Section "Install"
+  ; The shortcut goes in the Start menu of every user, not of the administrator who typed the password.
+  SetShellVarContext all
   SetOutPath "$INSTDIR"
   ; A running copy cannot be replaced: the updater closes it first, and a person is asked to.
   File /oname=keeper-forge.exe "${APP}"
@@ -47,6 +49,7 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
+  SetShellVarContext all
   Delete "$INSTDIR\keeper-forge.exe"
   Delete "$INSTDIR\ck-forge.exe"
   Delete "$INSTDIR\LICENSE.txt"

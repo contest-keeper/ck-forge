@@ -123,17 +123,7 @@ jobs:
           mkdir -p egui-out
           cp app-egui/target/release/ck-forge-egui.exe egui-out/keeper-forge.exe
           cp target/release/ck-forge.exe egui-out/ck-forge.exe
-          (cd app-egui && cargo about generate --locked -c about.toml ../about.hbs -o ../egui-out/window-licences.txt)
-          cargo about generate --locked about.hbs -o egui-out/tool-licences.txt
-          {
-            echo "Keeper Forge: third-party licences"
-            echo
-            echo "Part 1: the window program"
-            cat egui-out/window-licences.txt
-            echo
-            echo "Part 2: the command line tool"
-            cat egui-out/tool-licences.txt
-          } > egui-out/THIRD-PARTY-LICENSES.txt
+          tools/make-egui-licences.sh egui-out/THIRD-PARTY-LICENSES.txt
         shell: bash
         env:
           CK_FORGE_VERSION: ${{ steps.version.outputs.version }}
@@ -150,7 +140,11 @@ jobs:
         env:
           PFX: ${{ secrets.CK_CODESIGN_PFX_BASE64 }}
       - name: Sign the egui programs
+        id: egui_sign_programs
         if: steps.egui_build.outcome == 'success' && steps.codesign.outputs.enabled == 'true'
+        # A failed signature must not stop the Tauri build; the installer is then left out, so nothing
+        # unsigned is published once signing is set up.
+        continue-on-error: true
         run: tools/codesign.ps1 egui-out/keeper-forge.exe egui-out/ck-forge.exe
         shell: pwsh
         env:
@@ -158,7 +152,7 @@ jobs:
           CK_CODESIGN_PASSWORD: ${{ secrets.CK_CODESIGN_PASSWORD }}
       - name: Build the egui installer
         id: egui_installer
-        if: steps.egui_build.outcome == 'success'
+        if: steps.egui_build.outcome == 'success' && steps.egui_sign_programs.outcome != 'failure'
         continue-on-error: true
         run: |
           makensis -V2 "-DVERSION=$VERSION" \
@@ -172,7 +166,9 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
       - name: Sign the egui installer
+        id: egui_sign_installer
         if: steps.egui_installer.outcome == 'success' && steps.codesign.outputs.enabled == 'true'
+        continue-on-error: true
         run: tools/codesign.ps1 egui-out/keeper-forge-egui-setup-x64.exe
         shell: pwsh
         env:
@@ -180,7 +176,7 @@ jobs:
           CK_CODESIGN_PASSWORD: ${{ secrets.CK_CODESIGN_PASSWORD }}
       - name: Sign the egui installer for the updater and write its feed
         id: egui_feed
-        if: steps.egui_installer.outcome == 'success'
+        if: steps.egui_installer.outcome == 'success' && steps.egui_sign_installer.outcome != 'failure'
         continue-on-error: true
         run: |
           node ui/node_modules/@tauri-apps/cli/tauri.js signer sign egui-out/keeper-forge-egui-setup-x64.exe

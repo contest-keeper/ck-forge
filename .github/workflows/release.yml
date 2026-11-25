@@ -101,12 +101,17 @@ jobs:
           workspaces: |
             .
             app-egui
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
       - name: Build the universal app
         run: |
           mkdir -p out
           tools/make-macos-zip.sh "${TAG#v}" out/keeper-forge-macos-universal.zip
         env:
           TAG: ${{ needs.release-please.outputs.tag_name }}
+          # Only a release signs in to, and reports to, the production Hub.
+          CK_HUB_URL: https://hub.contestkeeper.com
       - uses: actions/attest-build-provenance@v4
         with:
           subject-path: out/keeper-forge-macos-universal.zip
