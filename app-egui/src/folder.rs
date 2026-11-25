@@ -70,16 +70,17 @@ fn new_folder(data: &Path, name: &str) -> Result<PathBuf, String> {
 /// Saves `profile` in a folder of its own under `data/profiles`, next to where its registry and
 /// wallpaper go, and says where. `wallpaper` is the picture file the profile names now, which is
 /// copied along so the saved profile keeps its wallpaper. A profile that has problems is not
-/// saved and leaves nothing behind.
+/// saved and leaves nothing behind. Also returns the profile as saved: its wallpaper has the name
+/// of the copy, which may differ from the name it had.
 pub fn save_in(
     data: &Path,
     profile: &Profile,
     wallpaper: Option<&Path>,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, Profile), String> {
     let folder = new_folder(data, &profile.name)?;
     let path = folder.join("contest-profile.json");
     match save_with_wallpaper(&path, profile, wallpaper) {
-        Ok(()) => Ok(path),
+        Ok(saved) => Ok((path, saved)),
         Err(why) => {
             // The folder was made just now by this call, so nothing else is in it.
             let _ = std::fs::remove_dir_all(&folder);
@@ -92,13 +93,14 @@ fn save_with_wallpaper(
     path: &Path,
     profile: &Profile,
     wallpaper: Option<&Path>,
-) -> Result<(), String> {
+) -> Result<Profile, String> {
     let mut profile = profile.clone();
     if let Some(source) = wallpaper {
         let name = add_wallpaper(path, source).map_err(|e| e.to_string())?;
         profile.settings.branding.wallpaper = Some(name);
     }
-    profile.save(path).map_err(|e| e.to_string())
+    profile.save(path).map_err(|e| e.to_string())?;
+    Ok(profile)
 }
 
 #[cfg(test)]
@@ -121,7 +123,7 @@ mod tests {
     #[test]
     fn a_profile_is_saved_in_a_folder_of_its_own() {
         let data = tempfile::tempdir().expect("folder");
-        let path = save_in(data.path(), &Profile::template(), None).expect("saved");
+        let (path, _) = save_in(data.path(), &Profile::template(), None).expect("saved");
         assert!(path.starts_with(data.path().join("profiles")));
         assert_eq!(
             path.file_name().and_then(|n| n.to_str()),
@@ -163,9 +165,15 @@ mod tests {
         std::fs::write(&picture, b"not really a picture").expect("picture");
         let mut profile = Profile::template();
         profile.settings.branding.wallpaper = Some("wallpaper.png".to_owned());
-        let path = save_in(data.path(), &profile, Some(&picture)).expect("saved");
+        // The picture is named "banner.png" beside the old profile; the copy is called wallpaper.png.
+        profile.settings.branding.wallpaper = Some("banner.png".to_owned());
+        let picture = old.path().join("banner.png");
+        std::fs::write(&picture, b"not really a picture").expect("picture");
+        let (path, kept) = save_in(data.path(), &profile, Some(&picture)).expect("saved");
         let saved = Profile::load(&path).expect("opens");
-        let name = saved.settings.branding.wallpaper.expect("named");
-        assert!(path.with_file_name(name).is_file());
+        let name = saved.settings.branding.wallpaper.clone().expect("named");
+        assert!(path.with_file_name(&name).is_file());
+        // What the editor keeps names the copy too, so a later save finds its picture.
+        assert_eq!(kept.settings.branding.wallpaper, Some(name));
     }
 }

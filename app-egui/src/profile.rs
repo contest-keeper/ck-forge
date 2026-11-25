@@ -399,9 +399,11 @@ impl Screen {
                 .map_or_else(|| PathBuf::from(name), |folder| folder.join(name))
         });
         match crate::folder::save_in(&data, profile, wallpaper.as_deref()) {
-            Ok(path) => {
+            Ok((path, saved)) => {
                 self.path = path.display().to_string();
                 self.message = format!("Saved in {}", path.display());
+                // The wallpaper of the copy may have another name than the one the editor had.
+                self.profile = Some(saved);
             }
             Err(why) => self.message = why,
         }
