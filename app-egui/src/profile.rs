@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use crate::hub_profiles::Outcome;
 use base64::Engine;
 use ck_admin_core::{Profile, add_wallpaper, wallpaper_data_url};
 use ck_protocol::{Bookmark, LocalDateTime, RecordingMode, UploadMode, Wifi};
@@ -22,6 +23,7 @@ pub struct Screen {
     wallpaper_source: String,
     /// The wallpaper as a picture, made once when it changes and not on every frame.
     preview: Option<eframe::egui::TextureHandle>,
+    hub: crate::hub_profiles::Panel,
     /// What the last open, save or picture said.
     message: String,
 }
@@ -230,6 +232,10 @@ fn end_is_valid(text: &str) -> bool {
 
 impl Screen {
     pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
+        // A request to the Hub is running: nothing here can change until it has ended.
+        if self.hub.busy() {
+            ui.disable();
+        }
         ui.heading("Profile");
         ui.horizontal(|ui| {
             ui.label("File");
@@ -261,6 +267,7 @@ impl Screen {
         if !self.message.is_empty() {
             ui.label(&self.message);
         }
+        self.hub_ui(ui);
         let Some(profile) = &mut self.profile else {
             return;
         };
@@ -344,6 +351,35 @@ impl Screen {
         }
         if let Some(preview) = &self.preview {
             ui.add(eframe::egui::Image::new(preview).max_width(320.0));
+        }
+    }
+
+    /// The Hub's profiles: what a finished request changes here is applied at once.
+    fn hub_ui(&mut self, ui: &mut eframe::egui::Ui) {
+        let current = self
+            .profile
+            .as_ref()
+            .map(|profile| (profile, self.path.as_str()));
+        // The same refusal as a local save: the typed end is not applied to the profile.
+        let blocked = (!end_is_valid(&self.contest_end))
+            .then_some("Fix the contest end first: use a date and time like 2026-11-15T09:00");
+        match self.hub.show(ui, current, blocked) {
+            Some(Outcome::Loaded(loaded)) => {
+                self.path = loaded.path.display().to_string();
+                self.set(loaded.profile, "Loaded from the Hub");
+                self.refresh_preview(ui.ctx());
+            }
+            Some(Outcome::Saved(id)) => {
+                if let Some(profile) = &mut self.profile {
+                    profile.hub_id = id;
+                }
+            }
+            Some(Outcome::Assigned(id)) => {
+                if let Some(profile) = &mut self.profile {
+                    profile.hub_id.get_or_insert(id);
+                }
+            }
+            None => {}
         }
     }
 

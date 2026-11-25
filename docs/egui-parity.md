@@ -12,7 +12,7 @@ a `ck-forge` command already, so a screen only calls the function.
 | Profile editor | `save_profile_in_forge_folder` | `Profile::save` into the app data folder | none needed | [x] built, Windows test pending |
 | Profile editor | `add_wallpaper` | `add_wallpaper` | `profile wallpaper` | [x] |
 | Profile editor | `wallpaper_preview` | `wallpaper_data_url` | none needed | [x] built, Windows test pending |
-| Profile editor | `hub_list_profiles`, `hub_load_profile`, `hub_save_profile` | `list_profiles`, `load_hub_profile`, `save_hub_profile` | `hub profiles`, `hub pull`, `hub push` | [ ] |
+| Profile editor | `hub_list_profiles`, `hub_load_profile`, `hub_save_profile` | `list_profiles`, `load_hub_profile`, `save_hub_profile` | `hub profiles`, `hub pull`, `hub push` | [x] built, Windows test pending |
 | Image picker | `list_catalog`, `make_base_image`, `import_base_image` | `catalog`, `create_base_image`, `import_image` | `image catalog`, `image create`, `image import` | [ ] |
 | Image picker | `list_hub_images`, `download_hub_image` | `list_hub_images`, `download_hub_image` | `hub images`, `hub download` | [x] |
 | Image picker | `signature_required`, `enrolment_supported` | `requires_signed_settings`, `supports_enrolment` | `image support` | [x] |
