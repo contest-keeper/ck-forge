@@ -15,6 +15,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(hub::HubState::restored())
+        .manage(update::Found::default())
         .setup(|app| {
             update::check_on_start(app.handle().clone());
             Ok(())
@@ -45,6 +46,9 @@ fn main() {
             hub::hub_status,
             hub::hub_list_sticks,
             hub::hub_retire_stick,
+            update::pending_update,
+            update::open_release_notes,
+            update::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("the Keeper Forge window failed to start");

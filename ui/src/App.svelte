@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import UpdatePrompt from './components/UpdatePrompt.svelte';
   import HubSignIn from './components/HubSignIn.svelte';
   import Settings from './components/Settings.svelte';
   import { describeError } from './core/format';
@@ -84,6 +85,8 @@
     index = target;
   }
 </script>
+
+<UpdatePrompt />
 
 <div class="win">
   <aside class="side">
