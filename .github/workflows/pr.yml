@@ -54,7 +54,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # The installer is two optimized builds and takes about five minutes, so it is only built when
-      # the pull request can change it. The checkout is the pull request merged into its base, so
+      # the pull request changes how it is packaged. Source-only changes are covered by clippy and the tests;
+      # the preview installer and the release-profile build then wait for the build after the merge. The checkout is the pull request merged into its base, so
       # the difference with the base is exactly what the pull request changes. Releases still build it.
       - name: Check whether the installer can change
         id: installer
