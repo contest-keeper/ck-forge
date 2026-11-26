@@ -30,9 +30,12 @@ cp LICENSE "$app/Contents/Resources/LICENSE.txt"
 # 824 point shape on a 1024 canvas), at every size the icon file holds.
 master=app-egui/installer/keeper-forge-macos.png
 mkdir "$icons/keeper-forge.iconset"
-for size in 16 32 128 256 512; do
-  sips -z "$size" "$size" "$master" --out "$icons/keeper-forge.iconset/icon_${size}x${size}.png"
-  sips -z "$((size * 2))" "$((size * 2))" "$master" --out "$icons/keeper-forge.iconset/icon_${size}x${size}@2x.png"
+# The file names are the ones iconutil expects: each size, and its double for Retina screens.
+for spec in "16 icon_16x16" "32 icon_16x16@2x" "32 icon_32x32" "64 icon_32x32@2x" \
+  "128 icon_128x128" "256 icon_128x128@2x" "256 icon_256x256" "512 icon_256x256@2x" \
+  "512 icon_512x512" "1024 icon_512x512@2x"; do
+  read -r pixels name <<<"$spec"
+  sips -z "$pixels" "$pixels" "$master" --out "$icons/keeper-forge.iconset/$name.png"
 done
 iconutil -c icns "$icons/keeper-forge.iconset" -o "$app/Contents/Resources/keeper-forge.icns"
 
