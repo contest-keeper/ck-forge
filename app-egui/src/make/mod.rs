@@ -231,6 +231,7 @@ mod tests {
         capture("make-done", 4000.0, |forge| {
             disks(forge, &[1, 2]);
             forge.state.written = true;
+            forge.make.write.written = true;
             forge.make.write.earlier.clear();
             "Written and read back on 2 sticks in 14:32. The check value (SHA-256) is \
              a3f1c9d2e8b7406f5a1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a."
