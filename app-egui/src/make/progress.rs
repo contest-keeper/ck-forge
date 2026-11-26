@@ -74,7 +74,12 @@ impl Bar {
         };
         // Checking after writing is the same operation; any other new kind of step starts over.
         let goes_on = seen == Some("writing") && progress.phase == "checking";
-        if seen != Some(progress.phase) && !goes_on {
+        // Each stick's image is copied from the start, all under the same phase.
+        let next_copy = progress.phase == "building"
+            && self
+                .progress
+                .is_some_and(|last| last.done >= last.total || progress.done < last.done);
+        if (seen != Some(progress.phase) && !goes_on) || next_copy {
             self.main = Some(fresh);
             self.check = None;
         }
@@ -132,6 +137,17 @@ mod tests {
             total: 100,
             checked,
         }
+    }
+
+    #[test]
+    fn each_image_copy_gets_its_own_clock() {
+        let start = Instant::now();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        let mut bar = Bar::default();
+        bar.update(report("building", 50, 0), at(0));
+        bar.update(report("building", 100, 0), at(4));
+        bar.update(report("building", 10, 0), at(5));
+        assert_eq!(timing(bar.main, 10, 100, at(7)), "0:02");
     }
 
     #[test]

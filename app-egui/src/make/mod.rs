@@ -53,6 +53,7 @@ impl Page {
         if self.email != state.hub_email {
             self.email.clone_from(&state.hub_email);
             self.sticks.forget();
+            self.images.forget_account();
         }
         self.write.follow(
             state.base_path(),

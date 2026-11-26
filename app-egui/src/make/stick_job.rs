@@ -268,14 +268,44 @@ fn build_images(
     } else {
         hardware_of(&request.disks)
     };
+    each_image(request, cancel, work, |index, settings, image| {
+        let disk = hardware.get(index).and_then(Option::as_ref);
+        let stick = build_stick(request, session, settings, image, disk, report)?;
+        made.push(stick);
+        Ok(())
+    })
+}
+
+/// What every stick of one write gets from the saved profile.
+struct Snapshot {
+    profile: Profile,
+    wallpaper: Option<Wallpaper>,
+}
+
+/// Calls `build` for each stick image of the write. The profile is read once, so a profile saved
+/// while the write runs cannot give the later sticks other settings than the first.
+fn each_image(
+    request: &Request,
+    cancel: &AtomicBool,
+    work: &Path,
+    mut build: impl FnMut(usize, &Snapshot, &Path) -> Result<(), String>,
+) -> Result<Vec<PathBuf>, String> {
+    let mut snapshot = None;
     let mut images = Vec::new();
-    for n in 1..=request.disks.len().max(1) {
+    for index in 0..request.disks.len().max(1) {
         if cancel.load(Ordering::Relaxed) {
             return Err(CANCELLED_BEFORE_WRITING.to_owned());
         }
-        let image = work.join(format!("stick-{n}.img"));
-        let disk = hardware.get(n - 1).and_then(Option::as_ref);
-        made.push(build_stick(request, session, &image, disk, report)?);
+        if snapshot.is_none() {
+            let profile = Profile::load(&request.profile).map_err(|e| e.to_string())?;
+            let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(&request.profile))
+                .map_err(|e| e.to_string())?;
+            snapshot = Some(Snapshot { profile, wallpaper });
+        }
+        let image = work.join(format!("stick-{}.img", index + 1));
+        if let Some(snapshot) = &snapshot {
+            build(index, snapshot, &image)?;
+        }
         images.push(image);
     }
     Ok(images)
@@ -288,11 +318,12 @@ const CANCELLED_BEFORE_WRITING: &str = "cancelled: nothing was written";
 fn build_stick(
     request: &Request,
     session: Option<&HubSession>,
+    snapshot: &Snapshot,
     out: &Path,
     hardware: Option<&HardwareId>,
     report: &dyn Fn(Progress),
 ) -> Result<MadeStick, String> {
-    let mut profile = Profile::load(&request.profile).map_err(|e| e.to_string())?;
+    let mut profile = snapshot.profile.clone();
     profile.set_wifi_password(request.wifi_password.clone());
     // The address in the profile file is not used: it is the sign-in that decides.
     profile.settings.api.url = if session.is_some() {
@@ -300,8 +331,7 @@ fn build_stick(
     } else {
         String::new()
     };
-    let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(&request.profile))
-        .map_err(|e| e.to_string())?;
+    let wallpaper = snapshot.wallpaper.as_ref();
     let registry = registry_of(&request.profile);
     let now = local_now();
     let mut last = Instant::now();
@@ -329,7 +359,7 @@ fn build_stick(
             base: &request.base,
             out,
             profile: &profile,
-            wallpaper: wallpaper.as_ref(),
+            wallpaper,
             registry: &registry,
             now,
             sign,
@@ -354,7 +384,7 @@ fn build_stick(
         &request.base,
         out,
         &profile,
-        wallpaper.as_ref(),
+        wallpaper,
         &registry,
         now,
         sign,
@@ -800,6 +830,40 @@ mod tests {
         let development = helper_places(here, true);
         assert_eq!(development.len(), 2);
         assert_eq!(development[0], beside);
+    }
+
+    #[test]
+    fn every_stick_of_a_write_gets_the_profile_as_it_was_when_the_write_began() {
+        let folder = tempfile::tempdir().expect("folder");
+        let path = folder.path().join("profile.json");
+        let mut profile = Profile::template();
+        "before".clone_into(&mut profile.name);
+        profile.save(&path).expect("saved");
+        let request = Request {
+            base: PathBuf::from("no-such-base.img"),
+            profile: path.clone(),
+            // Numbers only: nothing here lists or opens a disk.
+            disks: vec![98, 99],
+            confirmed: Vec::new(),
+            to_file: None,
+            allow_virtual: false,
+            wifi_password: None,
+            first_boot_enrolment: false,
+        };
+        let mut seen = Vec::new();
+        let images = each_image(
+            &request,
+            &AtomicBool::new(false),
+            folder.path(),
+            |_, snapshot, _| {
+                seen.push(snapshot.profile.name.clone());
+                "after".clone_into(&mut profile.name);
+                profile.save(&path).map_err(|e| e.to_string())
+            },
+        )
+        .expect("images");
+        assert_eq!(seen, ["before", "before"]);
+        assert_eq!(images.len(), 2);
     }
 
     #[test]

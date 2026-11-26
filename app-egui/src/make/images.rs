@@ -26,7 +26,8 @@ pub(super) enum Method {
 
 /// What a worker thread reports.
 enum Event {
-    Images(Result<Vec<HubImage>, String>),
+    /// The list, and the account generation it was asked in.
+    Images(u64, Result<Vec<HubImage>, String>),
     Progress(Progress),
     /// A download or an import ended: where the new base image is, or why there is none.
     Finished(Result<PathBuf, String>),
@@ -43,6 +44,8 @@ pub struct Screen {
     /// The place in `hub` of the chosen image; past the end while none is.
     pub(super) chosen: usize,
     loading: bool,
+    /// Goes up when the account changes, so a list asked for another account is dropped.
+    account: u64,
     /// A download or an import is running.
     importing: bool,
     bar: Bar,
@@ -64,6 +67,7 @@ impl Default for Screen {
             hub: None,
             chosen: usize::MAX,
             loading: false,
+            account: 0,
             importing: false,
             bar: Bar::default(),
             failure: String::new(),
@@ -121,12 +125,22 @@ impl Screen {
         self.new_base.take().or_else(|| self.creator.take_made())
     }
 
+    /// The signed-in account changed: the images listed for one account are not for another.
+    pub fn forget_account(&mut self) {
+        self.account += 1;
+        self.loading = false;
+        self.hub = None;
+        self.chosen = usize::MAX;
+        self.failure.clear();
+    }
+
     /// Takes what the worker threads reported.
     pub fn receive(&mut self) {
         self.creator.receive();
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Images(result) => {
+                Event::Images(account, _) if account != self.account => {}
+                Event::Images(_, result) => {
                     self.loading = false;
                     match result {
                         Ok(images) => {
@@ -151,6 +165,8 @@ impl Screen {
 
     /// Makes `path` the base image and closes the choices.
     fn adopt(&mut self, path: PathBuf) {
+        // A build that is still running, or not yet taken, must not replace this later choice.
+        self.creator.superseded();
         self.new_base = Some(path);
         self.archive = None;
         self.sha256.clear();
@@ -380,12 +396,13 @@ impl Screen {
         self.loading = true;
         self.failure.clear();
         let sender = self.sender.clone();
+        let account = self.account;
         thread::spawn(move || {
             let result = vault::load()
                 .ok_or_else(|| "sign in to the Hub first".to_owned())
                 .and_then(|session| list_hub_images(HUB_URL, &session).map_err(|e| e.to_string()));
             // The window may be gone by now; then nobody needs the answer.
-            let _ = sender.send(Event::Images(result));
+            let _ = sender.send(Event::Images(account, result));
             ctx.request_repaint();
         });
     }
@@ -510,6 +527,32 @@ mod tests {
         assert!(screen.sender.send(Event::Finished(Ok(out.clone()))).is_ok());
         screen.receive();
         assert_eq!(screen.take_new_base(), Some(out));
+    }
+
+    #[test]
+    fn another_account_forgets_the_images_and_a_late_list_is_dropped() {
+        let mut screen = Screen {
+            hub: Some(Vec::new()),
+            chosen: 0,
+            ..Screen::default()
+        };
+        let late = Event::Images(screen.account, Ok(Vec::new()));
+        screen.forget_account();
+        assert!(screen.hub.is_none() && screen.chosen == usize::MAX);
+        assert!(screen.sender.send(late).is_ok());
+        screen.receive();
+        assert!(screen.hub.is_none());
+    }
+
+    #[test]
+    fn an_image_picked_during_a_build_stays_the_base() {
+        let mut screen = Screen::default();
+        screen.creator.sample_running();
+        screen.picked(PathBuf::from("picked.img"));
+        assert_eq!(screen.take_new_base(), Some(PathBuf::from("picked.img")));
+        screen.creator.sample_finish(PathBuf::from("built.img"));
+        screen.receive();
+        assert_eq!(screen.take_new_base(), None);
     }
 
     #[test]

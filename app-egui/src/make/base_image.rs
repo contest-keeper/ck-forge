@@ -36,6 +36,8 @@ pub struct Screen {
     hash: String,
     /// The image that was just built, until the page takes it as the base.
     made: Option<PathBuf>,
+    /// Another base image was chosen after this build started.
+    outdated: bool,
     events: Receiver<Event>,
     sender: Sender<Event>,
 }
@@ -57,6 +59,7 @@ impl Default for Screen {
             failure,
             hash: String::new(),
             made: None,
+            outdated: false,
             events,
             sender,
         }
@@ -127,6 +130,12 @@ impl Screen {
         self.made.take()
     }
 
+    /// Another base image was chosen: a build from before keeps its file but is not chosen.
+    pub fn superseded(&mut self) {
+        self.made = None;
+        self.outdated = self.busy;
+    }
+
     pub fn show(&mut self, ui: &mut Ui, locked: bool) {
         let idle = !self.busy && !locked;
         widgets::subtitle(ui, "Build a base image");
@@ -156,10 +165,12 @@ impl Screen {
         widgets::path_box(ui, |ui| self.make_row(ui, idle));
         widgets::note(ui, Tone::Error, &self.failure);
         if !self.hash.is_empty() {
-            let text = format!(
-                "Base image made and chosen. Its check value (SHA-256) is {}.",
-                self.hash
-            );
+            let chosen = if self.outdated {
+                "Base image made, but not chosen because you chose another one meanwhile."
+            } else {
+                "Base image made and chosen."
+            };
+            let text = format!("{chosen} Its check value (SHA-256) is {}.", self.hash);
             widgets::note(ui, Tone::Ok, &text);
         }
     }
@@ -244,7 +255,7 @@ impl Screen {
                     match result {
                         Ok(hash) => {
                             self.hash = hash;
-                            self.made = Some(out);
+                            self.made = (!self.outdated).then_some(out);
                         }
                         Err(why) => self.failure = why,
                     }
@@ -280,6 +291,7 @@ impl Screen {
             patch: self.patch.clone(),
         };
         self.busy = true;
+        self.outdated = false;
         self.failure.clear();
         self.hash.clear();
         let sender = self.sender.clone();
@@ -300,6 +312,19 @@ impl Screen {
             let _ = sender.send(Event::Made(options.out.clone(), result));
             ctx.request_repaint();
         });
+    }
+}
+
+/// States for the tests of the step around this one. Nothing is built.
+#[cfg(test)]
+impl Screen {
+    pub(super) fn sample_running(&mut self) {
+        self.busy = true;
+    }
+
+    pub(super) fn sample_finish(&mut self, out: PathBuf) {
+        let made = Event::Made(out, Ok("abc".to_owned()));
+        assert!(self.sender.send(made).is_ok());
     }
 }
 

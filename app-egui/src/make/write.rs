@@ -45,6 +45,22 @@ pub(super) struct Support {
     pub(super) enrolment: Option<bool>,
 }
 
+/// Whether it is known which sticks the listed disks held before.
+enum Lookup {
+    /// Known, not to be known (signed out, no serial numbers), or the admin goes on without it.
+    Settled,
+    /// The Hub is being asked. Nothing is erased meanwhile, or the question about old keys would
+    /// be skipped.
+    Pending,
+    Failed(String),
+}
+
+/// Asks the Hub for its sticks.
+fn hub_sticks() -> Result<Vec<HubStick>, String> {
+    let session = vault::load().ok_or_else(|| "sign in to the Hub first".to_owned())?;
+    list_sticks(HUB_URL, &session).map_err(|e| e.to_string())
+}
+
 /// Where a write goes.
 enum Target {
     /// The disks to erase, each with its identity token as it was listed.
@@ -89,7 +105,11 @@ pub struct Screen {
     pub(super) typed: String,
     /// What the Hub knows about each disk, from the sticks written to it before.
     pub(super) earlier: BTreeMap<u32, HubStick>,
-    lookup_note: String,
+    lookup: Lookup,
+    /// How the lookup asks; tests never reach the credential vault or the Hub.
+    hub_sticks: fn() -> Result<Vec<HubStick>, String>,
+    /// The profile and network the Wi-Fi password was typed for.
+    password_for: Option<(Option<PathBuf>, String)>,
     asking: Option<Asking>,
     /// The image to write on a system where the window cannot write.
     image: Option<PathBuf>,
@@ -115,8 +135,8 @@ struct Job {
     events: Receiver<JobEvent>,
     before: Vec<HubStick>,
     retire: bool,
-    /// How many sticks it writes.
-    count: usize,
+    /// How many sticks it writes; none for a test file.
+    disks: usize,
     started: Instant,
 }
 
@@ -139,7 +159,13 @@ impl Default for Screen {
             chosen: BTreeSet::new(),
             typed: String::new(),
             earlier: BTreeMap::new(),
-            lookup_note: String::new(),
+            lookup: Lookup::Settled,
+            hub_sticks: if cfg!(test) {
+                || Err("no Hub in tests".to_owned())
+            } else {
+                hub_sticks
+            },
+            password_for: None,
             asking: None,
             image: None,
             disk: String::new(),
@@ -256,7 +282,7 @@ impl Screen {
         self.chosen.clear();
         self.typed.clear();
         self.earlier.clear();
-        self.lookup_note.clear();
+        self.lookup = Lookup::Settled;
         self.asking = None;
     }
 
@@ -286,8 +312,8 @@ impl Screen {
             // What one account's Hub said is not for another.
             self.email = email.map(str::to_owned);
             self.earlier.clear();
-            self.lookup_note.clear();
             self.asking = None;
+            self.look_up_earlier(ctx.clone());
             ask = true;
         }
         if ask {
@@ -339,20 +365,22 @@ impl Screen {
         });
     }
 
-    fn look_up_earlier(&self, ctx: Context) {
+    /// Asks the Hub which sticks the listed disks held, when somebody is signed in to ask.
+    fn look_up_earlier(&mut self, ctx: Context) {
+        self.lookup = Lookup::Settled;
         let Some(email) = self.email.clone() else {
             return;
         };
         if !self.disks.iter().any(|disk| HardwareId::of(disk).is_some()) {
             return;
         }
+        self.lookup = Lookup::Pending;
         let generation = self.generation;
+        let ask = self.hub_sticks;
         let sender = self.sender.clone();
         thread::spawn(move || {
-            let result = vault::load()
-                .ok_or_else(|| "sign in to the Hub first".to_owned())
-                .and_then(|session| list_sticks(HUB_URL, &session).map_err(|e| e.to_string()));
-            let _ = sender.send(Event::Earlier(generation, email, result));
+            // The window may be gone by now; then nobody needs the answer.
+            let _ = sender.send(Event::Earlier(generation, email, ask()));
             ctx.request_repaint();
         });
     }
@@ -383,22 +411,21 @@ impl Screen {
                     if generation == self.generation && self.email.as_ref() == Some(&email) =>
                 {
                     match result {
-                        Ok(sticks) => self.earlier = matched(&self.disks, &sticks),
-                        Err(why) => {
-                            self.lookup_note = format!(
-                                "Forge could not check which sticks these disks held before: {why}"
-                            );
+                        Ok(sticks) => {
+                            self.earlier = matched(&self.disks, &sticks);
+                            self.lookup = Lookup::Settled;
                         }
+                        Err(why) => self.lookup = Lookup::Failed(why),
                     }
                 }
                 // An answer about disks, an image or an account that is no longer the one shown.
                 Event::Disks(..) | Event::Support(..) | Event::Earlier(..) => {}
             }
         }
-        self.receive_job();
+        self.receive_job(ctx);
     }
 
-    fn receive_job(&mut self) {
+    fn receive_job(&mut self, ctx: &Context) {
         let Some(job) = &mut self.job else {
             return;
         };
@@ -418,25 +445,32 @@ impl Screen {
         self.typed.clear();
         self.wifi_password.clear();
         self.first_boot_enrolment = self.support.enrolment == Some(true);
-        match result {
+        let took = format::duration(job.started.elapsed().as_secs());
+        match &result {
             Ok(hash) => {
-                let sticks = match job.count {
-                    1 => "the stick".to_owned(),
-                    count => format!("{count} sticks"),
+                let what = match job.disks {
+                    0 => "into the test file (no stick was written)".to_owned(),
+                    1 => "on the stick".to_owned(),
+                    count => format!("on {count} sticks"),
                 };
-                let took = format::duration(job.started.elapsed().as_secs());
                 self.success = format!(
-                    "Written and read back on {sticks} in {took}. The check value (SHA-256) is \
-                     {hash}."
+                    "Written and read back {what} in {took}. The check value (SHA-256) is {hash}."
                 );
-                self.written = true;
-                // The Hub now points at the new sticks.
-                self.generation += 1;
-                self.earlier.clear();
-                // Only here: the old keys are needed until the new sticks are written and read back.
-                self.finished = Some((job.before, job.retire));
             }
-            Err(why) => self.failure = why,
+            Err(why) => self.failure.clone_from(why),
+        }
+        // A test file replaces no stick, so it completes nothing and retires nothing.
+        if job.disks == 0 {
+            return;
+        }
+        // The Hub may point at new sticks now, even after a write that partly failed.
+        self.generation += 1;
+        self.earlier.clear();
+        self.look_up_earlier(ctx.clone());
+        if result.is_ok() {
+            self.written = true;
+            // Only here: the old keys are needed until the new sticks are written and read back.
+            self.finished = Some((job.before, job.retire));
         }
     }
 
@@ -467,11 +501,16 @@ impl Screen {
         !self.chosen.is_empty() && self.typed.trim() == erase_confirmation(&self.chosen)
     }
 
+    /// Whether the disks may be erased now: confirmed, and the old keys are known.
+    fn can_erase(&self, locked: bool) -> bool {
+        self.can_write(locked) && self.confirmed() && matches!(self.lookup, Lookup::Settled)
+    }
+
     /// The write button. When it would replace sticks the Hub knows, it asks first.
     fn press(&mut self, ctx: &Context) {
         self.prune();
         // Nothing is erased without the typed confirmation, whatever called this.
-        if !self.can_write(false) || !self.confirmed() {
+        if !self.can_erase(false) {
             return;
         }
         // What the admin saw when confirming, as listed: the helper erases only these.
@@ -529,7 +568,7 @@ impl Screen {
             "Choose the base image and save the profile first".clone_into(&mut self.failure);
             return;
         };
-        let count = request.disks.len().max(1);
+        let disks = request.disks.len();
         let (sender, events) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancel);
@@ -543,7 +582,7 @@ impl Screen {
             events,
             before,
             retire,
-            count,
+            disks,
             started: Instant::now(),
         });
     }
@@ -560,11 +599,9 @@ impl Screen {
              for the base image, and never the disk Windows runs from.",
         );
         let idle = !locked && self.job.is_none();
+        self.bind_password(network);
         if let Some(network) = network {
             self.wifi_ui(ui, network, idle);
-        } else {
-            // A password typed for a network the profile no longer names goes nowhere.
-            self.wifi_password.clear();
         }
         self.key_ui(ui, idle);
         // Where the window cannot write, the list is only for reading the numbers.
@@ -593,10 +630,44 @@ impl Screen {
         if self.listing {
             widgets::hint(ui, "Looking for disks\u{2026}");
         }
-        if !self.lookup_note.is_empty() {
-            widgets::hint(ui, &self.lookup_note);
-        }
         self.disks_ui(ui, idle && cfg!(windows));
+    }
+
+    /// Empties the password when the profile or its network is not the one it was typed for, so one
+    /// network's password is never written for another.
+    fn bind_password(&mut self, network: Option<&str>) {
+        let now = network.map(|network| (self.profile.clone(), network.to_owned()));
+        if self.password_for != now {
+            self.wifi_password.clear();
+            self.password_for = now;
+        }
+    }
+
+    /// While the old keys are not known: that the Hub is asked, or why it could not be.
+    fn lookup_ui(&mut self, ui: &mut Ui) {
+        match &self.lookup {
+            Lookup::Settled => {}
+            Lookup::Pending => {
+                widgets::hint(
+                    ui,
+                    "Checking which sticks these disks held before. Writing waits for the Hub.",
+                );
+            }
+            Lookup::Failed(why) => {
+                let text =
+                    format!("Forge could not check which sticks these disks held before: {why}");
+                widgets::note(ui, Tone::Error, &text);
+                ui.horizontal(|ui| {
+                    if Btn::new("Check again").small().show(ui).clicked() {
+                        self.look_up_earlier(ui.ctx().clone());
+                    }
+                    let without = Btn::new("Continue without the check").small();
+                    if without.show(ui).clicked() {
+                        self.lookup = Lookup::Settled;
+                    }
+                });
+            }
+        }
     }
 
     fn wifi_ui(&mut self, ui: &mut Ui, network: &str, idle: bool) {
@@ -743,7 +814,7 @@ impl Screen {
         widgets::step_head(
             ui,
             3,
-            !self.success.is_empty(),
+            self.written && !self.success.is_empty(),
             "Erase and write",
             "Everything on the chosen sticks is erased. Each stick gets its own identity from the \
              saved profile. Windows asks for administrator permission when the write starts.",
@@ -755,6 +826,7 @@ impl Screen {
         } else {
             self.summary_ui(ui, profile);
             widgets::danger_zone(ui, |ui| self.danger_ui(ui, locked));
+            self.lookup_ui(ui);
         }
         self.job_ui(ui);
         widgets::note(ui, Tone::Error, &self.failure);
@@ -807,7 +879,7 @@ impl Screen {
             (None, count) => format!("Erase and write {count} sticks"),
         };
         let idle = !locked && self.job.is_none();
-        let enabled = self.can_write(locked) && self.confirmed();
+        let enabled = self.can_erase(locked);
         let bold = font(Weight::Semibold, t.s.rem);
         let galley = ui.painter().layout_no_wrap(text.clone(), bold, t.c.text);
         // The button goes under the text when the three do not fit beside each other.
@@ -982,7 +1054,7 @@ impl Screen {
             events,
             before: Vec::new(),
             retire: false,
-            count: 1,
+            disks: 1,
             started: began,
         });
     }
@@ -1155,6 +1227,69 @@ pub(super) mod tests {
             assert_eq!(finished.is_some(), worked);
             assert!(finished.is_none_or(|(before, retire)| retire && before.len() == 1));
         }
+    }
+
+    #[test]
+    fn nothing_is_erased_while_the_old_keys_are_looked_up_or_after_that_failed() {
+        let mut screen = two_chosen();
+        "erase 1 2".clone_into(&mut screen.typed);
+        for lookup in [Lookup::Pending, Lookup::Failed("down".to_owned())] {
+            screen.lookup = lookup;
+            screen.press(&Context::default());
+            assert!(screen.job.is_none() && screen.asking.is_none());
+        }
+        screen.lookup = Lookup::Settled;
+        screen.press(&Context::default());
+        assert!(screen.asking.is_some());
+    }
+
+    #[test]
+    fn signing_in_after_the_listing_starts_the_lookup() {
+        let mut screen = two_chosen();
+        let (base, profile) = (screen.base.clone(), screen.profile.clone());
+        screen.email = None;
+        screen.follow(
+            base.as_deref(),
+            profile.as_deref(),
+            Some("b@example.org"),
+            &Context::default(),
+        );
+        assert!(matches!(screen.lookup, Lookup::Pending));
+        assert!(screen.earlier.is_empty());
+    }
+
+    #[test]
+    fn a_password_is_kept_only_for_the_profile_and_network_it_was_typed_for() {
+        let mut screen = two_chosen();
+        screen.bind_password(Some("venue"));
+        "secret".clone_into(&mut screen.wifi_password);
+        screen.bind_password(Some("venue"));
+        assert_eq!(screen.wifi_password, "secret");
+        screen.bind_password(Some("other"));
+        assert_eq!(screen.wifi_password, "");
+        "secret".clone_into(&mut screen.wifi_password);
+        screen.profile = Some(PathBuf::from("another.json"));
+        screen.bind_password(Some("other"));
+        assert_eq!(screen.wifi_password, "");
+    }
+
+    #[test]
+    fn a_test_file_that_worked_completes_no_stick_and_keeps_what_the_disks_held() {
+        let mut screen = two_chosen();
+        screen.sample_job(crate::make::stick_job::Progress {
+            phase: "writing",
+            done: 1,
+            total: 2,
+            checked: 0,
+        });
+        let (sender, events) = channel();
+        let job = screen.job.as_mut().expect("job");
+        (job.events, job.disks) = (events, 0);
+        assert!(sender.send(JobEvent::Done(Ok("abc".to_owned()))).is_ok());
+        screen.receive(&Context::default());
+        assert!(screen.success.contains("no stick was written"));
+        assert!(!screen.written && screen.take_finished().is_none());
+        assert_eq!(screen.earlier.len(), 1);
     }
 
     #[test]

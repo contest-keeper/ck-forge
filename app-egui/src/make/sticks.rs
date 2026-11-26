@@ -8,7 +8,7 @@ use std::thread;
 use ck_admin_core::{HUB_URL, HubStick, list_sticks, retire_stick_credential, vault};
 use eframe::egui::{Align, Context, Frame, Layout, Margin, Stroke, Ui, vec2};
 
-use crate::make::format::stick_label;
+use crate::make::format::stick_name;
 use crate::theme::{Weight, tokens};
 use crate::widgets::{self, Btn, Tone};
 
@@ -22,7 +22,8 @@ pub enum Choice {
 
 /// What a worker thread reports.
 enum Event {
-    Sticks(Result<Vec<HubStick>, String>),
+    /// The list, and the account generation it was asked in.
+    Sticks(u64, Result<Vec<HubStick>, String>),
     Retired(String, Result<(), String>),
     /// The keys of the replaced sticks were tried: the ones that are still active, and why.
     OldDone(Vec<String>),
@@ -37,6 +38,8 @@ pub struct Screen {
     /// The id of the stick chosen from `others`.
     pub(super) other: String,
     loading: bool,
+    /// Goes up when the account changes, so a list asked for another account is dropped.
+    account: u64,
     /// The stick whose key is being retired after a click here.
     working: Option<String>,
     /// The keys of the replaced sticks are being retired after a write.
@@ -59,6 +62,7 @@ impl Default for Screen {
             others: None,
             other: String::new(),
             loading: false,
+            account: 0,
             working: None,
             retiring_old: false,
             asking: None,
@@ -71,6 +75,10 @@ impl Default for Screen {
 }
 
 fn retire_on_hub(id: &str) -> Result<(), String> {
+    // A test must never reach the credential vault or retire a key, whatever it clicks.
+    if cfg!(test) {
+        return Err("no Hub in tests".to_owned());
+    }
     let session = vault::load().ok_or_else(|| "sign in to the Hub first".to_owned())?;
     retire_stick_credential(HUB_URL, &session, id).map_err(|e| e.to_string())
 }
@@ -85,7 +93,7 @@ fn retire_each(
     for stick in sticks {
         match retire(&stick.stick_id) {
             Ok(()) => retired(&stick.stick_id),
-            Err(why) => failed.push(format!("{}: {why}", stick_label(stick))),
+            Err(why) => failed.push(format!("{}: {why}", stick_name(stick, sticks))),
         }
     }
     failed
@@ -128,6 +136,8 @@ impl Screen {
     /// The signed-in account changed: what one account's Hub said is not for another. A message
     /// about keys that are still active stays.
     pub fn forget(&mut self) {
+        self.account += 1;
+        self.loading = false;
         self.previous.clear();
         self.others = None;
         self.other.clear();
@@ -139,7 +149,8 @@ impl Screen {
     pub fn receive(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Sticks(result) => {
+                Event::Sticks(account, _) if account != self.account => {}
+                Event::Sticks(_, result) => {
                     self.loading = false;
                     match result {
                         Ok(sticks) => self.others = Some(sticks),
@@ -175,12 +186,13 @@ impl Screen {
         self.loading = true;
         self.failure.clear();
         let sender = self.sender.clone();
+        let account = self.account;
         thread::spawn(move || {
             let result = vault::load()
                 .ok_or_else(|| "sign in to the Hub first".to_owned())
                 .and_then(|session| list_sticks(HUB_URL, &session).map_err(|e| e.to_string()));
             // The window may be gone by now; then nobody needs the answer.
-            let _ = sender.send(Event::Sticks(result));
+            let _ = sender.send(Event::Sticks(account, result));
             ctx.request_repaint();
         });
     }
@@ -220,6 +232,8 @@ impl Screen {
         );
         let mut retire = None;
         for stick in &self.previous {
+            let known = self.previous.iter().chain(self.others.iter().flatten());
+            let name = stick_name(stick, known);
             let mut text = "The stick that was on a disk you just wrote".to_owned();
             if let Some(disk) = &stick.hardware {
                 let times = if disk.write_count == 1 {
@@ -230,7 +244,7 @@ impl Screen {
                 text = format!("{text}, written {} {times} before", disk.write_count);
             }
             text.push('.');
-            widgets::path_row(ui, &stick_label(stick), &[&text], |ui| {
+            widgets::path_row(ui, &name, &[&text], |ui| {
                 if self.retired.contains(&stick.stick_id) {
                     widgets::pill(ui, Tone::Ok, "Key retired");
                     return;
@@ -246,7 +260,7 @@ impl Screen {
                 }
             });
             if self.asking.as_ref() == Some(&stick.stick_id)
-                && let Some(sure) = sure(ui)
+                && let Some(sure) = sure(ui, &name, idle)
             {
                 retire = sure.then(|| stick.stick_id.clone());
                 self.asking = None;
@@ -256,7 +270,10 @@ impl Screen {
             retire = self.other_ui(ui, idle).or(retire.take());
         });
         widgets::note(ui, Tone::Error, &self.failure);
-        if let Some(id) = retire {
+        // A write may have started since the question was opened.
+        if let Some(id) = retire
+            && idle
+        {
             self.retire(id, ui.ctx().clone());
         }
     }
@@ -287,7 +304,11 @@ impl Screen {
             return None;
         }
         let ids: Vec<String> = open.iter().map(|stick| stick.stick_id.clone()).collect();
-        let labels: Vec<String> = open.iter().map(|stick| stick_label(stick)).collect();
+        let known = || self.previous.iter().chain(self.others.iter().flatten());
+        let labels: Vec<String> = open
+            .iter()
+            .map(|stick| stick_name(stick, known()))
+            .collect();
         let mut options = vec![(usize::MAX, "Choose a stick")];
         options.extend(labels.iter().map(String::as_str).enumerate());
         let mut at = ids
@@ -318,14 +339,15 @@ impl Screen {
             }
         });
         let id = chosen.filter(|id| self.asking.as_ref() == Some(id))?;
-        let sure = sure(ui)?;
+        let sure = sure(ui, labels.get(at)?, idle)?;
         self.asking = None;
         sure.then(|| id.clone())
     }
 }
 
 /// The inline question before a key is retired. `Some(true)` to retire, `Some(false)` to keep.
-fn sure(ui: &mut Ui) -> Option<bool> {
+/// While something else runs (`idle` is false) the key cannot be retired.
+fn sure(ui: &mut Ui, name: &str, idle: bool) -> Option<bool> {
     let t = tokens(ui.ctx());
     let mut answer = None;
     let frame = Frame::new()
@@ -337,7 +359,9 @@ fn sure(ui: &mut Ui) -> Option<bool> {
         ui.set_width(ui.available_width());
         widgets::paragraph(
             ui,
-            "Retire this key for good? That stick can no longer report to the Hub.",
+            &format!(
+                "Retire the key of {name} for good? That stick can no longer report to the Hub."
+            ),
             Weight::Regular,
             t.s.rem,
             t.c.danger_text,
@@ -345,7 +369,7 @@ fn sure(ui: &mut Ui) -> Option<bool> {
         );
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            let retire = Btn::new("Retire the key").small().danger();
+            let retire = Btn::new("Retire the key").small().danger().enabled(idle);
             if retire.show(ui).clicked() {
                 answer = Some(true);
             }
@@ -378,7 +402,8 @@ pub fn confirm_retire(ctx: &Context, sticks: &[HubStick]) -> Option<Choice> {
             ),
         );
         for stick in sticks {
-            widgets::strong(ui, &format!("   \u{2022}  {}", stick_label(stick)));
+            let name = stick_name(stick, sticks);
+            widgets::strong(ui, &format!("   \u{2022}  {name}"));
         }
         widgets::paragraph(
             ui,
@@ -425,6 +450,8 @@ pub fn confirm_retire(ctx: &Context, sticks: &[HubStick]) -> Option<Choice> {
 
 #[cfg(test)]
 mod tests {
+    use egui_kittest::kittest::Queryable;
+
     use super::*;
 
     pub(crate) fn stick(id: &str) -> HubStick {
@@ -456,6 +483,40 @@ mod tests {
         screen.after_write(vec![stick("a")], false, &Context::default());
         assert!(!screen.busy());
         assert_eq!(screen.previous.len(), 1);
+    }
+
+    #[test]
+    fn a_stick_list_that_comes_back_after_the_account_changed_is_dropped() {
+        let mut screen = Screen::default();
+        let late = Event::Sticks(screen.account, Ok(vec![stick("a")]));
+        screen.forget();
+        assert!(screen.sender.send(late).is_ok());
+        screen.receive();
+        assert!(screen.others.is_none());
+    }
+
+    #[test]
+    fn a_confirmed_retirement_does_not_start_while_a_write_runs() {
+        let mut screen = Screen {
+            previous: vec![stick("a")],
+            asking: Some("a".to_owned()),
+            ..Screen::default()
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([700.0, 600.0])
+            .with_accessibility_check(false)
+            .build_ui(|ui| {
+                crate::theme::apply(ui.ctx(), crate::theme::Look::default());
+                let semibold = crate::theme::font(Weight::Semibold, 1.0).family;
+                if ui.fonts(|fonts| fonts.definitions().families.contains_key(&semibold)) {
+                    screen.show(ui, true);
+                }
+            });
+        harness.run_steps(4);
+        harness.get_by_label("Retire the key").click();
+        harness.run_steps(4);
+        drop(harness);
+        assert!(screen.working.is_none() && screen.asking.is_some());
     }
 
     #[test]

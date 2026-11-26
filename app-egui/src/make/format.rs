@@ -59,7 +59,9 @@ pub fn erase_confirmation(disks: &BTreeSet<u32>) -> String {
     format!("erase {}", numbers.join(" "))
 }
 
-/// What an admin calls a stick: its team, site and machine number, never its id.
+const NAMELESS: &str = "A stick without a name";
+
+/// What an admin calls a stick: its team, site and machine number.
 pub fn stick_label(stick: &HubStick) -> String {
     let machine = stick
         .machine_number
@@ -71,9 +73,24 @@ pub fn stick_label(stick: &HubStick) -> String {
         .filter(|part| !part.trim().is_empty())
         .collect();
     if parts.is_empty() {
-        "A stick without a name".to_owned()
+        NAMELESS.to_owned()
     } else {
         parts.join(" \u{b7} ")
+    }
+}
+
+/// [`stick_label`] of a stick that is about to be retired or was, with its id when the label does
+/// not tell it from the others in `all`, so the admin knows which key it is.
+pub fn stick_name<'a>(stick: &HubStick, all: impl IntoIterator<Item = &'a HubStick>) -> String {
+    let label = stick_label(stick);
+    let nameless = label == NAMELESS;
+    let twin = all
+        .into_iter()
+        .any(|other| other.stick_id != stick.stick_id && stick_label(other) == label);
+    if nameless || twin {
+        format!("{label} \u{b7} id {}", stick.stick_id)
+    } else {
+        label
     }
 }
 
@@ -105,5 +122,14 @@ mod tests {
         stick.team.clear();
         stick.machine_number = None;
         assert_eq!(stick_label(&stick), "A stick without a name");
+        assert_eq!(
+            stick_name(&stick, []),
+            "A stick without a name \u{b7} id 03c9f556"
+        );
+        stick.team = "T".to_owned();
+        assert_eq!(stick_name(&stick, [&stick]), "T");
+        let mut twin = stick.clone();
+        twin.stick_id = "9b1e2a40".to_owned();
+        assert_eq!(stick_name(&stick, [&twin]), "T \u{b7} id 03c9f556");
     }
 }
