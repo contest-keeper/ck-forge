@@ -139,14 +139,32 @@ Function WaitUntilClosed
   Abort "Keeper Forge is still running: nothing was changed."
 FunctionEnd
 
-; The Tauri window's own uninstaller, silently: it removes its files, shortcuts and entry. It deletes
-; application data only when its "delete app data" box was ticked, which a silent run never shows.
+; In Program Files, the Tauri window's own uninstaller, silently: it removes its files, shortcuts and
+; entry. It deletes application data only when its "delete app data" box was ticked, which a silent
+; run never shows.
 Function RemoveTauri
   ${If} $TauriDir == ""
     Return
   ${EndIf}
+  ; Nothing from any other folder is run: this installer is elevated, and a standard user who can
+  ; write there could swap uninstall.exe. Only the exact default passes (no "..", no look-alike).
+  ; The known files are deleted by name instead; the shortcuts are overwritten by the new ones.
+  ${If} $TauriDir != "$PROGRAMFILES64\Keeper Forge"
+    ClearErrors
+    Delete "$TauriDir\ck-forge-app.exe"
+    Delete "$TauriDir\ck-forge.exe"
+    Delete "$TauriDir\WebView2Loader.dll"
+    ${If} ${Errors}
+      Abort "The earlier Keeper Forge in $TauriDir could not be removed. Restart Windows, then run this installer again."
+    ${EndIf}
+    Delete "$TauriDir\uninstall.exe"
+    ${If} ${Errors}
+      Abort "Delete $TauriDir\uninstall.exe, then run this installer again."
+    ${EndIf}
+    ; Only when empty: anything else in the folder stays.
+    RMDir "$TauriDir"
   ; CheckTauri has made sure that without an uninstaller there is no program left either.
-  ${If} ${FileExists} "$TauriDir\uninstall.exe"
+  ${ElseIf} ${FileExists} "$TauriDir\uninstall.exe"
     ClearErrors
     StrCpy $0 1
     ; _?= makes ExecWait wait for the uninstaller itself; it must come last and unquoted.
