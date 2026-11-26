@@ -185,3 +185,25 @@ fn a_day_picked_in_the_calendar_goes_into_the_profile() {
     let end = profile.settings.contest.end.expect("an end");
     assert_eq!(end.to_string(), "2026-11-20T09:00");
 }
+
+#[test]
+fn the_calendar_opens_at_the_month_in_the_field() {
+    let mut forge = Forge::sample();
+    let mut profile = profile();
+    profile.settings.contest.end = "2026-11-15T09:00".parse().ok();
+    forge.state.use_profile(profile, None);
+    let mut harness = Harness::builder()
+        .with_size([1000.0, 760.0])
+        .with_accessibility_check(false)
+        .build_ui_state(|ui, forge: &mut Forge| forge.draw(ui), forge);
+    harness.run_steps(4);
+    // Open, look at an earlier month, close, open again.
+    let open = "Pick the contest end";
+    for label in [open, "<", open, open, "20"] {
+        harness.get_by_label(label).click();
+        harness.run_steps(4);
+    }
+    let profile = harness.state().state.profile.as_ref().expect("profile");
+    let end = profile.settings.contest.end.expect("an end");
+    assert_eq!(end.to_string(), "2026-11-20T09:00");
+}

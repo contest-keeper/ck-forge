@@ -65,23 +65,42 @@ fn utc_text(at: OffsetDateTime) -> String {
 }
 
 /// A UTC time such as `2026-11-19T08:00:00Z` as this computer's clock shows it. Empty when it is
-/// not a time.
+/// not a time. One whose local year cannot be written stays as it is, for the field to refuse.
 pub fn utc_to_shown(utc: &str) -> String {
     let Ok(at) = OffsetDateTime::parse(utc, &Rfc3339) else {
         return String::new();
     };
-    let at = at.to_offset(offset_or_utc(at));
+    // A profile file may hold the last hours of the year 9999, where `to_offset` panics.
+    let Some(at) = at.checked_to_offset(offset_or_utc(at)) else {
+        return utc.to_owned();
+    };
     shown(PrimitiveDateTime::new(at.date(), at.time()))
 }
 
 /// What was typed (this computer's clock) as the UTC time a stick key needs. None when it is not
-/// a date and time.
+/// a date and time that this clock shows.
 pub fn shown_to_utc(typed: &str) -> Option<String> {
-    let local = parse(typed)?;
-    // The offset depends on the moment, which depends on the offset: guess, then look again.
-    let guess = local.assume_offset(offset_or_utc(local.assume_utc()));
-    let at = local.assume_offset(offset_or_utc(guess));
-    Some(utc_text(at.to_offset(UtcOffset::UTC)))
+    local_to_utc(parse(typed)?, offset_or_utc).map(utc_text)
+}
+
+/// The moment at which a clock whose offset is `offset_at` shows `local`. None for a time that
+/// daylight saving skips, which would otherwise be stored as another time than the one typed.
+fn local_to_utc(
+    local: PrimitiveDateTime,
+    offset_at: impl Fn(OffsetDateTime) -> UtcOffset,
+) -> Option<OffsetDateTime> {
+    // The offsets in use a day before and a day after: one of them holds, unless the time is
+    // skipped. Of a time that comes twice, the first is taken.
+    [-time::Duration::DAY, time::Duration::DAY]
+        .into_iter()
+        .filter_map(|aside| local.assume_utc().checked_add(aside))
+        .map(&offset_at)
+        .find_map(|offset| {
+            let utc = local
+                .assume_offset(offset)
+                .checked_to_offset(UtcOffset::UTC)?;
+            (offset_at(utc) == offset).then_some(utc)
+        })
 }
 
 /// The window a new limit of the stick key starts from: this minute to a day later.
@@ -111,6 +130,10 @@ pub fn input(ui: &mut Ui, label: egui::Id, name: &str, text: &mut String, invali
         let ring = Stroke::new(2.0, t.c.accent);
         ui.painter()
             .rect_stroke(place, 4.0, ring, StrokeKind::Inside);
+    }
+    // Each opening starts at the month in the field, not at the one last looked at.
+    if button.clicked() {
+        ui.data_mut(|data| data.remove::<i32>(response.id.with("month")));
     }
     egui::Popup::from_toggle_button_response(&button)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -233,6 +256,31 @@ mod tests {
         assert_eq!(utc_to_shown(&utc), "06/15/2026 12:30 PM");
         assert_eq!(shown_to_utc("soon"), None);
         assert_eq!(utc_to_shown("soon"), "");
+    }
+
+    #[test]
+    fn a_time_that_daylight_saving_skips_is_refused() {
+        // New York in 2026: the clock goes from 02:00 to 03:00 on 8 March, at 07:00 UTC.
+        let change = OffsetDateTime::parse("2026-03-08T07:00:00Z", &Rfc3339).expect("change");
+        let clock = |at| {
+            let hours = if at < change { -5 } else { -4 };
+            UtcOffset::from_hms(hours, 0, 0).expect("offset")
+        };
+        let utc = |typed| local_to_utc(parse(typed).expect("a time"), clock).map(utc_text);
+        assert_eq!(utc("03/08/2026 02:30 AM"), None);
+        let before = utc("03/08/2026 01:30 AM");
+        assert_eq!(before.as_deref(), Some("2026-03-08T06:30:00Z"));
+        let after = utc("03/08/2026 03:30 AM");
+        assert_eq!(after.as_deref(), Some("2026-03-08T07:30:00Z"));
+    }
+
+    #[test]
+    fn a_time_at_the_end_of_the_calendar_does_not_panic() {
+        let last = parse("12/31/9999 11:30 PM").expect("a time");
+        let behind = |_| UtcOffset::from_hms(-1, 0, 0).expect("offset");
+        assert_eq!(local_to_utc(last, behind), None);
+        // East of UTC the local year is 10000; elsewhere the time is shown.
+        assert_ne!(utc_to_shown("9999-12-31T23:30:00Z"), "");
     }
 
     #[test]

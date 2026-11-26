@@ -12,6 +12,8 @@ use crate::theme::{Weight, font, tokens};
 use crate::widgets::{self, Btn, Input, field};
 
 const BAD_TIME: &str = "Use a date and time like 11/15/2026 09:00 AM";
+const NO_SUCH_TIME: &str =
+    "This PC's clock does not have this time (skipped for daylight saving, or out of range).";
 pub const BAD_END: &str = "Fix the contest end first: use a date and time like 11/15/2026 09:00 AM";
 
 /// Text as it was typed, which is not always what the profile holds.
@@ -301,9 +303,15 @@ pub fn key_window(ui: &mut Ui, profile: &mut Profile, typed: &mut Typed) {
 }
 
 fn key_time(ui: &mut Ui, label: &str, typed: &mut String, stored: &mut String) {
-    let wrong = !typed.trim().is_empty() && datetime::parse(typed).is_none();
-    field(ui, label, None, wrong.then_some(BAD_TIME), |ui, id| {
-        if datetime::input(ui, id, label, typed, wrong) {
+    let error = if typed.trim().is_empty() || datetime::shown_to_utc(typed).is_some() {
+        None
+    } else if datetime::parse(typed).is_none() {
+        Some(BAD_TIME)
+    } else {
+        Some(NO_SUCH_TIME)
+    };
+    field(ui, label, None, error, |ui, id| {
+        if datetime::input(ui, id, label, typed, error.is_some()) {
             // Text that is no time leaves the field empty, which the check of the profile refuses:
             // an older time is never saved in its place.
             *stored = datetime::shown_to_utc(typed).unwrap_or_default();
