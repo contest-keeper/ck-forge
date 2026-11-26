@@ -63,7 +63,7 @@ pub fn hint(ui: &mut Ui, text: &str) -> Response {
 /// A card's title (`.card h2`).
 pub fn title(ui: &mut Ui, text: &str) -> Response {
     let t = tokens(ui.ctx());
-    paragraph(ui, text, Weight::Semibold, t.s.h2, t.c.text, 1.35)
+    paragraph(ui, text, Weight::Bold, t.s.h2, t.c.text, 1.35)
 }
 
 /// A title inside a card (`.card h3`).
@@ -376,49 +376,71 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// A card that opens and closes under its title (`details.card`). `None` while it is closed.
 pub fn details<R>(ui: &mut Ui, summary: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
-    card(ui, |ui| disclosure(ui, summary, add))
+    card(ui, |ui| opening(ui, summary, false, add))
 }
 
 /// A title that opens and closes what is under it, inside the place it is in (`<details>`).
 pub fn disclosure<R>(ui: &mut Ui, summary: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    opening(ui, summary, true, add)
+}
+
+/// The title row of both. Only the plain one has the browser's triangle: a card's title is laid out as a
+/// row, which takes the triangle away.
+fn opening<R>(
+    ui: &mut Ui,
+    summary: &str,
+    triangle: bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
     let t = tokens(ui.ctx());
     let id = ui.make_persistent_id(("details", summary));
     let mut open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
-    let galley = ui.painter().layout_no_wrap(
-        summary.to_owned(),
-        font(Weight::Semibold, t.s.rem),
-        t.c.text,
-    );
+    let weight = if triangle {
+        Weight::Semibold
+    } else {
+        Weight::Bold
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(summary.to_owned(), font(weight, t.s.rem), t.c.text);
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::DisclosureTriangle, true, summary));
-    // The browser's disclosure triangle.
-    let at = pos2(rect.left() + 5.0, rect.center().y);
-    let points = if open {
-        vec![
-            at + vec2(-4.5, -3.0),
-            at + vec2(4.5, -3.0),
-            at + vec2(0.0, 4.0),
-        ]
-    } else {
-        vec![
-            at + vec2(-3.0, -4.5),
-            at + vec2(4.0, 0.0),
-            at + vec2(-3.0, 4.5),
-        ]
-    };
-    ui.painter()
-        .add(egui::Shape::convex_polygon(points, t.c.text, Stroke::NONE));
-    let at = pos2(rect.left() + 17.0, rect.center().y - galley.size().y / 2.0);
+    let mut left = rect.left();
+    if triangle {
+        let at = pos2(rect.left() + 5.0, rect.center().y);
+        let points = if open {
+            vec![
+                at + vec2(-4.5, -3.0),
+                at + vec2(4.5, -3.0),
+                at + vec2(0.0, 4.0),
+            ]
+        } else {
+            vec![
+                at + vec2(-3.0, -4.5),
+                at + vec2(4.0, 0.0),
+                at + vec2(-3.0, 4.5),
+            ]
+        };
+        ui.painter()
+            .add(egui::Shape::convex_polygon(points, t.c.text, Stroke::NONE));
+        left += 17.0;
+    }
+    let at = pos2(left, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(at, galley, t.c.text);
     focus_ring(ui, &response, 4);
     if response.clicked() {
         open = !open;
         ui.data_mut(|data| data.insert_temp(id, open));
     }
-    open.then(|| {
-        ui.add_space(14.0 - t.s.card_gap);
-        add(ui)
-    })
+    // The browser keeps the gap before the contents of a card, which are empty while it is closed.
+    if !open {
+        if !triangle {
+            ui.allocate_exact_size(Vec2::ZERO, Sense::hover());
+        }
+        return None;
+    }
+    ui.add_space(if triangle { 14.0 - t.s.card_gap } else { 14.0 });
+    Some(add(ui))
 }
 
 /// The part of a card below a hairline (`.inner`).
@@ -461,7 +483,8 @@ pub fn field<R>(
                 1.35,
             );
         } else if let Some(text) = hint_text {
-            hint(ui, text);
+            // Smaller than other hints in classic: the field's own style won there.
+            paragraph(ui, text, Weight::Regular, t.rem(0.8), t.c.muted, 1.35);
         }
         result
     })
@@ -687,7 +710,7 @@ pub fn check_weight(ui: &mut Ui, ticked: &mut bool, label: &str, weight: Weight)
 
 /// A check box whose label is a bold part and a regular one after it.
 pub fn check_suffixed(ui: &mut Ui, ticked: &mut bool, label: &str, suffix: &str) -> Response {
-    let parts = [(label, Weight::Semibold), (suffix, Weight::Regular)];
+    let parts = [(label, Weight::Bold), (suffix, Weight::Regular)];
     check_parts(ui, ticked, &parts)
 }
 
