@@ -8,6 +8,8 @@
 #>
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+# Put back at the end: they would otherwise stay set in the caller's shell.
+$before = $env:RUSTUP_TOOLCHAIN, $env:CK_FORGE_VERSION, $env:PATH
 $env:RUSTUP_TOOLCHAIN = '1.99.1-x86_64-pc-windows-gnu'
 $env:CK_FORGE_VERSION = (Get-Content "$root\version.txt" -Raw).Trim()
 $env:PATH = "$env:PATH;${env:ProgramFiles(x86)}\NSIS"
@@ -26,6 +28,9 @@ try {
     if ($LASTEXITCODE) { throw 'writing the licences failed' }
     & $bash tools/make-egui-installer.sh $env:CK_FORGE_VERSION egui-out/THIRD-PARTY-LICENSES.txt egui-out/keeper-forge-setup-x64.exe
     if ($LASTEXITCODE) { throw 'building the installer failed' }
-} finally { Pop-Location }
+} finally {
+    Pop-Location
+    $env:RUSTUP_TOOLCHAIN, $env:CK_FORGE_VERSION, $env:PATH = $before
+}
 
 Get-Item "$root\egui-out\keeper-forge-setup-x64.exe" | Select-Object Name, Length, FullName
