@@ -154,13 +154,14 @@ jobs:
         id: egui_installer
         if: steps.egui_build.outcome == 'success' && steps.egui_sign_programs.outcome != 'failure'
         continue-on-error: true
+        # Absolute paths: makensis reads relative ones from the script folder, not from here.
         run: |
           makensis -V2 "-DVERSION=$VERSION" \
-            "-DAPP=$(cygpath -w egui-out/keeper-forge.exe)" \
-            "-DHELPER=$(cygpath -w egui-out/ck-forge.exe)" \
-            "-DLICENCE=$(cygpath -w LICENSE)" \
-            "-DTHIRDPARTY=$(cygpath -w egui-out/THIRD-PARTY-LICENSES.txt)" \
-            "-DOUTFILE=$(cygpath -w egui-out/keeper-forge-egui-setup-x64.exe)" \
+            "-DAPP=$(cygpath -aw egui-out/keeper-forge.exe)" \
+            "-DHELPER=$(cygpath -aw egui-out/ck-forge.exe)" \
+            "-DLICENCE=$(cygpath -aw LICENSE)" \
+            "-DTHIRDPARTY=$(cygpath -aw egui-out/THIRD-PARTY-LICENSES.txt)" \
+            "-DOUTFILE=$(cygpath -aw egui-out/keeper-forge-egui-setup-x64.exe)" \
             app-egui/installer/keeper-forge.nsi
         shell: bash
         env:
