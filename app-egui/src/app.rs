@@ -474,7 +474,9 @@ fn paint_dot(ui: &Ui, t: &Tokens, dot: Rect, at: usize, on: bool, done: bool) {
     // The step that is open wins over done in modern; classic shows done in both.
     let (fill, ink) = match (on, done) {
         (_, true) if t.classic() => (t.c.input_bg, t.c.ok),
-        (true, _) => (t.c.accent, t.c.accent_text),
+        // Open and done: the tick stays in the done colour, as the style sheets cascade.
+        (true, true) => (t.c.accent, t.c.ok),
+        (true, false) => (t.c.accent, t.c.accent_text),
         (false, true) => (t.c.ok_bg, t.c.ok),
         (false, false) if t.classic() => (t.c.input_bg, t.c.text),
         (false, false) => (t.c.soft, t.c.muted),
