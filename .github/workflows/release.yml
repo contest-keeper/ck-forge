@@ -21,6 +21,14 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: windows-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    # Two runs must not both make the update key when it is missing.
+    concurrency:
+      group: forge-production-update-key
+      cancel-in-progress: false
     # Only a release signs in to, and reports to, the production Hub.
     env:
       CK_HUB_URL: https://hub.contestkeeper.com
@@ -38,6 +46,21 @@ jobs:
           workspaces: |
             .
             app-egui
+            tools/update-signer
+      # Signs the update with the production key kept in Azure Key Vault (made on the first run).
+      - id: key
+        uses: ./.github/actions/signing-key
+        with:
+          environment: production
+          client-id: ${{ vars.AZURE_CLIENT_ID_PRODUCTION }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # A build without the public key looks for no updates and could never be updated.
+      - name: Check the update key
+        run: test -n "$PUBKEY" || { echo "::error::The signing key step returned no public key"; exit 1; }
+        shell: bash
+        env:
+          PUBKEY: ${{ steps.key.outputs.pubkey }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about
@@ -46,7 +69,6 @@ jobs:
           choco install nsis --no-progress -y
           echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
         shell: bash
-      # No CK_UPDATE_PUBKEY: releases publish no signed update feed, so this build looks for none.
       - name: Build the installer and collect the files under stable names
         # The licence step fails on a licence that is not allowed (app-egui/about.toml) or on an empty
         # result. The file goes into the installer and is published with the release.
@@ -60,9 +82,17 @@ jobs:
           cp target/release/ck-forge.exe out/ck-forge-windows-x64.exe
           # Lets a person check a download against the release page.
           (cd out && sha256sum keeper-forge-setup-x64.exe ck-forge-windows-x64.exe > SHA256SUMS)
+          cargo run --release --locked --manifest-path tools/update-signer/Cargo.toml -- sign out/keeper-forge-setup-x64.exe
+          tools/make-update-manifest.sh "$CK_FORGE_VERSION" \
+            "https://github.com/contest-keeper/ck-forge/releases/download/${TAG}/keeper-forge-setup-x64.exe" \
+            out/keeper-forge-setup-x64.exe.sig min-version.txt out/update.json
+          # The signature is inside update.json; it is not a download of its own.
+          rm out/keeper-forge-setup-x64.exe.sig
         shell: bash
         env:
           TAG: ${{ needs.release-please.outputs.tag_name }}
+          CK_UPDATE_PUBKEY: ${{ steps.key.outputs.pubkey }}
+          CK_UPDATE_FEED: https://github.com/contest-keeper/ck-forge/releases/latest/download/update.json
       - uses: actions/upload-artifact@v4
         with:
           name: forge-windows
@@ -71,49 +101,109 @@ jobs:
 
   # The macOS download the website's button looks for (keeper-forge-macos-universal.dmg). Off until the
   # repository variable CK_MACOS_CI is `true`: on 2026-11-24 GitHub refused to start macOS runners for
-  # this organization. The file is put straight on the release, with a build attestation.
+  # this organization.
   macos:
-    needs: release-please
+    needs: [release-please, windows]
     if: needs.release-please.outputs.release_created == 'true' && vars.CK_MACOS_CI == 'true'
     runs-on: macos-latest
+    environment: production
     permissions:
-      contents: write
+      contents: read
       id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
+      - name: Install the pinned toolchain
+        run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: forge-macos-release
           workspaces: |
             .
             app-egui
+            tools/update-signer
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about
+      # The same key as the Windows installer: the Windows job has made it if it was missing.
+      - id: key
+        uses: ./.github/actions/signing-key
+        with:
+          environment: production
+          client-id: ${{ vars.AZURE_CLIENT_ID_PRODUCTION }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # A build without the public key looks for no updates and could never be updated.
+      - name: Check the update key
+        run: test -n "$PUBKEY" || { echo "::error::The signing key step returned no public key"; exit 1; }
+        shell: bash
+        env:
+          PUBKEY: ${{ steps.key.outputs.pubkey }}
       - name: Build the universal app
         run: |
-          mkdir -p out
-          tools/make-macos-dmg.sh "${TAG#v}" out/keeper-forge-macos-universal.dmg
+          mkdir -p mac
+          tools/make-macos-dmg.sh "${TAG#v}" mac/keeper-forge-macos-universal.dmg
         env:
           TAG: ${{ needs.release-please.outputs.tag_name }}
+          CK_UPDATE_PUBKEY: ${{ steps.key.outputs.pubkey }}
+          CK_UPDATE_FEED: https://github.com/contest-keeper/ck-forge/releases/latest/download/update.json
           # Only a release signs in to, and reports to, the production Hub.
           CK_HUB_URL: https://hub.contestkeeper.com
-      - uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: out/keeper-forge-macos-universal.dmg
-      - name: Upload to the release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
+      - name: Sign the disk image for the updater
         run: |
-          (cd out && shasum -a 256 keeper-forge-macos-universal.dmg > SHA256SUMS-macos)
-          gh release upload "$TAG" out/keeper-forge-macos-universal.dmg out/SHA256SUMS-macos --clobber --repo "$GITHUB_REPOSITORY"
+          cargo run --release --locked --manifest-path tools/update-signer/Cargo.toml -- sign mac/keeper-forge-macos-universal.dmg
+          (cd mac && shasum -a 256 keeper-forge-macos-universal.dmg > SHA256SUMS-macos)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-macos
+          path: mac/*
+          if-no-files-found: error
+          overwrite: true
+
+  # Everything that is published, in one artifact, so the feed is complete before it is checksummed,
+  # attested and uploaded: nothing is edited afterwards.
+  bundle:
+    needs: [release-please, windows, macos]
+    # With macOS switched on, a release is published with both systems or not at all.
+    if: >-
+      !cancelled() && needs.windows.result == 'success' &&
+      (needs.macos.result == 'success' || needs.macos.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: forge-windows
+          path: out
+      - uses: actions/download-artifact@v4
+        if: needs.macos.result == 'success'
+        with:
+          name: forge-macos
+          path: mac
+      - name: Add the macOS disk image to the update feed
+        if: needs.macos.result == 'success'
+        run: |
+          tools/add-macos-update.sh "${TAG#v}" \
+            "https://github.com/contest-keeper/ck-forge/releases/download/${TAG}/keeper-forge-macos-universal.dmg" \
+            mac/keeper-forge-macos-universal.dmg.sig out/update.json
+          cp mac/keeper-forge-macos-universal.dmg mac/SHA256SUMS-macos out/
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-release
+          path: out/*
+          if-no-files-found: error
+          overwrite: true
 
   publish:
-    needs: [release-please, windows]
+    needs: [release-please, bundle]
+    if: ${{ !cancelled() && needs.bundle.result == 'success' }}
     permissions:
       contents: write
       id-token: write
@@ -121,4 +211,4 @@ jobs:
     uses: contest-keeper/.github/.github/workflows/release-assets.yml@main
     with:
       tag_name: ${{ needs.release-please.outputs.tag_name }}
-      artifact_name: forge-windows
+      artifact_name: forge-release

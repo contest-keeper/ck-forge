@@ -76,6 +76,8 @@ jobs:
         working-directory: tools/update-signer
       - run: cargo test --locked
         working-directory: tools/update-signer
+      - run: tools/test-update-manifest.sh
+        shell: bash
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about

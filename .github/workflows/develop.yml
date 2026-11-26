@@ -69,6 +69,12 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID_DEVELOP }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # A build without the public key looks for no updates and could never be updated.
+      - name: Check the update key
+        run: test -n "$PUBKEY" || { echo "::error::The signing key step returned no public key"; exit 1; }
+        shell: bash
+        env:
+          PUBKEY: ${{ steps.key.outputs.pubkey }}
       - name: Install NSIS
         run: |
           choco install nsis --no-progress -y
@@ -119,8 +125,7 @@ jobs:
         env:
           CK_CODESIGN_PFX_BASE64: ${{ secrets.CK_CODESIGN_PFX_BASE64 }}
           CK_CODESIGN_PASSWORD: ${{ secrets.CK_CODESIGN_PASSWORD }}
-      # The update signature covers the final bytes, so it comes after code signing. update-egui.json is
-      # the feed that earlier previews of this window still read.
+      # The update signature covers the final bytes, so it comes after code signing.
       - name: Sign the installer for the updater and collect the files under stable names
         run: |
           cargo run --release --locked --manifest-path tools/update-signer/Cargo.toml -- sign egui-out/keeper-forge-setup-x64.exe
@@ -130,7 +135,6 @@ jobs:
           tools/make-update-manifest.sh "$VERSION" \
             https://github.com/contest-keeper/ck-forge/releases/download/dev/keeper-forge-setup-x64.exe \
             egui-out/keeper-forge-setup-x64.exe.sig min-version.txt out/update.json
-          cp out/update.json out/update-egui.json
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -140,8 +144,104 @@ jobs:
           path: out/*
           if-no-files-found: error
 
-  release:
+  # Off until the repository variable CK_MACOS_CI is `true`: GitHub refused to start macOS runners for
+  # this organization on 2026-11-24.
+  macos:
     needs: windows
+    if: vars.CK_MACOS_CI == 'true'
+    runs-on: macos-latest
+    environment: develop
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forge-macos-develop
+          workspaces: |
+            .
+            app-egui
+            tools/update-signer
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      # The same key as the Windows installer: the Windows job has made it if it was missing.
+      - id: key
+        uses: ./.github/actions/signing-key
+        with:
+          environment: develop
+          client-id: ${{ vars.AZURE_CLIENT_ID_DEVELOP }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # A build without the public key looks for no updates and could never be updated.
+      - name: Check the update key
+        run: test -n "$PUBKEY" || { echo "::error::The signing key step returned no public key"; exit 1; }
+        shell: bash
+        env:
+          PUBKEY: ${{ steps.key.outputs.pubkey }}
+      - name: Build the universal app
+        run: |
+          mkdir -p mac
+          tools/make-macos-dmg.sh "$VERSION" mac/keeper-forge-macos-universal.dmg
+        env:
+          VERSION: ${{ needs.windows.outputs.version }}
+          CK_UPDATE_PUBKEY: ${{ steps.key.outputs.pubkey }}
+          CK_UPDATE_FEED: https://github.com/contest-keeper/ck-forge/releases/download/dev/update.json
+      - name: Sign the disk image for the updater
+        run: |
+          cargo run --release --locked --manifest-path tools/update-signer/Cargo.toml -- sign mac/keeper-forge-macos-universal.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-macos
+          path: mac/*
+          if-no-files-found: error
+          overwrite: true
+
+  # Everything that is published, in one artifact, so the feed is complete before it is checksummed,
+  # attested and uploaded: nothing is edited afterwards.
+  bundle:
+    needs: [windows, macos]
+    # A failed macOS build does not hold back Windows: the feed then has no macOS entry.
+    if: ${{ !cancelled() && needs.windows.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: forge-windows
+          path: out
+      - uses: actions/download-artifact@v4
+        if: needs.macos.result == 'success'
+        with:
+          name: forge-macos
+          path: mac
+      - name: Add the macOS disk image to the update feed
+        if: needs.macos.result == 'success'
+        run: |
+          tools/add-macos-update.sh "$VERSION" \
+            https://github.com/contest-keeper/ck-forge/releases/download/dev/keeper-forge-macos-universal.dmg \
+            mac/keeper-forge-macos-universal.dmg.sig out/update.json
+          cp mac/keeper-forge-macos-universal.dmg out/
+        env:
+          VERSION: ${{ needs.windows.outputs.version }}
+      # The feed that earlier previews of this window still read.
+      - run: cp out/update.json out/update-egui.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-release
+          path: out/*
+          if-no-files-found: error
+          overwrite: true
+
+  release:
+    needs: [windows, bundle]
+    # A status check is needed here and below: a skipped macOS job would otherwise skip these too.
+    if: ${{ !cancelled() && needs.bundle.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -167,6 +267,7 @@ jobs:
 
   publish:
     needs: release
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     permissions:
       contents: write
       id-token: write
@@ -174,52 +275,18 @@ jobs:
     uses: contest-keeper/.github/.github/workflows/release-assets.yml@develop
     with:
       tag_name: dev
-      artifact_name: forge-windows
+      artifact_name: forge-release
 
   # The develop site serves the download from Azure, so the installer there is replaced too.
   azure:
     needs: [windows, release]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     permissions:
       contents: read
       id-token: write
     uses: contest-keeper/ck-infra/.github/workflows/publish-download.yml@develop
     with:
       environment: develop
-      artifact: forge-windows
+      artifact: forge-release
       folder: forge
       version: ${{ needs.windows.outputs.version }}
-
-  # The macOS disk image goes on the same dev pre-release. Off until the repository variable
-  # CK_MACOS_CI is `true`: GitHub refused to start macOS runners for this organization on 2026-11-24.
-  macos:
-    needs: [windows, release]
-    if: vars.CK_MACOS_CI == 'true'
-    runs-on: macos-latest
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: forge-macos-develop
-          workspaces: |
-            .
-            app-egui
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-about
-      - name: Build the universal app
-        run: |
-          mkdir -p out
-          tools/make-macos-dmg.sh "$VERSION" out/keeper-forge-macos-universal.dmg
-        env:
-          VERSION: ${{ needs.windows.outputs.version }}
-      - uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: out/keeper-forge-macos-universal.dmg
-      - name: Upload to the dev pre-release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload dev out/keeper-forge-macos-universal.dmg --clobber --repo "$GITHUB_REPOSITORY"

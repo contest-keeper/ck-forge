@@ -10,6 +10,8 @@ url=$2
 signature_file=$3
 min_version=$(tr -d '[:space:]' < "$4")
 output=$5
+# A missing signature would publish a feed that every installed copy rejects.
+test -s "$signature_file" || { echo "make-update-manifest: no signature in $signature_file" >&2; exit 1; }
 
 jq -n \
   --arg version "$version" \
