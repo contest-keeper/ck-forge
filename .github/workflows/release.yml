@@ -21,20 +21,13 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: windows-latest
+    # Only a release signs in to, and reports to, the production Hub.
+    env:
+      CK_HUB_URL: https://hub.contestkeeper.com
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: ui/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: ui/.nvmrc
-          cache: pnpm
-          cache-dependency-path: ui/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-        working-directory: ui
       - name: Install the pinned GNU toolchain
         run: |
           rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
@@ -44,38 +37,32 @@ jobs:
         with:
           workspaces: |
             .
-            app
-      - name: Build the command line tool and place it as the installer's helper
-        run: |
-          cargo build --release --locked -p ck-forge
-          mkdir -p app/binaries
-          cp target/release/ck-forge.exe app/binaries/ck-forge-x86_64-pc-windows-gnu.exe
-        shell: bash
+            app-egui
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about
-      - name: Write the third-party licences
-        # Fails on a licence that is not allowed (about.toml) or on an empty result. The file goes
-        # into the installer and is published with the release.
+      - name: Install NSIS
         run: |
-          mkdir -p out
-          tools/make-licences.sh out/THIRD-PARTY-LICENSES.txt
-          cp out/THIRD-PARTY-LICENSES.txt app/THIRD-PARTY-LICENSES.txt
-          echo '{"bundle":{"resources":["THIRD-PARTY-LICENSES.txt"]}}' > app/bundle-licences.json
+          choco install nsis --no-progress -y
+          echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
         shell: bash
-      - name: Build the installer
-        run: node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-gnu --config bundle-licences.json
-        working-directory: app
-        # Only a release signs in to, and reports to, the production Hub.
-        env:
-          CK_HUB_URL: https://hub.contestkeeper.com
-      - name: Collect the files under stable names
+      # No CK_UPDATE_PUBKEY: releases publish no signed update feed, so this build looks for none.
+      - name: Build the installer and collect the files under stable names
+        # The licence step fails on a licence that is not allowed (app-egui/about.toml) or on an empty
+        # result. The file goes into the installer and is published with the release.
         run: |
-          cp app/target/x86_64-pc-windows-gnu/release/bundle/nsis/*-setup.exe out/keeper-forge-setup-x64.exe
+          export CK_FORGE_VERSION="${TAG#v}"
+          cargo build --release --locked -p ck-forge
+          cargo build --release --locked --manifest-path app-egui/Cargo.toml
+          mkdir -p out
+          tools/make-egui-licences.sh out/THIRD-PARTY-LICENSES.txt
+          tools/make-egui-installer.sh "$CK_FORGE_VERSION" out/THIRD-PARTY-LICENSES.txt out/keeper-forge-setup-x64.exe
           cp target/release/ck-forge.exe out/ck-forge-windows-x64.exe
           # Lets a person check a download against the release page.
           (cd out && sha256sum keeper-forge-setup-x64.exe ck-forge-windows-x64.exe > SHA256SUMS)
         shell: bash
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
       - uses: actions/upload-artifact@v4
         with:
           name: forge-windows
