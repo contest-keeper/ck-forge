@@ -493,7 +493,7 @@ fn progress_of(state: &HelperState) -> Option<Progress> {
 /// password does not give access to a disk there: the program that asked also needs the permission
 /// "Full Disk Access", so the helper stops with "Operation not permitted" (os error 1).
 fn explain(why: String, macos: bool) -> String {
-    if macos && (why.contains("Operation not permitted") || why.contains("os error 1")) {
+    if macos && (why.contains("Operation not permitted") || why.contains("(os error 1)")) {
         return format!(
             "{why}
 
