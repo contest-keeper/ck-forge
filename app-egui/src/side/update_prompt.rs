@@ -109,6 +109,13 @@ impl Banner {
         }
     }
 
+    /// Whether a mandatory update is about to be on screen for the first time.
+    pub fn appearing(&self) -> bool {
+        !self.shown
+            && !matches!(self.state, State::Quiet)
+            && self.pending.as_ref().is_some_and(|u| u.mandatory)
+    }
+
     /// Starts a check when one is due and takes what the worker threads reported. Closes the window
     /// when an update was started. `data` is the Forge folder, which remembers a skipped version.
     pub fn poll(&mut self, ctx: &Context, data: Option<&Path>) {
@@ -168,7 +175,6 @@ impl Banner {
         ctx.move_to_top(LayerId::new(Order::Foreground, Id::unique("update")));
         let can_put_off = !matches!(self.state, State::Downloading(..));
         match act.or((escape && can_put_off).then_some(Act::Later)) {
-            None => {}
             Some(Act::Notes) => {
                 // The page names only the version, which was read as a version number.
                 let _ = open::that(format!("{RELEASES}{}", update.version));
@@ -190,7 +196,9 @@ impl Banner {
             // Downloaded and checked again: the file left on disk is not trusted a second time.
             Some(Act::Reopen) => self.download(update, ctx.clone()),
             Some(Act::Back) => self.state = State::Offer,
-            Some(Act::Close) => ctx.send_viewport_cmd(ViewportCommand::Close),
+            // Closing would cut off what is running.
+            Some(Act::Close) if !app.busy => ctx.send_viewport_cmd(ViewportCommand::Close),
+            None | Some(Act::Close) => {}
         }
     }
 
@@ -263,6 +271,9 @@ impl Banner {
             act = Some(Act::Notes);
         }
         widgets::note(ui, Tone::Error, &self.failure);
+        if busy {
+            words(ui, "Something is still running. Wait for it to finish.");
+        }
         if let State::Downloading(done, total) = self.state {
             const MB: u64 = 1024 * 1024;
             if total == 0 {
@@ -307,7 +318,8 @@ impl Banner {
             }
         };
         if matches!(self.state, State::Opened) {
-            button(ui, Btn::new("Close Keeper Forge").primary(), Act::Close);
+            let close = Btn::new("Close Keeper Forge").primary().enabled(!busy);
+            button(ui, close, Act::Close);
             button(ui, Btn::new("Open again"), Act::Reopen);
             button(ui, Btn::new("Back"), Act::Back);
             return act;
@@ -325,7 +337,7 @@ impl Banner {
         let ready = !installing && !busy;
         button(ui, Btn::new(label).primary().enabled(ready), Act::Install);
         if mandatory {
-            button(ui, Btn::new("Close").enabled(!installing), Act::Close);
+            button(ui, Btn::new("Close").enabled(ready), Act::Close);
         } else {
             button(ui, Btn::new("Later").enabled(!installing), Act::Later);
         }
@@ -397,7 +409,7 @@ fn link(ui: &mut Ui, text: &str) -> Response {
 mod tests {
     use eframe::egui::accesskit::Role;
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
     use crate::app::{CONTEST, Forge, MAKE};
@@ -446,6 +458,38 @@ mod tests {
         assert!(
             blocked.query_by_label("Update and restart").is_some() || cfg!(target_os = "macos")
         );
+    }
+
+    #[test]
+    fn a_click_in_the_frame_that_brings_a_mandatory_update_does_nothing() {
+        let data = tempfile::tempdir().expect("folder");
+        let mut harness = window(data.path(), Banner::quiet());
+        harness
+            .get_by_role_and_label(Role::Button, "Make sticks")
+            .click();
+        harness.state_mut().update = Banner::offering(true);
+        harness.run_steps(4);
+        assert_eq!(harness.state().step, CONTEST);
+    }
+
+    #[test]
+    fn close_waits_for_running_work() {
+        let mut app = AppState::load(None);
+        app.busy = true;
+        let mut banner = Banner::offering(true);
+        let mut frame = 0;
+        let mut harness = Harness::builder()
+            .with_accessibility_check(false)
+            .build_ui(|ui| {
+                crate::theme::apply(ui.ctx(), tokens(ui.ctx()).look);
+                // The fonts arrive with the second frame.
+                frame += 1;
+                if frame > 1 {
+                    banner.show(ui.ctx(), &mut app);
+                }
+            });
+        harness.run_steps(4);
+        assert!(harness.get_by_label("Close").accesskit_node().is_disabled());
     }
 
     #[test]

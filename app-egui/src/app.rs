@@ -49,6 +49,8 @@ pub struct Forge {
     pub settings: settings::Panel,
     pub update: update_prompt::Banner,
     logo: Option<TextureHandle>,
+    /// A close was refused because something was running.
+    close_refused: bool,
 }
 
 impl Forge {
@@ -82,6 +84,7 @@ impl Forge {
             settings: settings::Panel::default(),
             update,
             logo: None,
+            close_refused: false,
         }
     }
 
@@ -108,6 +111,17 @@ impl Forge {
         }
     }
 
+    /// Refuses to close while something runs: a stick write runs on a thread of this program, and
+    /// closing would cut it off before the sticks are read back and recorded.
+    fn hold_close(&mut self, ctx: &egui::Context) {
+        if !self.state.busy {
+            self.close_refused = false;
+        } else if ctx.input(|input| input.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.close_refused = true;
+        }
+    }
+
     pub fn draw(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         if let Some(system) = ctx.system_theme() {
@@ -123,6 +137,14 @@ impl Forge {
         self.contest.poll(&ctx, &mut self.state);
         self.make.poll(&ctx, &mut self.state);
         self.hub.poll(&ctx, &mut self.state);
+        self.hold_close(&ctx);
+        // The dialog takes the input only from its second frame on. So the first frame draws
+        // nothing else that a click or a key could still act on.
+        if self.update.appearing() {
+            self.update.show(&ctx, &mut self.state);
+            ctx.request_repaint();
+            return;
+        }
 
         let t = tokens(&ctx);
         ui.painter().rect_filled(ui.max_rect(), 0.0, t.c.bg);
@@ -298,7 +320,13 @@ impl Forge {
 
     /// Why the window stayed on the profile, or else what the profile's file holds.
     fn footer_message(&self, ui: &mut Ui, t: &Tokens) {
-        if !self.leave_failure.is_empty() {
+        if self.close_refused {
+            widgets::note(
+                ui,
+                Tone::Warn,
+                "Something is still running. Wait for it to finish or cancel it, then close.",
+            );
+        } else if !self.leave_failure.is_empty() {
             // As wide as its text, as in the earlier window.
             let galley = ui.painter().layout(
                 self.leave_failure.clone(),
@@ -500,6 +528,24 @@ fn paint_dot(ui: &Ui, t: &Tokens, dot: Rect, at: usize, on: bool, done: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_close_request_is_refused_only_while_something_runs() {
+        for busy in [true, false] {
+            let mut forge = Forge::sample();
+            forge.state.busy = busy;
+            let mut input = egui::RawInput::default();
+            let root = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+            root.events.push(egui::ViewportEvent::Close);
+            let mut output =
+                egui::Context::default().run_ui(input, |ui| forge.hold_close(ui.ctx()));
+            output.textures_delta.clear();
+            let refused = output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::CancelClose);
+            assert_eq!(refused, busy);
+        }
+    }
 
     #[test]
     fn leaving_the_profile_saves_it_and_a_profile_with_problems_stays() {
