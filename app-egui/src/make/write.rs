@@ -588,7 +588,7 @@ impl Screen {
     }
 
     /// Step 2. `network` is the Wi-Fi the profile joins, if it names one.
-    pub fn sticks_ui(&mut self, ui: &mut Ui, network: Option<&str>, locked: bool) {
+    pub fn sticks_ui(&mut self, ui: &mut Ui, network: Option<&str>, locked: bool, dev: bool) {
         self.prune();
         widgets::step_head(
             ui,
@@ -613,13 +613,16 @@ impl Screen {
             if find.enabled(enabled).show(ui).clicked() {
                 self.list(ui.ctx().clone());
             }
-            ui.add_enabled_ui(idle, |ui| {
-                widgets::check(
-                    ui,
-                    &mut self.allow_virtual,
-                    "Also show virtual disks (for testing)",
-                );
-            });
+            // Only on a development machine, switched on by hand in `window.json`.
+            if dev {
+                ui.add_enabled_ui(idle, |ui| {
+                    widgets::check(
+                        ui,
+                        &mut self.allow_virtual,
+                        "Also show virtual disks (for testing)",
+                    );
+                });
+            }
         });
         if !self.ready() {
             widgets::hint(

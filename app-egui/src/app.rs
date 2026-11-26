@@ -21,22 +21,40 @@ struct Step {
     blurb: &'static str,
 }
 
-const STEPS: [Step; 2] = [
+const STEPS: [Step; 5] = [
     Step {
         title: "Contest profile",
-        hint: "Name, platform, branding",
+        hint: "Name, desktop, bookmarks",
         blurb: "Everything a stick needs to know about this contest. Mistakes are shown as you type.",
+    },
+    Step {
+        title: "Connectivity",
+        hint: "Sites, Wi-Fi, Bluetooth, USB",
+        blurb: "What the sticks may connect to.",
+    },
+    Step {
+        title: "Screen recording",
+        hint: "Mode, upload, retention",
+        blurb: "Whether and how the contestants' screens are recorded.",
     },
     Step {
         title: "Make sticks",
         hint: "Base image, erase and write USB",
         blurb: "Choose the base image once, tick the sticks and write. Each stick gets its own identity from the saved profile. Windows asks for administrator permission when the write starts.",
     },
+    Step {
+        title: "Retire sticks",
+        hint: "Old keys of rewritten sticks",
+        blurb: "A rewritten stick has a new key, and the old key keeps working until you retire it.",
+    },
 ];
 
-/// The step that holds the profile; leaving it saves.
+/// The steps of the profile; leaving one of them saves.
 pub const CONTEST: usize = 0;
-pub const MAKE: usize = 1;
+pub const CONNECTIVITY: usize = 1;
+pub const RECORDING: usize = 2;
+pub const MAKE: usize = 3;
+pub const RETIRE: usize = 4;
 
 pub struct Forge {
     pub state: AppState,
@@ -90,21 +108,28 @@ impl Forge {
 
     /// Moves to the next step. Leaving the profile saves it, in the Forge folder when it has no
     /// file yet; a profile with problems stays here, and the problems are shown.
-    fn next(&mut self) {
+    fn next(&mut self, ctx: &egui::Context) {
         self.leave_failure.clear();
-        if self.step == CONTEST
-            && let Err(why) = self.state.save_profile()
-        {
-            self.leave_failure = why;
-            return;
+        if self.step < MAKE {
+            match self.state.save_profile() {
+                Ok(path) => self.contest.sync_hub(ctx, &mut self.state, path),
+                Err(why) => {
+                    self.leave_failure = why;
+                    return;
+                }
+            }
         }
         self.step += 1;
     }
 
     /// The sidebar steps go through the same rule as Continue.
-    fn go(&mut self, target: usize) {
+    fn go(&mut self, target: usize, ctx: &egui::Context) {
         if target > self.step {
-            self.next();
+            // Each step on the way saves; one that is refused stops the move.
+            self.leave_failure.clear();
+            while self.step < target && self.leave_failure.is_empty() {
+                self.next(ctx);
+            }
         } else {
             self.leave_failure.clear();
             self.step = target;
@@ -205,10 +230,11 @@ impl Forge {
                 self.brand(ui, t);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
-                    let done = [self.state.profile_path.is_some(), self.state.written];
+                    let saved = self.state.profile_path.is_some();
+                    let done = [saved, saved, saved, self.state.written, false];
                     for (at, step) in STEPS.iter().enumerate() {
                         if step_button(ui, at, step, at == self.step, done[at]).clicked() {
-                            self.go(at);
+                            self.go(at, ui.ctx());
                         }
                     }
                 });
@@ -285,11 +311,11 @@ impl Forge {
                     }
                     ui.set_min_height(height);
                     if self.step > CONTEST && Btn::new("Back").show(ui).clicked() {
-                        self.go(self.step - 1);
+                        self.go(self.step - 1, ui.ctx());
                     }
                     // The button takes its place first; the message gets what is left.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if self.step < MAKE {
+                        if self.step < RETIRE {
                             let ready = self.state.profile.is_some();
                             if Btn::new("Save and continue")
                                 .primary()
@@ -297,7 +323,7 @@ impl Forge {
                                 .show(ui)
                                 .clicked()
                             {
-                                self.next();
+                                self.next(ui.ctx());
                             }
                         }
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -341,7 +367,7 @@ impl Forge {
                 .show(ui, |ui| {
                     widgets::note(ui, Tone::Error, &self.leave_failure);
                 });
-        } else if self.step == CONTEST {
+        } else if self.step < MAKE {
             let text = match &self.state.profile_path {
                 None => "Not saved yet. Continue saves it in the Keeper Forge folder.".to_owned(),
                 Some(_) if self.state.is_unsaved() => {
@@ -367,7 +393,12 @@ impl Forge {
                             ui.spacing_mut().item_spacing.y = t.s.gap;
                             match self.step {
                                 CONTEST => self.contest.show(ui, &mut self.state),
-                                _ => self.make.show(ui, &mut self.state),
+                                CONNECTIVITY => {
+                                    self.contest.show_connectivity(ui, &mut self.state);
+                                }
+                                RECORDING => self.contest.show_recording(ui, &mut self.state),
+                                MAKE => self.make.show(ui, &mut self.state),
+                                _ => self.make.show_retire(ui, &self.state),
                             }
                         });
                     });
@@ -564,7 +595,7 @@ mod tests {
                 title: String::new(),
                 url: String::new(),
             });
-        forge.go(MAKE);
+        forge.go(MAKE, &egui::Context::default());
         assert_eq!(forge.step, CONTEST);
         assert!(forge.leave_failure.contains("problems"));
         forge
@@ -576,11 +607,11 @@ mod tests {
             .branding
             .bookmarks
             .pop();
-        forge.go(MAKE);
+        forge.go(MAKE, &egui::Context::default());
         assert_eq!(forge.step, MAKE);
         assert!(forge.leave_failure.is_empty() && !forge.state.is_unsaved());
         assert!(forge.state.profile_path.is_some());
-        forge.go(CONTEST);
+        forge.go(CONTEST, &egui::Context::default());
         assert_eq!(forge.step, CONTEST);
     }
 }

@@ -27,8 +27,6 @@ pub struct Screen {
     chosen: usize,
     /// Where the new base image goes. It must not exist yet.
     out: Option<PathBuf>,
-    /// The release's `ck-os-patch.tar.gz`; without one the image is not Keeper OS yet.
-    patch: Option<PathBuf>,
     busy: bool,
     /// The step that runs and how far it is, once the build reported one.
     step: Option<(CreateStep, u64, u64)>,
@@ -53,7 +51,6 @@ impl Default for Screen {
             entries,
             chosen: 0,
             out: None,
-            patch: None,
             busy: false,
             step: None,
             failure,
@@ -141,10 +138,7 @@ impl Screen {
         widgets::subtitle(ui, "Build a base image");
         widgets::hint(
             ui,
-            "Downloads an official image, installs a desktop and the contest tools in a virtual \
-             machine, and adds the Keeper OS patch. Needs about 30 GB free, QEMU, and 15 to 40 \
-             minutes. The new image is then used as the base image. Most admins download one \
-             instead.",
+            "Needs about 30 GB free, QEMU and 15 to 40 minutes. Most admins download one instead.",
         );
         let options: Vec<(usize, &str)> = self
             .entries
@@ -161,7 +155,6 @@ impl Screen {
             });
         });
         self.out_ui(ui, idle);
-        self.patch_ui(ui, idle);
         widgets::path_box(ui, |ui| self.make_row(ui, idle));
         widgets::note(ui, Tone::Error, &self.failure);
         if !self.hash.is_empty() {
@@ -193,26 +186,6 @@ impl Screen {
                 .save_file()
         {
             self.out = Some(path);
-        }
-    }
-
-    fn patch_ui(&mut self, ui: &mut Ui, idle: bool) {
-        let name = self.patch.as_deref().map_or_else(
-            || "Keeper OS patch (ck-os-patch.tar.gz)".to_owned(),
-            format::file_name,
-        );
-        let below =
-            ["Without it the image is a plain desktop and cannot report to Keeper Hub. Needs WSL."];
-        let choose = widgets::path_row(ui, &name, &below, |ui| {
-            let button = Btn::new("Choose\u{2026}").small();
-            button.enabled(idle).show(ui).clicked()
-        });
-        if choose
-            && let Some(path) = rfd::FileDialog::new()
-                .add_filter("Keeper OS patch", &["gz"])
-                .pick_file()
-        {
-            self.patch = Some(path);
         }
     }
 
@@ -288,7 +261,7 @@ impl Screen {
             accel: accelerator().to_owned(),
             memory_mb: 4096,
             timeout: Duration::from_secs(90 * 60),
-            patch: self.patch.clone(),
+            patch: None,
         };
         self.busy = true;
         self.outdated = false;

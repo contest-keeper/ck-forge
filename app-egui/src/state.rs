@@ -16,10 +16,16 @@ struct Remembered {
     base_path: Option<PathBuf>,
     theme: Option<Theme>,
     mode: Option<Mode>,
+    /// Set by hand in `window.json` on a development machine: shows virtual disks and the write
+    /// into a file. The window never offers it, and keeps it when it rewrites the file.
+    #[serde(default)]
+    dev_tools: bool,
 }
 
 const REMEMBERED: &str = "window.json";
 
+// Independent flags of the window, not states of one thing.
+#[allow(clippy::struct_excessive_bools)]
 pub struct AppState {
     /// The profile being edited. Replace it with `use_profile`, never directly.
     pub profile: Option<Profile>,
@@ -47,6 +53,7 @@ pub struct AppState {
     mode_chosen: bool,
     /// The Forge folder, or none to remember and save nothing (tests and screenshots).
     data: Option<PathBuf>,
+    dev_tools: bool,
 }
 
 /// Writes beside `path` and renames, so a window that stops halfway leaves the old file whole.
@@ -57,6 +64,17 @@ fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.sync_all()?;
     drop(file);
     std::fs::rename(&temporary, path)
+}
+
+/// How often a stick tells the Hub it is alive. Not a setting: every profile gets this.
+const HEARTBEAT_S: u64 = 20;
+
+/// A profile as this window keeps it: the fixed heartbeat, and no limit on when the stick key works
+/// (the window has no way to set one, so an older limit would be a hidden rule).
+fn normalised(mut profile: Profile) -> Profile {
+    profile.settings.api.heartbeat_s = HEARTBEAT_S;
+    profile.stick_key_window = None;
+    profile
 }
 
 /// What went wrong with a profile, in the words of the earlier window.
@@ -83,7 +101,7 @@ impl AppState {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
         Self {
-            profile: Some(Profile::template()),
+            profile: Some(normalised(Profile::template())),
             profile_path: None,
             saved: None,
             profile_revision: 0,
@@ -99,12 +117,17 @@ impl AppState {
             },
             mode_chosen: remembered.mode.is_some(),
             data,
+            dev_tools: remembered.dev_tools,
         }
     }
 
     /// The Forge folder, when this window may use it.
     pub fn data(&self) -> Option<&Path> {
         self.data.as_deref()
+    }
+
+    pub fn dev_tools(&self) -> bool {
+        self.dev_tools
     }
 
     pub fn look(&self) -> Look {
@@ -147,6 +170,7 @@ impl AppState {
             base_path: self.base_path.clone(),
             theme: Some(self.look.theme),
             mode: self.mode_chosen.then_some(self.look.mode),
+            dev_tools: self.dev_tools,
         };
         // A choice that cannot be written lasts until the window closes.
         if let Ok(bytes) = serde_json::to_vec_pretty(&remembered) {
@@ -157,6 +181,7 @@ impl AppState {
 
     /// Takes a profile in as the one being edited. `path` is where it came from, none for a new one.
     pub fn use_profile(&mut self, profile: Profile, path: Option<PathBuf>) {
+        let profile = normalised(profile);
         self.saved = path.as_ref().and_then(|_| text_of(&profile));
         self.profile = Some(profile);
         self.profile_path = path;
@@ -238,6 +263,21 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_taken_in_has_the_fixed_heartbeat_and_no_key_limit() {
+        let mut state = AppState::load(None);
+        let mut profile = Profile::template();
+        profile.settings.api.heartbeat_s = 3;
+        profile.stick_key_window = Some(ck_admin_core::StickKeyWindow {
+            valid_from: String::new(),
+            valid_until: String::new(),
+        });
+        state.use_profile(profile, None);
+        let profile = state.profile.as_ref().expect("profile");
+        assert_eq!(profile.settings.api.heartbeat_s, 20);
+        assert!(profile.stick_key_window.is_none());
+    }
+
+    #[test]
     fn a_blocked_or_invalid_profile_is_not_saved_and_leaves_nothing() {
         let data = tempfile::tempdir().expect("folder");
         let mut state = AppState::load(Some(data.path().to_owned()));
@@ -272,6 +312,17 @@ mod tests {
         let again = AppState::load(Some(data.path().to_owned()));
         assert_eq!(again.base_path(), Some(Path::new("base.img")));
         assert_eq!(again.look().theme, Theme::Modern);
+    }
+
+    #[test]
+    fn the_development_switch_is_only_set_by_hand_and_survives_a_rewrite() {
+        let data = tempfile::tempdir().expect("folder");
+        assert!(!AppState::load(Some(data.path().to_owned())).dev_tools());
+        std::fs::write(data.path().join(REMEMBERED), r#"{"dev_tools":true}"#).expect("file");
+        let mut state = AppState::load(Some(data.path().to_owned()));
+        assert!(state.dev_tools());
+        state.set_theme(Theme::Classic);
+        assert!(AppState::load(Some(data.path().to_owned())).dev_tools());
     }
 
     #[test]

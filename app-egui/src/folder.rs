@@ -103,9 +103,60 @@ fn save_with_wallpaper(
     Ok(profile)
 }
 
+/// A profile saved on this computer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Local {
+    pub name: String,
+    pub path: PathBuf,
+    /// The id the Hub knows it by, once it was saved there.
+    pub hub_id: Option<String>,
+}
+
+/// The profiles in `data/profiles`, by name. A folder that holds no readable profile is left out.
+pub fn list_local(data: &Path) -> Vec<Local> {
+    let Ok(folders) = std::fs::read_dir(data.join("profiles")) else {
+        return Vec::new();
+    };
+    let mut found: Vec<Local> = folders
+        .flatten()
+        .filter_map(|folder| {
+            let path = folder.path().join("contest-profile.json");
+            let profile = Profile::load(&path).ok()?;
+            Some(Local {
+                name: profile.name,
+                path,
+                hub_id: profile.hub_id,
+            })
+        })
+        .collect();
+    found.sort_by_key(|profile| profile.name.to_lowercase());
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_profiles_are_listed_by_name_and_a_broken_folder_is_left_out() {
+        let data = tempfile::tempdir().expect("folder");
+        assert_eq!(list_local(data.path()), []);
+        let mut second = Profile::template();
+        "beta".clone_into(&mut second.name);
+        let mut first = Profile::template();
+        "Alpha".clone_into(&mut first.name);
+        save_in(data.path(), &second, None).expect("saved");
+        let (path, _) = save_in(data.path(), &first, None).expect("saved");
+        let broken = data.path().join("profiles").join("broken");
+        std::fs::create_dir_all(&broken).expect("folder");
+        std::fs::write(broken.join("contest-profile.json"), "{").expect("file");
+        let names: Vec<String> = list_local(data.path())
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["Alpha", "beta"]);
+        assert_eq!(list_local(data.path())[0].path, path);
+    }
 
     #[test]
     fn a_profile_folder_name_is_plain_and_ends_in_a_number() {
