@@ -28,7 +28,7 @@ cp LICENSE "$app/Contents/Resources/LICENSE.txt"
 
 # The app icon: a rounded square with the Keeper Forge monitor, drawn like the system icons (the
 # 824 point shape on a 1024 canvas), at every size the icon file holds.
-master=app-egui/installer/keeper-forge-macos.png
+master="app-egui/installer/keeper-forge-macos.png"
 mkdir "$icons/keeper-forge.iconset"
 # The file names are the ones iconutil expects: each size, and its double for Retina screens.
 for spec in "16 icon_16x16" "32 icon_16x16@2x" "32 icon_32x32" "64 icon_32x32@2x" \
