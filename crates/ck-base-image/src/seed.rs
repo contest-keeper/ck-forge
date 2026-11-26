@@ -8,7 +8,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::Error;
 
@@ -62,12 +62,21 @@ fn has_end_of_headers(bytes: &[u8]) -> bool {
 
 fn answer(mut stream: TcpStream, user_data: &str) {
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    // One deadline for the whole header read, not per read: a peer that drips a byte at a time must not hold the
+    // seed thread (it serves one connection at a time and Drop joins it).
+    let deadline = Instant::now() + Duration::from_secs(2);
     // A request can arrive in several pieces. Answering and closing before the rest is read resets the
     // connection, so read up to the end of the headers.
     let mut request = [0u8; 2048];
     let mut count = 0;
     while count < request.len() && !has_end_of_headers(&request[..count]) {
+        let Some(left) = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+        else {
+            break;
+        };
+        let _ = stream.set_read_timeout(Some(left));
         match stream.read(&mut request[count..]) {
             Ok(0) | Err(_) => break,
             Ok(read) => count += read,
@@ -124,5 +133,30 @@ mod tests {
         let mut text = String::new();
         stream.read_to_string(&mut text).expect("read");
         assert!(text.ends_with("echo hi\n"));
+    }
+
+    #[test]
+    fn gives_up_on_a_peer_that_drips_the_request_slowly() {
+        let seed = Seed::start("x".to_owned()).expect("start");
+        let mut stream = TcpStream::connect(("127.0.0.1", seed.port)).expect("connect");
+        let mut writer = stream.try_clone().expect("clone");
+        let dripper = thread::spawn(move || {
+            for _ in 0..20 {
+                if writer.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(400));
+            }
+        });
+        let started = Instant::now();
+        let mut text = String::new();
+        let _ = stream.read_to_string(&mut text);
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "took {:?}",
+            started.elapsed()
+        );
+        drop(stream);
+        dripper.join().expect("dripper");
     }
 }
