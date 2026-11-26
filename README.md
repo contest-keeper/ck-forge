@@ -1,8 +1,8 @@
 # ck-forge
 
 Keeper Forge prepares Keeper OS sticks for a contest: settings, branding and writing the image
-to USB drives. It is a command line (`ck-forge`) and a window (`app/` and `ui/`) that do the same
-work through the same code (`crates/ck-admin-core`, `crates/ck-writer`).
+to USB drives. It is a command line (`ck-forge`) and a window (`app-egui/`, built with egui) that do
+the same work through the same code (`crates/ck-admin-core`, `crates/ck-writer`).
 
 Work in progress.
 
@@ -16,7 +16,11 @@ change, so these links always give the newest release:
   newer; it installs for all users, because the window starts the writer with administrator rights
   and that program must sit where only administrators can change it)
 - `.../releases/latest/download/ck-forge-windows-x64.exe`: the command line tool alone
+- `.../releases/latest/download/keeper-forge-macos-universal.dmg`: the window for macOS (Intel and
+  Apple silicon), when the macOS build is on; open it and drag the app to Applications
 - `.../releases/latest/download/SHA256SUMS.txt`: the checksum of every file
+
+Preview builds of `develop` have the same file names under `.../releases/download/dev/`.
 
 The files are not code-signed yet, so Windows SmartScreen may warn ("More info", then "Run anyway").
 Check what you downloaded before running it:
@@ -28,34 +32,36 @@ gh attestation verify .\keeper-forge-setup-x64.exe --repo contest-keeper/ck-forg
 
 The second command proves the file was built by this repository's release workflow.
 
-Installed copies look for a newer build when they start and offer to install it, put it off, or skip
-that version. Every merge to `develop` publishes a preview build to the develop feed. Releases do not update
-installed copies yet.
+Installed copies look for a newer build when they start and offer to install it. On Windows the window
+downloads the installer, checks its signature and runs it. On macOS it downloads the disk image,
+checks it and opens it, and you drag the app to Applications. Every merge to `develop` publishes a
+preview build to the develop feed; releases publish their own feed.
 
 To make an update mandatory, set `min-version.txt` to the oldest version that may still run (for
 example the version being released). A copy older than that must update before it can be used.
 
-Updates are signed. The key is kept in the develop environment's Azure Key Vault, made by the pipeline
-on its first run and read from there afterwards, so nothing is stored in GitHub.
+Updates are signed with `tools/update-signer`. Each environment has its own key in its Azure Key Vault,
+made by the pipeline on its first run and read from there afterwards, so no key is stored in GitHub.
+The key must never be replaced: installed copies would refuse every later update. A release therefore
+needs the production Hub (and its Key Vault) to be deployed.
+
+The installer replaces an older Keeper Forge on the same PC and keeps the profiles and the Hub
+sign-in. It always installs under Program Files.
 
 To build the installer yourself: `tools/build-installer.ps1`.
 
 ## The window
 
-The window has four steps: edit and save a contest **profile**, make a stick **image** from the base
-image, **write** it to a USB stick, and tell the **Hub** about the sticks. Writing a stick opens the
+The window has five pages: sign in to the **Hub**, edit and save a contest **Profile**, pick or make
+base **Images**, see and retire **Sticks**, and **Write** them to USB. Writing a stick opens the
 Windows permission prompt; the window itself runs without administrator rights.
 
-Build and run it on Windows (needs the toolchain in `ck-os/docs/dev-setup.md`, and Node with pnpm):
+Build and run it (on Windows with the toolchain in `ck-os/docs/dev-setup.md`):
 
 ```powershell
-cd ui;  pnpm install; pnpm build; cd ..
 cargo build -p ck-forge                      # the helper that writes the stick
-mkdir app/binaries -Force; copy target/debug/ck-forge.exe app/binaries/ck-forge-x86_64-pc-windows-gnu.exe   # the build checks the helper is there
-cd app; cargo run --features custom-protocol
+cargo run --manifest-path app-egui/Cargo.toml
 ```
-
-For work on the page itself, run `pnpm dev` in `ui/` and `cargo run` in `app/`.
 
 ## The command line
 
@@ -97,4 +103,4 @@ the computer runs from.
 
 On macOS build the command line tool with `cargo build --release -p ck-forge` and run it with `sudo`
 for the write (`sudo ./target/release/ck-forge stick write stick.img --disk 3`); `stick list` needs no `sudo`. Only
-external removable USB sticks are offered. The Forge window (Tauri) is Windows only. `app-egui` runs on macOS; its Write page lists the disks and prints the `sudo` command. To try the writer without a stick, see [docs/testing-the-writer.md](docs/testing-the-writer.md).
+external removable USB sticks are offered. The window runs on macOS too; its Write page lists the disks and prints the `sudo` command. To try the writer without a stick, see [docs/testing-the-writer.md](docs/testing-the-writer.md).

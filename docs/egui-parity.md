@@ -1,45 +1,36 @@
-# egui window: parity with the Svelte window
+# The window: screens and Windows tests
 
-The egui window (`app-egui/`) replaces `app/` and `ui/` only after every row below is ticked and
-tested on Windows (R6.3 also needs the user's agreement). Each row is one of the 24 commands of
-`app/src/main.rs`, in the order the screens are built. Every row has a `ck-admin-core` function and
-a `ck-forge` command already, so a screen only calls the function.
+The window is `app-egui/`. It replaced the earlier web-based window; that code is in the git history.
+Every screen calls a `ck-admin-core` function that also has a `ck-forge` command.
 
-| Screen | Window command | Engine function | CLI | egui |
-|---|---|---|---|---|
-| Hub sign-in | `hub_sign_in`, `hub_sign_out`, `hub_status` | `sign_in_url`, `sign_in_with_code`, `sign_out`, `vault` | `hub sign-in`, `hub sign-out`, `hub status` | [x] |
-| Profile editor | `new_profile`, `open_profile`, `save_profile`, `check_profile` | `Profile` | `profile new`, `profile check` | [x] (fields: name, contest, team, site, computer name, USB label, server, sites, home page, welcome text, bookmarks, Bluetooth, contest end, Wi-Fi name, recording: built, Windows test pending; the Wi-Fi password is typed when sticks are written, never saved in the profile) |
-| Profile editor | `save_profile_in_forge_folder` | `Profile::save` into the app data folder | none needed | [x] built, Windows test pending |
-| Profile editor | `add_wallpaper` | `add_wallpaper` | `profile wallpaper` | [x] |
-| Profile editor | `wallpaper_preview` | `wallpaper_data_url` | none needed | [x] built, Windows test pending |
-| Profile editor | `hub_list_profiles`, `hub_load_profile`, `hub_save_profile` | `list_profiles`, `load_hub_profile`, `save_hub_profile` | `hub profiles`, `hub pull`, `hub push` | [x] built, Windows test pending |
-| Image picker | `list_catalog`, `make_base_image`, `import_base_image` | `catalog`, `create_base_image`, `import_image` | `image catalog`, `image create`, `image import` | [x] built, Windows test pending |
-| Image picker | `list_hub_images`, `download_hub_image` | `list_hub_images`, `download_hub_image` | `hub images`, `hub download` | [x] |
-| Image picker | `signature_required`, `enrolment_supported` | `requires_signed_settings`, `supports_enrolment` | `image support` | [x] |
-| Write sticks | `list_disks`, `write_stick` | `ck_writer::list_disks`, the elevated `ck-forge stick write` with its JSON progress file | `stick list`, `stick write` | [x] built, Windows test pending (UAC prompt, progress and cancel need a real run) |
-| Retire and re-key | `hub_list_sticks`, `hub_retire_stick` | `list_sticks`, `retire_stick_credential` | `hub sticks`, `hub retire` | [x] |
+| Screen | Engine function | CLI | Window |
+| --- | --- | --- | --- |
+| Hub sign-in | `sign_in_url`, `sign_in_with_code`, `sign_out`, `vault` | `hub sign-in`, `hub sign-out`, `hub status` | [x] |
+| Profile editor | `Profile` | `profile new`, `profile check` | [x] (fields: name, contest, team, site, computer name, USB label, server, sites, home page, welcome text, bookmarks, Bluetooth, contest end, Wi-Fi name, recording: built, Windows test pending; the Wi-Fi password is typed when sticks are written, never saved in the profile) |
+| Profile editor | `Profile::save` into the app data folder | none needed | [x] built, Windows test pending |
+| Profile editor | `add_wallpaper` | `profile wallpaper` | [x] |
+| Profile editor | `wallpaper_data_url` | none needed | [x] built, Windows test pending |
+| Profile editor | `list_profiles`, `load_hub_profile`, `save_hub_profile` | `hub profiles`, `hub pull`, `hub push` | [x] built, Windows test pending |
+| Image picker | `catalog`, `create_base_image`, `import_image` | `image catalog`, `image create`, `image import` | [x] built, Windows test pending |
+| Image picker | `list_hub_images`, `download_hub_image` | `hub images`, `hub download` | [x] |
+| Image picker | `requires_signed_settings`, `supports_enrolment` | `image support` | [x] |
+| Write sticks | `ck_writer::list_disks`, the elevated `ck-forge stick write` with its JSON progress file | `stick list`, `stick write` | [x] built, Windows test pending (UAC prompt, progress and cancel need a real run) |
+| Retire and re-key | `list_sticks`, `retire_stick_credential` | `hub sticks`, `hub retire` | [x] |
 
-Also carried over: the updater (`app/src/update.rs`, now `app-egui/src/update.rs`): built, Windows test pending. It looks at the feed named by `CK_UPDATE_FEED`, only when `CK_UPDATE_PUBKEY` was set at build time, and installs only an installer whose minisign signature checks out.
+## Still to be tested on real machines
 
-## R6.3 checklist (prepared, not done)
+"Built, Windows test pending" above means no one has run that screen on a Windows PC yet.
 
-R6.3 removes `app/`, `ui/` and their CI jobs. It starts only when the user agrees and every row above
-is ticked. Steps, in order:
+1. On Windows against the dev Hub: sign in, edit and save a profile (including Wi-Fi and recording),
+   download a base image, write and verify two sticks, retire a key.
+2. The elevated write: permission prompt, progress and cancel; boot a written stick.
+3. Installer and updates on Windows: install over an older Keeper Forge (the old one is gone, profiles
+   and sign-in are kept), then let an older build find, verify and install a newer one.
+4. macOS: open the disk image, run the app, let an older build offer and open a newer image.
 
-1. Parity: every row of the table is `[x]`, and each screen was used on a Windows PC against the dev Hub:
-   sign in, edit and save a profile, download a base image, write and verify two sticks, retire a key.
-   Wi-Fi (including its secret handling) and recording are also required here: both must be implemented in
-   the egui window and tested on Windows, even where the profile-editor row is already ticked.
-2. The elevated write works from the egui window (UAC prompt, JSON progress file, cancel) and a stick
-   booted from it passes the VM test.
-3. The updater and the installer of the egui window exist (`app/src/update.rs`, `tauri.conf.json`
-   `bundle` and `updater` settings, the release workflow), and one release was installed over the old one.
-   The updater is a parity row of its own: on Windows, an older egui build must find the newer release,
-   download it, verify it and restart into it.
-4. Remove, in one PR: `app/`, `ui/`, the `window` and `ui` jobs of `.github/workflows/pr.yml`, the
-   `app` and `ui` steps of `release.yml`, `tools/` scripts that only the window uses, and the
-   Svelte and Tauri words in `README.md`, `AGENTS.md`, `CLAUDE.md` and `docs/`.
-5. In `.github`, drop `ui / check` from the required checks of this repository (a user task: branch
-   protection is not editable from a session).
-6. Check: `rg -i "tauri|svelte|pnpm" .` finds nothing that matters, `cargo machete` is clean, the
-   release workflow builds the egui installer.
+## Known gaps
+
+- Paths are typed: there are no file pickers.
+- No light or dark setting, and the base image path is not remembered.
+- Updates are looked for only when the window opens.
+- Hub sign-in has no Cancel and does not re-check a saved session.
