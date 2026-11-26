@@ -531,16 +531,38 @@ fn elevated_arguments(
     progress_file: &Path,
     cancel_file: &Path,
 ) -> Result<Vec<String>, String> {
+    write_arguments(
+        quote,
+        images,
+        disks,
+        confirmed,
+        allow_virtual,
+        progress_file,
+        cancel_file,
+    )
+}
+
+/// The arguments with each path written by `path_text`: in quotes for the Windows argument string,
+/// as it is for a shell that quotes every word itself.
+fn write_arguments(
+    path_text: impl Fn(&Path) -> Result<String, String>,
+    images: &[PathBuf],
+    disks: &[u32],
+    confirmed: &[(u32, String)],
+    allow_virtual: bool,
+    progress_file: &Path,
+    cancel_file: &Path,
+) -> Result<Vec<String>, String> {
     let mut arguments = vec!["stick".to_owned(), "write".to_owned()];
     for image in images {
-        arguments.push(quote(image)?);
+        arguments.push(path_text(image)?);
     }
     arguments.extend([
         "--yes".to_owned(),
         "--progress-file".to_owned(),
-        quote(progress_file)?,
+        path_text(progress_file)?,
         "--cancel-file".to_owned(),
-        quote(cancel_file)?,
+        path_text(cancel_file)?,
     ]);
     for disk in disks {
         arguments.push("--disk".to_owned());
@@ -557,27 +579,98 @@ fn elevated_arguments(
     Ok(arguments)
 }
 
-/// Where `ck-forge.exe` may be: next to this program, and for a development build also the
+/// Where the helper may be: next to this program, and for a development build also the
 /// repository's build folder. That folder is a path of the machine the program was built on, so a
 /// released program must never start something from it with administrator rights.
 fn helper_places(here: &Path, development: bool) -> Vec<PathBuf> {
-    let mut places = vec![here.with_file_name("ck-forge.exe")];
+    let mut places = vec![here.with_file_name(HELPER)];
     if development {
-        places.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/debug/ck-forge.exe"));
+        places.push(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../target/debug")
+                .join(HELPER),
+        );
     }
     places
 }
+
+/// The command line tool that does the writing, beside this program.
+const HELPER: &str = if cfg!(windows) {
+    "ck-forge.exe"
+} else {
+    "ck-forge"
+};
 
 fn forge_exe() -> Result<PathBuf, String> {
     let here = std::env::current_exe().map_err(|e| e.to_string())?;
     helper_places(&here, cfg!(debug_assertions))
         .into_iter()
         .find(|path| path.is_file())
-        .ok_or_else(|| "ck-forge.exe was not found next to this program".to_owned())
+        .ok_or_else(|| format!("{HELPER} was not found next to this program"))
 }
 
-/// Writes `images` to the disks with `ck-forge stick write`, started through the Windows
-/// permission prompt, and follows its progress file. When `cancel` is set the cancel file is
+/// `text` as one single-quoted word of a POSIX shell: only the quote itself is special inside.
+pub(super) fn quote_posix(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// The paths and arguments as one line for a POSIX shell, every word quoted. It holds no password:
+/// the images carry the settings.
+// Used where the macOS permission prompt is started; the line is built, and tested, everywhere.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn shell_line(exe: &Path, arguments: &[String]) -> String {
+    let mut words = vec![quote_posix(&exe.display().to_string())];
+    words.extend(arguments.iter().map(|word| quote_posix(word)));
+    words.join(" ")
+}
+
+/// Starts the helper with administrator rights, hidden, through the permission prompt of this
+/// system. The program and its arguments are never part of a script text that could be changed by
+/// a file name: they travel in environment variables or as separate arguments.
+#[cfg(windows)]
+fn start_elevated(exe: &Path, arguments: &[String]) -> Result<std::process::Child, String> {
+    let mut powershell = Command::new("powershell.exe");
+    powershell
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Process -FilePath $env:CK_EXE -ArgumentList $env:CK_ARGS -Verb RunAs \
+                 -WindowStyle Hidden -Wait",
+        ])
+        .env("CK_EXE", exe)
+        .env("CK_ARGS", arguments.join(" "));
+    // The elevated helper starts hidden, but PowerShell itself would still show a console.
+    ck_writer::without_console_window(&mut powershell)
+        .spawn()
+        .map_err(|e| format!("could not start the writer: {e}"))
+}
+
+/// On macOS: the system's own password dialog, through `osascript`. The command line is the
+/// script's argument, not part of the script, and every word of it is quoted for the shell.
+#[cfg(target_os = "macos")]
+fn start_elevated(exe: &Path, arguments: &[String]) -> Result<std::process::Child, String> {
+    Command::new("osascript")
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "do shell script (item 1 of argv) with administrator privileges",
+            "-e",
+            "end run",
+        ])
+        .arg(shell_line(exe, arguments))
+        .spawn()
+        .map_err(|e| format!("could not start the writer: {e}"))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn start_elevated(_exe: &Path, _arguments: &[String]) -> Result<std::process::Child, String> {
+    Err("this system writes sticks from a terminal, with the command the window shows".to_owned())
+}
+
+/// Writes `images` to the disks with `ck-forge stick write`, started through the permission prompt
+/// of the system, and follows its progress file. When `cancel` is set the cancel file is
 /// created, which the helper sees between blocks.
 fn write_elevated(
     images: &[PathBuf],
@@ -591,31 +684,28 @@ fn write_elevated(
     let cancel_file = std::env::temp_dir().join(format!("ck-write-{pid}.cancel"));
     let _ = std::fs::remove_file(&progress_file);
     let _ = std::fs::remove_file(&cancel_file);
-    let arguments = elevated_arguments(
-        images,
-        &request.disks,
-        &request.confirmed,
-        request.allow_virtual,
-        &progress_file,
-        &cancel_file,
-    )?;
-    // The program and its arguments go in environment variables, so nothing chosen in the
-    // window is ever part of the PowerShell command text.
-    let mut powershell = Command::new("powershell.exe");
-    powershell
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Start-Process -FilePath $env:CK_EXE -ArgumentList $env:CK_ARGS -Verb RunAs \
-                 -WindowStyle Hidden -Wait",
-        ])
-        .env("CK_EXE", &exe)
-        .env("CK_ARGS", arguments.join(" "));
-    // The elevated helper starts hidden, but PowerShell itself would still show a console.
-    let mut child = ck_writer::without_console_window(&mut powershell)
-        .spawn()
-        .map_err(|e| format!("could not start the writer: {e}"))?;
+    // A shell quotes every word itself, so there the paths are given as they are.
+    let arguments = if cfg!(windows) {
+        elevated_arguments(
+            images,
+            &request.disks,
+            &request.confirmed,
+            request.allow_virtual,
+            &progress_file,
+            &cancel_file,
+        )?
+    } else {
+        write_arguments(
+            |path| Ok(path.display().to_string()),
+            images,
+            &request.disks,
+            &request.confirmed,
+            request.allow_virtual,
+            &progress_file,
+            &cancel_file,
+        )?
+    };
+    let mut child = start_elevated(&exe, &arguments)?;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
@@ -756,6 +846,28 @@ mod tests {
     }
 
     #[test]
+    fn the_macos_command_line_quotes_every_word_and_holds_no_password() {
+        let arguments = write_arguments(
+            |path| Ok(path.display().to_string()),
+            &[PathBuf::from("/tmp/it's a.img")],
+            &[3],
+            &[(3, "ab12".to_owned())],
+            false,
+            Path::new("/tmp/p.json"),
+            Path::new("/tmp/stop"),
+        )
+        .expect("arguments");
+        let line = shell_line(
+            Path::new("/Applications/Keeper Forge.app/ck-forge"),
+            &arguments,
+        );
+        assert!(line.starts_with("'/Applications/Keeper Forge.app/ck-forge' 'stick' 'write' "));
+        // The quote inside the name cannot end the word and start another command.
+        assert!(line.contains(r"'/tmp/it'\''s a.img'"));
+        assert!(line.ends_with("'--confirmed' '3=ab12'"));
+    }
+
+    #[test]
     fn the_elevated_command_line_holds_paths_and_disk_numbers_and_never_the_wifi_password() {
         let secret = "correct horse battery";
         let request = Request {
@@ -825,7 +937,7 @@ mod tests {
     #[test]
     fn only_a_development_build_looks_for_the_helper_in_the_build_folder() {
         let here = Path::new(r"C:\Program Files\Keeper Forge\keeper-forge.exe");
-        let beside = PathBuf::from(r"C:\Program Files\Keeper Forge\ck-forge.exe");
+        let beside = here.with_file_name(HELPER);
         assert_eq!(helper_places(here, false), std::slice::from_ref(&beside));
         let development = helper_places(here, true);
         assert_eq!(development.len(), 2);

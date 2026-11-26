@@ -88,8 +88,8 @@ impl Page {
         widgets::card(ui, |ui| self.write.erase_ui(ui, name, locked));
         widgets::note(ui, Tone::Error, &self.sticks.old_failure);
         self.write.dialog_ui(ui.ctx());
-        // Outside Windows this is the only write that builds from the saved profile in the window.
-        if dev || !cfg!(windows) {
+        // Where the window cannot write sticks, this is the only write from the saved profile.
+        if dev || !write::CAN_WRITE {
             let title = if dev {
                 "Development: test the write into a file"
             } else {
