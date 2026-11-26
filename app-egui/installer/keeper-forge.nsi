@@ -38,7 +38,6 @@ Var PreviewDir
 Var HadDesktop
 Var Busy
 
-
 ; Relative paths here are read from the folder of this script.
 !define MUI_ICON "keeper-forge.ico"
 !define MUI_UNICON "keeper-forge.ico"

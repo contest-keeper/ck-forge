@@ -1,5 +1,6 @@
 //! The window's part of the updater: the check when the window opens, the offer, the download and
-//! the restart. What is decided (is it newer, is it mandatory, is it signed) lives in `update.rs`.
+//! the restart (on macOS, the opened disk image). What is decided (is it newer, is it mandatory, is
+//! it signed) lives in `update.rs`.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
@@ -10,7 +11,7 @@ use crate::update::{self, Available};
 enum Event {
     Found(Result<Option<Available>, String>),
     Progress(u64, u64),
-    /// The installer was checked and started: this window has to close.
+    /// The download was checked and the installer started or the disk image opened.
     Started(Result<(), String>),
 }
 
@@ -19,6 +20,8 @@ enum State {
     Quiet,
     Offer(Available),
     Downloading(u64, u64),
+    /// macOS: the disk image is open and the person takes it from here.
+    Opened,
     /// The download or the start failed: the update stays, so it can be tried again.
     Failed(String),
 }
@@ -79,6 +82,15 @@ impl Banner {
                 ui.label(format!("Downloading the update: {done} of {total} MB"));
                 ui.spinner();
             }
+            State::Opened => {
+                ui.label(
+                    "The disk image is open. Close Keeper Forge, then drag the new Keeper Forge to Applications and replace the old one.",
+                );
+                if ui.button("Close Keeper Forge").clicked() {
+                    ui.ctx()
+                        .send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+                }
+            }
             State::Failed(why) => {
                 ui.colored_label(ui.visuals().error_fg_color, format!("Update: {why}"));
                 if let Some(update) = self.pending.clone()
@@ -97,12 +109,14 @@ impl Banner {
                 update.version
             )
         } else {
-            format!(
-                "Keeper Forge {} is available. The window closes and reopens when it is installed.",
-                update.version
-            )
+            format!("Keeper Forge {} is available.", update.version)
         };
         ui.label(text);
+        ui.label(if cfg!(target_os = "macos") {
+            "Install downloads the disk image and opens it. You then drag Keeper Forge to Applications."
+        } else {
+            "The window closes and reopens when it is installed."
+        });
         ui.horizontal(|ui| {
             if ui.button("Install").clicked() {
                 self.download(update.clone(), ui.ctx().clone());
@@ -142,6 +156,9 @@ impl Banner {
                 // Offline or no feed yet: not worth bothering the admin, the next start tries again.
                 Event::Found(Ok(None) | Err(_)) => {}
                 Event::Progress(done, total) => self.state = State::Downloading(done, total),
+                Event::Started(Ok(())) if cfg!(target_os = "macos") => {
+                    self.state = State::Opened;
+                }
                 Event::Started(Ok(())) => {
                     ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
                 }
@@ -172,7 +189,7 @@ impl Banner {
                 let _ = sender.send(Event::Progress(done, total));
                 ctx.request_repaint();
             })
-            .and_then(|setup| update::install_and_restart(&setup));
+            .and_then(|file| update::install(&file));
             let _ = sender.send(Event::Started(result));
             ctx.request_repaint();
         });

@@ -3,8 +3,11 @@
 //! the same minisign key, and honours `min_version`: a copy older than that must update before it
 //! can be used; any other update can be installed, put off, or skipped for good.
 //!
-//! An installer is never run unless its signature checks out against the public key that was built
-//! into this program. A build without a key (a development build) does not look for updates.
+//! On Windows the download is the installer, which is run; on macOS it is the disk image, which is
+//! opened so the person can drag the new app over the old one.
+//!
+//! A download is never run or opened unless its signature checks out against the public key that was
+//! built into this program. A build without a key (a development build) does not look for updates.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -34,8 +37,15 @@ pub const VERSION: &str = match option_env!("CK_FORGE_VERSION") {
     None => env!("CARGO_PKG_VERSION"),
 };
 
-/// The key of this system in the feed's `platforms`.
-const PLATFORM: &str = "windows-x86_64";
+/// This system's key in the feed's `platforms` and the name its download is saved under. None for a
+/// system that gets no updates this way.
+fn target(os: &str) -> Option<(&'static str, &'static str)> {
+    match os {
+        "windows" => Some(("windows-x86_64", "keeper-forge-update-setup.exe")),
+        "macos" => Some(("darwin-universal", "keeper-forge-update.dmg")),
+        _ => None,
+    }
+}
 
 /// No installer is larger than this, so a feed cannot make the window fill the disk.
 const MAX_INSTALLER_BYTES: u64 = 300 * 1024 * 1024;
@@ -67,13 +77,13 @@ pub struct Available {
 
 /// Whether this program can check an update at all: only a build with the public key can.
 pub fn enabled() -> bool {
-    cfg!(windows) && PUBKEY.is_some()
+    target(std::env::consts::OS).is_some() && PUBKEY.is_some()
 }
 
-/// Reads a feed: the newer build for this system, or none when `current` is up to date or the feed
-/// has no build for this system. An unreadable feed is an error and is never mistaken for "up to
-/// date" by the caller, which only shows it.
-pub fn newer_in(feed: &str, current: &str) -> Result<Option<Available>, String> {
+/// Reads a feed: the newer build for the system `os`, or none when `current` is up to date or the
+/// feed has no build for it. An unreadable feed is an error and is never mistaken for "up to date"
+/// by the caller, which only shows it.
+pub fn newer_in(feed: &str, current: &str, os: &str) -> Result<Option<Available>, String> {
     let feed: Feed = serde_json::from_str(feed).map_err(|e| format!("unreadable feed: {e}"))?;
     let current =
         Version::parse(current).map_err(|e| format!("this version is unreadable: {e}"))?;
@@ -81,7 +91,7 @@ pub fn newer_in(feed: &str, current: &str) -> Result<Option<Available>, String> 
     if newest <= current {
         return Ok(None);
     }
-    let Some(platform) = feed.platforms.get(PLATFORM) else {
+    let Some(platform) = target(os).and_then(|(key, _)| feed.platforms.get(key)) else {
         return Ok(None);
     };
     // Only a secure address, so the installer cannot be swapped on the way. The signature is
@@ -125,7 +135,7 @@ pub fn check() -> Result<Option<Available>, String> {
         .limit(MAX_FEED_BYTES)
         .read_to_string()
         .map_err(|e| format!("could not read the update feed: {e}"))?;
-    newer_in(&text, VERSION)
+    newer_in(&text, VERSION, std::env::consts::OS)
 }
 
 /// Checks `data` against the signature of the feed with the key built into this program.
@@ -192,7 +202,8 @@ pub fn download(
         return Err("the update is larger than any installer should be".to_owned());
     }
     std::fs::create_dir_all(folder).map_err(|e| format!("could not make the folder: {e}"))?;
-    let setup = folder.join("keeper-forge-update-setup.exe");
+    let (_, name) = target(std::env::consts::OS).ok_or("this system gets no updates")?;
+    let setup = folder.join(name);
     let mut reader = answer
         .into_body()
         .into_reader()
@@ -228,10 +239,33 @@ pub fn download(
     Ok(setup)
 }
 
+/// Starts the installation of the file `download` returned, which is the only file to give it: that
+/// one was checked against its signature.
+pub fn install(file: &Path) -> Result<(), String> {
+    if cfg!(target_os = "macos") {
+        open_image(file)
+    } else {
+        install_and_restart(file)
+    }
+}
+
+/// Shows the disk image in Finder. The program does not replace itself.
+fn open_image(image: &Path) -> Result<(), String> {
+    let status = Command::new("/usr/bin/open")
+        .arg(image)
+        .status()
+        .map_err(|e| format!("could not open the disk image: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("could not open the disk image: {status}"))
+    }
+}
+
 /// Runs the checked installer and starts the program again once it is done. The installer is per
 /// machine, so it goes through the Windows permission prompt. This program must close right after:
 /// the installer cannot replace a program that is running, so a helper waits a moment first.
-pub fn install_and_restart(setup: &Path) -> Result<(), String> {
+fn install_and_restart(setup: &Path) -> Result<(), String> {
     let app = std::env::current_exe().map_err(|e| e.to_string())?;
     // The paths go in environment variables, so nothing here is part of the command text.
     let script = "Start-Sleep -Seconds 2; \
@@ -278,6 +312,31 @@ mod tests {
 
     const SETUP: &str =
         "https://github.com/contest-keeper/ck-forge/releases/download/dev/setup.exe";
+
+    /// The feed as Windows reads it, whatever system runs the tests.
+    fn newer_in(feed: &str, current: &str) -> Result<Option<Available>, String> {
+        super::newer_in(feed, current, "windows")
+    }
+
+    #[test]
+    fn each_system_takes_its_own_download_from_the_feed() {
+        let text = r#"{"version":"9.0.0","platforms":{
+            "windows-x86_64":{"signature":"w","url":"https://x/setup.exe"},
+            "darwin-universal":{"signature":"m","url":"https://x/forge.dmg"}}}"#;
+        for (os, url) in [
+            ("windows", "https://x/setup.exe"),
+            ("macos", "https://x/forge.dmg"),
+        ] {
+            let found = super::newer_in(text, "0.1.0", os)
+                .expect("feed")
+                .expect("newer");
+            assert_eq!(found.url, url);
+        }
+        assert_eq!(super::newer_in(text, "0.1.0", "linux"), Ok(None));
+        // `open` picks what to do by the name, so the disk image must keep its ending.
+        let name = target("macos").expect("macOS").1;
+        assert_eq!(Path::new(name).extension(), Some("dmg".as_ref()));
+    }
 
     #[test]
     fn a_newer_preview_is_found_and_the_same_or_older_one_is_not() {
