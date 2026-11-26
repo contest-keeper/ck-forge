@@ -46,7 +46,13 @@ runs:
         # The key must never change once an app has been built with its public half, or installed
         # copies would refuse every later update. So it is made only when it is missing. The caller's
         # concurrency group keeps two runs from making it at the same time.
-        if ! az keyvault secret show --vault-name "$vault" --name forge-update-key --query id -o tsv > /dev/null 2>&1; then
+        # Only "not found" counts as missing: any other failure stops the job, so a passing Azure or
+        # permission error cannot replace the key.
+        if ! error=$(az keyvault secret show --vault-name "$vault" --name forge-update-key --query id -o tsv 2>&1 > /dev/null); then
+          case "$error" in
+            *SecretNotFound*) ;;
+            *) echo "$error" >&2; exit 1 ;;
+          esac
           dir=$(mktemp -d)
           cargo run --release --locked --manifest-path tools/update-signer/Cargo.toml -- generate "$dir/private" "$dir/public"
           az keyvault secret set --vault-name "$vault" --name forge-update-pubkey --file "$dir/public" --output none
