@@ -932,13 +932,16 @@ pub fn path_row<R>(
             ui,
             |ui| {
                 // A name alone sits in the middle of the box, beside the taller buttons.
-                let alone = if below.is_empty() { 6.0 } else { 0.0 };
-                ui.add_space(alone);
-                strong(ui, name);
-                for line in below {
-                    hint(ui, line);
+                if below.is_empty() {
+                    ui.add_space(6.0);
+                    strong(ui, name);
+                    ui.add_space(6.0);
+                } else {
+                    strong(ui, name);
+                    for line in below {
+                        hint(ui, line);
+                    }
                 }
-                ui.add_space(alone);
             },
             trailing,
         )
