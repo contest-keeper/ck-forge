@@ -80,7 +80,7 @@ pub fn wheel(harness: &mut Harness<'_>, scroll: f32) {
 #[test]
 #[ignore = "writes pictures; needs CK_SHOTS_DIR and a graphics adapter"]
 fn shots_of_the_shell() {
-    capture("make-default", 0.0, |forge| {
+    capture("shell-make-default", 0.0, |forge| {
         forge.step = MAKE;
         forge.state.profile_path = Some(PathBuf::from("contest-profile.json"));
         forge
