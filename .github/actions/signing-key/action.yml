@@ -1,8 +1,9 @@
 name: Update signing key
 description: >
   Reads the key that signs Keeper Forge updates from the environment's Key Vault, or makes it on the
-  very first run. Run it after pnpm install and with the job's environment set, so Azure accepts the
-  sign-in. Sets TAURI_SIGNING_PRIVATE_KEY for the build and returns the public key to build into the app.
+  very first run. Run it after the checkout, with Rust installed and the job's environment set, so
+  Azure accepts the sign-in. Sets CK_UPDATE_SIGNING_KEY for tools/update-signer and returns the public
+  key to build into the app.
 
 inputs:
   environment:
@@ -47,9 +48,7 @@ runs:
         # concurrency group keeps two runs from making it at the same time.
         if ! az keyvault secret show --vault-name "$vault" --name forge-update-key --query id -o tsv > /dev/null 2>&1; then
           dir=$(mktemp -d)
-          node ui/node_modules/@tauri-apps/cli/tauri.js signer generate --ci --write-keys "$dir/key" --password ""
-          tr -d '\r\n' < "$dir/key" > "$dir/private"
-          tr -d '\r\n' < "$dir/key.pub" > "$dir/public"
+          cargo run --release --locked --manifest-path tools/update-signer/Cargo.toml -- generate "$dir/private" "$dir/public"
           az keyvault secret set --vault-name "$vault" --name forge-update-pubkey --file "$dir/public" --output none
           # Last, so that finding the private key means the public one is there too.
           az keyvault secret set --vault-name "$vault" --name forge-update-key --file "$dir/private" --output none
@@ -58,6 +57,5 @@ runs:
 
         private=$(az keyvault secret show --vault-name "$vault" --name forge-update-key --query value -o tsv)
         echo "::add-mask::$private"
-        echo "TAURI_SIGNING_PRIVATE_KEY=$private" >> "$GITHUB_ENV"
-        echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+        echo "CK_UPDATE_SIGNING_KEY=$private" >> "$GITHUB_ENV"
         echo "pubkey=$(az keyvault secret show --vault-name "$vault" --name forge-update-pubkey --query value -o tsv)" >> "$GITHUB_OUTPUT"
