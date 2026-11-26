@@ -96,3 +96,9 @@ jobs:
           tools/make-egui-licences.sh egui-out/THIRD-PARTY-LICENSES.txt
           tools/make-egui-installer.sh 0.0.0 egui-out/THIRD-PARTY-LICENSES.txt egui-out/keeper-forge-setup-x64.exe
         shell: bash
+      # For a person to try the upgrade on a real PC before merging.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-installer-preview
+          path: egui-out/keeper-forge-setup-x64.exe
+          if-no-files-found: error
