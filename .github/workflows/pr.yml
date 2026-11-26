@@ -23,6 +23,21 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v7
+      # The installer is two optimized builds and takes about five minutes, so it is only built when
+      # the pull request can change it. The checkout is the pull request merged into its base, so
+      # the difference with the base is exactly what the pull request changes. Releases still build it.
+      - name: Check whether the installer can change
+        id: installer
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE"
+          if git diff --name-only FETCH_HEAD HEAD | grep -qE '^(app-egui/installer/|tools/|about\.(toml|hbs)$|app-egui/(about\.toml|Cargo\.(toml|lock))$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/(pr|release)\.yml$)'; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
       - name: Install the pinned GNU toolchain
         run: |
           rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
@@ -79,9 +94,11 @@ jobs:
       - run: tools/test-update-manifest.sh
         shell: bash
       - uses: taiki-e/install-action@v2
+        if: steps.installer.outputs.build == 'true'
         with:
           tool: cargo-about
       - name: Install NSIS
+        if: steps.installer.outputs.build == 'true'
         run: |
           choco install nsis --no-progress -y
           echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
@@ -89,6 +106,7 @@ jobs:
       # The same steps as the published builds, so a broken installer or a licence that is not allowed
       # (app-egui/about.toml) stops the pull request and not the build after the merge.
       - name: Build the installer
+        if: steps.installer.outputs.build == 'true'
         run: |
           cargo build --release --locked -p ck-forge --target-dir target
           cargo build --release --locked --manifest-path app-egui/Cargo.toml --target-dir app-egui/target
@@ -98,6 +116,7 @@ jobs:
         shell: bash
       # For a person to try the upgrade on a real PC before merging.
       - uses: actions/upload-artifact@v4
+        if: steps.installer.outputs.build == 'true'
         with:
           name: forge-installer-preview
           path: egui-out/keeper-forge-setup-x64.exe
