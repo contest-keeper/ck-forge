@@ -362,7 +362,7 @@ impl Screen {
                     }
                 },
                 |ui| {
-                    let button = Btn::new("Download and verify\u{2026}").primary().small();
+                    let button = Btn::new("Download and verify\u{2026}").small();
                     if button.enabled(ready && id.is_some()).show(ui).clicked() {
                         download.clone_from(&id);
                     }
