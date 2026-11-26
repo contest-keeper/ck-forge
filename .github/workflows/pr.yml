@@ -23,21 +23,6 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v7
-      # The installer is two optimized builds and takes about five minutes, so it is only built when
-      # the pull request can change it. The checkout is the pull request merged into its base, so
-      # the difference with the base is exactly what the pull request changes. Releases still build it.
-      - name: Check whether the installer can change
-        id: installer
-        env:
-          BASE: ${{ github.base_ref }}
-        run: |
-          git fetch --no-tags --depth=1 origin "$BASE"
-          if git diff --name-only FETCH_HEAD HEAD | grep -qE '^(app-egui/installer/|tools/|about\.(toml|hbs)$|app-egui/(about\.toml|Cargo\.(toml|lock))$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/(pr|release)\.yml$)'; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "build=false" >> "$GITHUB_OUTPUT"
-          fi
-        shell: bash
       - name: Install the pinned GNU toolchain
         run: |
           rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
@@ -68,6 +53,21 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v7
+      # The installer is two optimized builds and takes about five minutes, so it is only built when
+      # the pull request can change it. The checkout is the pull request merged into its base, so
+      # the difference with the base is exactly what the pull request changes. Releases still build it.
+      - name: Check whether the installer can change
+        id: installer
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE"
+          if git diff --name-only FETCH_HEAD HEAD | grep -qE '^(app-egui/installer/|tools/|about\.(toml|hbs)$|app-egui/(about\.toml|Cargo\.(toml|lock))$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/(pr|release)\.yml$)'; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
       - name: Install the pinned GNU toolchain
         run: |
           rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal --component clippy,rustfmt
