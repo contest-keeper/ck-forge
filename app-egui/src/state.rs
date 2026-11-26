@@ -1,6 +1,8 @@
 //! What the pages share: the profile being edited, the base image and the choices of the window.
 //! The same state, with the same rules, as `state.svelte.ts` of the earlier web window.
 
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use ck_admin_core::{Error, Profile};
@@ -45,6 +47,16 @@ pub struct AppState {
     mode_chosen: bool,
     /// The Forge folder, or none to remember and save nothing (tests and screenshots).
     data: Option<PathBuf>,
+}
+
+/// Writes beside `path` and renames, so a window that stops halfway leaves the old file whole.
+fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temporary = path.with_extension("tmp");
+    let mut file = File::create(&temporary)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temporary, path)
 }
 
 /// What went wrong with a profile, in the words of the earlier window.
@@ -139,7 +151,7 @@ impl AppState {
         // A choice that cannot be written lasts until the window closes.
         if let Ok(bytes) = serde_json::to_vec_pretty(&remembered) {
             let _ = std::fs::create_dir_all(folder);
-            let _ = std::fs::write(folder.join(REMEMBERED), bytes);
+            let _ = replace(&folder.join(REMEMBERED), &bytes);
         }
     }
 
@@ -247,6 +259,19 @@ mod tests {
         assert!(why.starts_with("the profile has problems:\n- "), "{why}");
         assert!(state.profile_path.is_none());
         assert!(!data.path().join("profiles").exists());
+    }
+
+    #[test]
+    fn a_choice_that_cannot_be_written_leaves_the_remembered_file_whole() {
+        let data = tempfile::tempdir().expect("folder");
+        let mut state = AppState::load(Some(data.path().to_owned()));
+        state.set_base_path(Some(PathBuf::from("base.img")));
+        // A folder where the new file would be written makes the writing fail.
+        std::fs::create_dir(data.path().join("window.tmp")).expect("in the way");
+        state.set_theme(Theme::Classic);
+        let again = AppState::load(Some(data.path().to_owned()));
+        assert_eq!(again.base_path(), Some(Path::new("base.img")));
+        assert_eq!(again.look().theme, Theme::Modern);
     }
 
     #[test]
