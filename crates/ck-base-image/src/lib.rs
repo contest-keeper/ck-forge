@@ -97,7 +97,10 @@ pub fn create_base_image(
 
     let work = work_dir(&options.out);
     fs::create_dir_all(&work).map_err(|e| Error::io("creating the work folder", e))?;
-    let partial = options.out.with_extension("partial");
+    // Appended, never an extension swap: `base.partial` as the output must not be its own staging file.
+    let mut staging = options.out.as_os_str().to_owned();
+    staging.push(".partial");
+    let partial = PathBuf::from(staging);
     let _ = fs::remove_file(&partial);
 
     let record = match build(options, &qemu, &source, &partial, &work, &mut progress) {
@@ -116,13 +119,15 @@ pub fn create_base_image(
 }
 
 /// Gives the finished image its name without replacing a file that appeared there since the start
-/// of the build: a hard link fails when `out` exists, where a rename would silently replace it.
+/// of the build. The partial file is removed by the move, or by the error when `out` exists.
 fn publish(partial: &Path, out: &Path) -> Result<(), Error> {
-    fs::hard_link(partial, out).map_err(|e| match e.kind() {
-        std::io::ErrorKind::AlreadyExists => Error::Exists(out.display().to_string()),
-        _ => Error::io("naming the finished image", e),
-    })?;
-    fs::remove_file(partial).map_err(|e| Error::io("removing the unfinished image name", e))
+    tempfile::TempPath::try_from_path(partial)
+        .map_err(|e| Error::io("naming the finished image", e))?
+        .persist_noclobber(out)
+        .map_err(|e| match e.error.kind() {
+            std::io::ErrorKind::AlreadyExists => Error::Exists(out.display().to_string()),
+            _ => Error::io("naming the finished image", e.error),
+        })
 }
 
 fn build(
@@ -191,6 +196,7 @@ mod tests {
         assert!(matches!(publish(&partial, &out), Err(Error::Exists(_))));
         assert_eq!(fs::read(&out).expect("kept"), b"mine");
         fs::remove_file(&out).expect("remove");
+        fs::write(&partial, b"new").expect("partial again");
         publish(&partial, &out).expect("publish");
         assert_eq!(fs::read(&out).expect("image"), b"new");
         assert!(!partial.exists());

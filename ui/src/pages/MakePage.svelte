@@ -131,6 +131,8 @@
     failure = '';
     chosen = [];
     typed = '';
+    // The old rows must not stay selectable: the new listing may put another disk at a number.
+    disks = [];
     try {
       disks = await api.listDisks(app.basePath ?? '', allowVirtual);
       await lookUpEarlier(disks);

@@ -76,6 +76,11 @@ pub fn import_image(
             io::ErrorKind::AlreadyExists => Error::Exists(out.display().to_string()),
             _ => Error::io("saving the verified image", err.error),
         })?;
+    // The new name is only durable once the folder is flushed (not possible on Windows this way).
+    #[cfg(unix)]
+    File::open(folder)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| Error::io("flushing the image folder", e))?;
     Ok(())
 }
 

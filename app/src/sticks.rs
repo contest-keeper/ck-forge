@@ -327,6 +327,26 @@ fn quote(path: &Path) -> Result<String, String> {
     Ok(format!("\"{text}\""))
 }
 
+/// The token the admin confirmed for each disk, in order of `disks`. A disk without a valid one
+/// is refused, so nothing is built or erased for it.
+fn confirmed_tokens<'a>(
+    disks: &[u32],
+    confirmed: &'a [String],
+) -> Result<Vec<(u32, &'a str)>, String> {
+    disks
+        .iter()
+        .map(|&disk| {
+            let prefix = format!("{disk}=");
+            confirmed
+                .iter()
+                .find_map(|pair| pair.strip_prefix(&prefix))
+                .filter(|token| !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit()))
+                .map(|token| (disk, token))
+                .ok_or_else(|| format!("disk {disk} was not confirmed; list the disks again"))
+        })
+        .collect()
+}
+
 /// The argument string of the elevated `ck-forge stick write`. Every disk must come with the identity
 /// token the admin confirmed, so the helper refuses a stick that took its number in the meantime;
 /// without one nothing is started.
@@ -337,6 +357,7 @@ fn helper_arguments(
     confirmed: &[String],
     allow_virtual: bool,
 ) -> Result<String, String> {
+    let tokens = confirmed_tokens(disks, confirmed)?;
     let mut arguments = vec!["stick".to_owned(), "write".to_owned()];
     for image in images {
         arguments.push(quote(image)?);
@@ -346,13 +367,7 @@ fn helper_arguments(
         "--progress-file".to_owned(),
         quote(progress_file)?,
     ]);
-    for disk in disks {
-        let prefix = format!("{disk}=");
-        let token = confirmed
-            .iter()
-            .find_map(|pair| pair.strip_prefix(&prefix))
-            .filter(|token| !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit()))
-            .ok_or_else(|| format!("disk {disk} was not confirmed; list the disks again"))?;
+    for (disk, token) in tokens {
         arguments.extend(["--disk".to_owned(), disk.to_string()]);
         arguments.extend(["--confirmed".to_owned(), format!("{disk}={token}")]);
     }
@@ -495,6 +510,10 @@ fn make_and_write(
         allow_virtual,
         ..
     } = *target;
+    // Before any stick is built: a refusal here must not leave keys in the registry or on the Hub.
+    if to_file.is_none() {
+        confirmed_tokens(disks, confirmed)?;
+    }
     let Made { images, written } = build_images(app, base, profile_path, work, target)?;
     // A file needs no administrator rights, so it is written here: a test without a stick.
     if let Some(file) = to_file {

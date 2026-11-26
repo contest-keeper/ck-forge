@@ -113,7 +113,9 @@ pub async fn hub_sign_in(
             let email = session.email.clone();
             ck_admin_core::vault::save(&session);
             state.checked.store(true, Ordering::Relaxed);
-            if let Some(old) = state.lock().replace(Arc::new(session)) {
+            // Taken out of the lock first: signing out is a slow request.
+            let old = state.lock().replace(Arc::new(session));
+            if let Some(old) = old {
                 ck_admin_core::sign_out(HUB_URL, &old);
             }
             let registry = profile_path
@@ -161,15 +163,20 @@ fn sign_in(app: &AppHandle) -> Result<PairingEnd, String> {
 /// asked whether it still stands; a Hub that cannot be reached is not an answer, so it is kept.
 #[tauri::command]
 pub async fn hub_status(state: State<'_, HubState>) -> Result<Option<String>, String> {
-    if !state.checked.swap(true, Ordering::Relaxed) && state.signed_in() {
-        let ended = state.current().is_some_and(|session| {
-            matches!(
-                ck_admin_core::list_profiles(HUB_URL, &session),
-                Err(ck_admin_core::Error::SignedOut(_))
-            )
-        });
-        if ended {
-            state.lock().take();
+    if !state.checked.swap(true, Ordering::Relaxed)
+        && let Some(session) = state.current()
+        && matches!(
+            ck_admin_core::list_profiles(HUB_URL, &session),
+            Err(ck_admin_core::Error::SignedOut(_))
+        )
+    {
+        // Only the session that was asked: a sign-in may have replaced it meanwhile.
+        let mut current = state.lock();
+        if current
+            .as_ref()
+            .is_some_and(|now| Arc::ptr_eq(now, &session))
+        {
+            current.take();
             ck_admin_core::vault::forget();
         }
     }
