@@ -118,9 +118,10 @@ fn write_all(
     let mut made = Vec::new();
     let result = make_and_write(request, session.as_ref(), cancel, &work, report, &mut made);
     let _ = std::fs::remove_dir_all(&work);
-    // The registry file is written when an image is built, and every push sends the whole file. A
-    // stick whose write was cancelled or failed does not exist, so it leaves the file first: it
-    // must never reach the Hub later as a live stick.
+    // What is left in `made` was not confirmed as written. The registry file is written when an
+    // image is built, and every push sends the whole file. A stick whose write was cancelled or
+    // failed does not exist, so it leaves the file first: it must never reach the Hub later as a
+    // live stick.
     let Err(error) = &result else {
         return result;
     };
@@ -190,6 +191,7 @@ fn retire_unwritten(
 }
 
 /// `made` gets each stick as soon as its image is built, so the caller can retire them if this fails.
+/// After a write that partly failed, the sticks that were written are no longer in it.
 fn make_and_write(
     request: &Request,
     session: Option<&HubSession>,
@@ -207,13 +209,49 @@ fn make_and_write(
     if let Some(file) = &request.to_file {
         return write_to_file(&images[0], file, cancel, report);
     }
-    let hash = write_elevated(&images, request, cancel, report)?;
-    // Only now that everything was written and checked, so a refused permission prompt or a failed
-    // disk never counts.
-    if let Some(session) = session {
-        record_written(session, made);
+    let (finished, permission_given) = write_elevated(&images, request, cancel, report)?;
+    settle(finished, permission_given, made, |written| {
+        if let Some(session) = session {
+            record_written(session, written);
+        }
+    })
+}
+
+/// What the end of the helper means for the sticks. `record` gets the ones that were written and
+/// checked: all of them after a success, otherwise only those the helper's list of failed sticks
+/// leaves out, so a refused permission prompt or a failed disk never counts. Those also leave
+/// `made`, which keeps the sticks that must not stay.
+fn settle(
+    finished: Option<HelperState>,
+    permission_given: bool,
+    made: &mut Vec<MadeStick>,
+    record: impl FnOnce(&[MadeStick]),
+) -> Result<String, String> {
+    let failed = finished
+        .as_ref()
+        .map_or_else(Vec::new, |state| state.failed.clone());
+    let result = outcome(finished, permission_given);
+    if result.is_ok() {
+        record(made);
+        return result;
     }
-    Ok(hash)
+    // No list means the helper stopped as a whole (refused, cancelled, died), and a position that
+    // no stick has means the list cannot be believed: then none can be trusted.
+    if failed.is_empty() || failed.iter().any(|&index| index >= made.len()) {
+        return result;
+    }
+    let mut written = Vec::new();
+    let mut unwritten = Vec::new();
+    for (index, stick) in made.drain(..).enumerate() {
+        if failed.contains(&index) {
+            unwritten.push(stick);
+        } else {
+            written.push(stick);
+        }
+    }
+    *made = unwritten;
+    record(&written);
+    result
 }
 
 /// Builds one image per stick in `work`.
@@ -395,6 +433,10 @@ pub struct HelperState {
     total: u64,
     sha256: Option<String>,
     message: Option<String>,
+    /// Which sticks (by position) the helper could not write. Empty when it stopped before or
+    /// without saying, so none can be trusted.
+    #[serde(default)]
+    failed: Vec<usize>,
 }
 
 fn read_state(file: &Path) -> Option<HelperState> {
@@ -512,7 +554,7 @@ fn write_elevated(
     request: &Request,
     cancel: &AtomicBool,
     report: &dyn Fn(Progress),
-) -> Result<String, String> {
+) -> Result<(Option<HelperState>, bool), String> {
     let exe = forge_exe()?;
     let pid = std::process::id();
     let progress_file = std::env::temp_dir().join(format!("ck-write-{pid}.json"));
@@ -559,7 +601,7 @@ fn write_elevated(
     let finished = read_state(&progress_file);
     let _ = std::fs::remove_file(&progress_file);
     let _ = std::fs::remove_file(&cancel_file);
-    outcome(finished, status.success())
+    Ok((finished, status.success()))
 }
 
 #[cfg(test)]
@@ -621,6 +663,54 @@ mod tests {
 
     fn state(text: &str) -> Option<HelperState> {
         serde_json::from_str(text).ok()
+    }
+
+    /// The ids that stay to be removed and retired, and the ids recorded as written.
+    fn settled(text: &str) -> (Vec<String>, Vec<String>, bool) {
+        let mut sticks = vec![
+            made("stick-a", true),
+            made("stick-b", true),
+            made("stick-c", false),
+        ];
+        let mut recorded = Vec::new();
+        let ids = |sticks: &[MadeStick]| sticks.iter().map(|s| s.id.to_string()).collect();
+        let result = settle(state(text), true, &mut sticks, |written| {
+            recorded = ids(written);
+        });
+        (ids(&sticks), recorded, result.is_ok())
+    }
+
+    #[test]
+    fn a_partly_failed_write_keeps_only_the_sticks_the_helper_confirmed() {
+        let (gone, kept, ok) = settled(r#"{"state":"error","message":"x","failed":[1]}"#);
+        assert_eq!(gone, ["stick-b"]);
+        assert_eq!(kept, ["stick-a", "stick-c"]);
+        assert!(!ok);
+        let (gone, kept, ok) = settled(r#"{"state":"done","sha256":"abc"}"#);
+        assert!(ok && gone.len() == 3 && kept.len() == 3);
+    }
+
+    #[test]
+    fn nothing_is_confirmed_when_the_list_of_failed_sticks_is_missing_or_cannot_be_believed() {
+        for text in [
+            // The helper died, was cancelled as a whole, or finished without a hash.
+            r#"{"state":"writing","done":1,"total":9}"#,
+            r#"{"state":"cancelled","message":"x","failed":[]}"#,
+            r#"{"state":"error","message":"x"}"#,
+            r#"{"state":"done","failed":[]}"#,
+            // No file, or one that cannot be read.
+            "",
+            r#"{"state":"error","failed":[1"#,
+            r#"{"state":"error","failed":[-1]}"#,
+            r#"{"state":"error","failed":["1"]}"#,
+            r#"{"state":"error","failed":null}"#,
+            r#"{"state":"error","failed":[3]}"#,
+            r#"{"state":"error","failed":[0,18446744073709551615]}"#,
+        ] {
+            let (gone, kept, ok) = settled(text);
+            assert_eq!(gone, ["stick-a", "stick-b", "stick-c"], "{text}");
+            assert!(kept.is_empty() && !ok, "{text}");
+        }
     }
 
     #[test]
