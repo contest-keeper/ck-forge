@@ -146,7 +146,9 @@
   /** The chosen disks with the identity token of each as it was listed and confirmed. */
   function diskTarget() {
     const disk = [...chosen];
-    const confirmed = disks.filter((d) => disk.includes(d.number)).map((d) => `${d.number}=${d.token}`);
+    const confirmed = disks
+      .filter((d) => disk.includes(d.number))
+      .map((d) => `${d.number}=${d.token}`);
     return { disks: disk, confirmed };
   }
 
