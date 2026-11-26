@@ -83,16 +83,30 @@ impl Page {
             .and_then(|profile| profile.settings.wifi.as_ref())
             .map(|wifi| wifi.ssid.as_str());
         let name = profile.map_or("", |profile| profile.name.as_str());
-        widgets::card(ui, |ui| self.write.sticks_ui(ui, network, locked));
+        let dev = state.dev_tools();
+        widgets::card(ui, |ui| self.write.sticks_ui(ui, network, locked, dev));
         widgets::card(ui, |ui| self.write.erase_ui(ui, name, locked));
         widgets::note(ui, Tone::Error, &self.sticks.old_failure);
-        if signed_in {
-            widgets::card(ui, |ui| self.sticks.show(ui, self.locked()));
-        }
         self.write.dialog_ui(ui.ctx());
-        widgets::details(ui, "No stick at hand? Test the write into a file", |ui| {
-            self.write.file_ui(ui, locked);
-        });
+        // Outside Windows this is the only write that builds from the saved profile in the window.
+        if dev || !cfg!(windows) {
+            let title = if dev {
+                "Development: test the write into a file"
+            } else {
+                "Write into an image file"
+            };
+            widgets::details(ui, title, |ui| self.write.file_ui(ui, locked));
+        }
+    }
+
+    /// The page that retires the keys of old sticks.
+    pub fn show_retire(&mut self, ui: &mut Ui, state: &AppState) {
+        if state.hub_email.is_none() {
+            widgets::note(ui, Tone::Error, "Sign in to the Hub to retire old sticks.");
+            return;
+        }
+        widgets::note(ui, Tone::Error, &self.sticks.old_failure);
+        widgets::card(ui, |ui| self.sticks.show(ui, self.locked()));
     }
 }
 

@@ -1,61 +1,37 @@
 //! The cards with the settings: `ContestForm`, `BrandingForm` and `NetworkForm` of the earlier
 //! web window, and the limit of the stick key from `ContestPage`.
 
-use ck_admin_core::{Profile, StickKeyWindow};
-use ck_protocol::{
-    Bookmark, Contest, LocalDateTime, Platform, RecordingMode, Settings, UploadMode, Wifi,
-};
-use eframe::egui::{self, Align, Layout, TextFormat, Ui, text::LayoutJob, vec2};
+use ck_admin_core::Profile;
+use ck_protocol::{Bookmark, Contest, Platform, RecordingMode, Settings, UploadMode, Wifi};
+use eframe::egui::{self, Align, Layout, Ui, vec2};
 
-use crate::contest::datetime;
 use crate::theme::{Weight, font, tokens};
 use crate::widgets::{self, Btn, Input, field};
-
-const BAD_TIME: &str = "Use a date and time like 11/15/2026 09:00 AM";
-const NO_SUCH_TIME: &str =
-    "This PC's clock does not have this time (skipped for daylight saving, or out of range).";
-pub const BAD_END: &str = "Fix the contest end first: use a date and time like 11/15/2026 09:00 AM";
 
 /// Text as it was typed, which is not always what the profile holds.
 #[derive(Default)]
 pub struct Typed {
     /// One site name per line.
     domains: String,
-    pub contest_end: String,
-    valid_from: String,
-    valid_until: String,
     /// The password is not here: it is typed for each write and never saved in the profile.
     ssid: String,
-    home_page: String,
 }
 
 impl Typed {
     /// Takes the texts from a profile that was just taken in.
     pub fn read(profile: &Profile) -> Self {
         let settings = &profile.settings;
-        let window = profile.stick_key_window.as_ref();
         Self {
-            domains: settings.network.allowed_domains.join("\n"),
-            contest_end: settings
-                .contest
-                .end
-                .map(|end| datetime::shown(end.as_primitive()))
-                .unwrap_or_default(),
-            valid_from: window.map_or_else(String::new, |w| datetime::utc_to_shown(&w.valid_from)),
-            valid_until: window
-                .map_or_else(String::new, |w| datetime::utc_to_shown(&w.valid_until)),
+            domains: settings.network.allowed_domains.join(
+                "
+",
+            ),
             ssid: settings
                 .wifi
                 .as_ref()
                 .map(|wifi| wifi.ssid.clone())
                 .unwrap_or_default(),
-            home_page: settings.branding.home_page.clone().unwrap_or_default(),
         }
-    }
-
-    /// Whether the typed contest end is empty (none) or a date and time.
-    pub fn end_is_valid(&self) -> bool {
-        self.contest_end.trim().is_empty() || datetime::parse(&self.contest_end).is_some()
     }
 }
 
@@ -199,16 +175,15 @@ fn number_field(ui: &mut Ui, label: &str, hint: &str, held: String, apply: impl 
 }
 
 /// The card "Contest".
-pub fn contest(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
+pub fn contest(ui: &mut Ui, settings: &mut Settings) {
     widgets::card(ui, |ui| {
         widgets::title(ui, "Contest");
-        grid(ui, &[0, 1, 2], |ui, at| match at {
+        grid(ui, &[0, 1], |ui, at| match at {
             0 => {
                 let hint = "Shown on the stick. Empty uses the profile name.";
                 text_field(ui, "Contest name", Some(hint), &mut settings.contest.name);
             }
-            1 => contest_id(ui, &mut settings.contest),
-            _ => contest_end(ui, &mut settings.contest, typed),
+            _ => contest_id(ui, &mut settings.contest),
         });
     });
 }
@@ -230,153 +205,28 @@ fn contest_id(ui: &mut Ui, contest: &mut Contest) {
     });
 }
 
-fn contest_end(ui: &mut Ui, contest: &mut Contest, typed: &mut Typed) {
-    let valid = typed.end_is_valid();
-    let hint = "Use the stick's local time for uploads after the contest.";
-    let error = (!valid).then_some(BAD_TIME);
-    field(ui, "Contest end", Some(hint), error, |ui, label| {
-        let text = &mut typed.contest_end;
-        if datetime::input(ui, label, "the contest end", text, !valid) {
-            if text.trim().is_empty() {
-                contest.end = None;
-            } else if let Some(end) = datetime::parse(text) {
-                contest.end = Some(LocalDateTime::from(end));
-            }
-        }
-    });
-}
-
-/// The closed card "Team and site (optional)".
+/// The closed card at the end of the page: what makes the name of each computer.
 pub fn team_and_site(ui: &mut Ui, settings: &mut Settings) {
     widgets::details(ui, "Team and site (optional)", |ui| {
-        grid(ui, &[0, 1], |ui, at| {
-            if at == 0 {
+        grid(ui, &[0, 1, 2], |ui, at| match at {
+            0 => {
                 let hint = "Becomes {team} in the computer name.";
                 text_field(ui, "Team", Some(hint), &mut settings.team);
-            } else {
+            }
+            1 => {
                 let hint = "Becomes {site} in the computer name.";
                 text_field(ui, "Site", Some(hint), &mut settings.site);
+            }
+            _ => {
+                let hint = "How the stick names itself: {team} {site} {n}.";
+                let name = &mut settings.branding.computer_name_pattern;
+                text_field(ui, "Computer name", Some(hint), name);
             }
         });
     });
 }
 
-/// The card that limits when the stick key works.
-pub fn key_window(ui: &mut Ui, profile: &mut Profile, typed: &mut Typed) {
-    widgets::card(ui, |ui| {
-        let mut limited = profile.stick_key_window.is_some();
-        let label = "Limit when the stick key works";
-        if widgets::check_suffixed(ui, &mut limited, label, " (optional)").changed() {
-            // Turning the limit on starts from now to a day later, so there is something to change.
-            profile.stick_key_window = limited.then(|| {
-                let now = time::OffsetDateTime::now_utc();
-                let (valid_from, valid_until) = datetime::default_window(now);
-                typed.valid_from = datetime::utc_to_shown(&valid_from);
-                typed.valid_until = datetime::utc_to_shown(&valid_until);
-                StickKeyWindow {
-                    valid_from,
-                    valid_until,
-                }
-            });
-        }
-        widgets::hint(
-            ui,
-            "Off: the key of each stick works until you retire it. On: it only works between the two times below, which needs the contest ID above.",
-        );
-        if let Some(window) = &mut profile.stick_key_window {
-            grid(ui, &[0, 1], |ui, at| {
-                if at == 0 {
-                    let from = &mut window.valid_from;
-                    key_time(ui, "Valid from", &mut typed.valid_from, from);
-                } else {
-                    let until = &mut window.valid_until;
-                    key_time(ui, "Valid until", &mut typed.valid_until, until);
-                }
-            });
-            stored_times(ui, window);
-        }
-        widgets::hint(
-            ui,
-            "To re-key a stick, make a new stick with the new contest profile.",
-        );
-    });
-}
-
-fn key_time(ui: &mut Ui, label: &str, typed: &mut String, stored: &mut String) {
-    let error = if typed.trim().is_empty() || datetime::shown_to_utc(typed).is_some() {
-        None
-    } else if datetime::parse(typed).is_none() {
-        Some(BAD_TIME)
-    } else {
-        Some(NO_SUCH_TIME)
-    };
-    field(ui, label, None, error, |ui, id| {
-        if datetime::input(ui, id, label, typed, error.is_some()) {
-            // Text that is no time leaves the field empty, which the check of the profile refuses:
-            // an older time is never saved in its place.
-            *stored = datetime::shown_to_utc(typed).unwrap_or_default();
-        }
-    });
-}
-
-/// The hint with the two UTC times in the font of file names.
-fn stored_times(ui: &mut Ui, window: &StickKeyWindow) {
-    let t = tokens(ui.ctx());
-    let or_dots = |text: &str| {
-        if text.is_empty() {
-            "\u{2026}".to_owned()
-        } else {
-            text.to_owned()
-        }
-    };
-    let format = |weight, size| TextFormat {
-        font_id: font(weight, size),
-        color: t.c.muted,
-        valign: Align::BOTTOM,
-        ..TextFormat::default()
-    };
-    let plain = format(Weight::Regular, t.s.hint);
-    let mut job = LayoutJob::default();
-    job.wrap.max_width = ui.available_width();
-    let lead = format!(
-        "Times are on this PC's clock ({}). The key stores them as UTC: ",
-        datetime::clock_name()
-    );
-    job.append(&lead, 0.0, plain.clone());
-    let from = or_dots(&window.valid_from);
-    let times = format!("{from} to {}", or_dots(&window.valid_until));
-    job.append(&times, 0.0, format(Weight::Mono, t.rem(0.85)));
-    job.append(".", 0.0, plain);
-    ui.add(egui::Label::new(job).wrap());
-}
-
-/// The first part of "What contestants see", above the wallpaper.
-pub fn names(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
-    let branding = &mut settings.branding;
-    grid(ui, &[0, 1, 2, 3], |ui, at| match at {
-        0 => {
-            text_field(ui, "Display name", None, &mut branding.display_name);
-        }
-        1 => {
-            let hint = "Placeholders: {team} {site} {n}";
-            let name = &mut branding.computer_name_pattern;
-            text_field(ui, "Computer name", Some(hint), name);
-        }
-        2 => {
-            let hint = "At most 11 characters.";
-            if text_field(ui, "USB label", Some(hint), &mut branding.usb_label).changed() {
-                limit(&mut branding.usb_label, 11);
-            }
-        }
-        _ => {
-            if text_field(ui, "Home page", None, &mut typed.home_page).changed() {
-                branding.home_page = optional_text(&typed.home_page);
-            }
-        }
-    });
-}
-
-/// The part of "What contestants see" below the wallpaper.
+/// The welcome text and the bookmarks. The house beside a bookmark makes it the home page.
 pub fn welcome_and_bookmarks(ui: &mut Ui, settings: &mut Settings) {
     let branding = &mut settings.branding;
     let hint = "Shown at login.";
@@ -388,15 +238,29 @@ pub fn welcome_and_bookmarks(ui: &mut Ui, settings: &mut Settings) {
     });
     ui.add_space(4.0);
     widgets::subtitle(ui, "Bookmarks");
+    widgets::hint(ui, "The house marks the page the browser opens first.");
     let mut remove = None;
-    for (at, bookmark) in branding.bookmarks.iter_mut().enumerate() {
+    for at in 0..branding.bookmarks.len() {
+        let was_home = is_home(branding.home_page.as_deref(), &branding.bookmarks[at].url);
+        let before = branding.bookmarks[at].url.clone();
         ui.push_id(("bookmark", at), |ui| {
-            if bookmark_row(ui, bookmark) {
-                remove = Some(at);
+            let row = bookmark_row(ui, &mut branding.bookmarks[at], was_home);
+            remove = remove.or(row.remove.then_some(at));
+            if row.toggle_home {
+                let url = &branding.bookmarks[at].url;
+                branding.home_page = if was_home { None } else { optional_text(url) };
             }
         });
+        // Typing in the home bookmark moves the home page with it.
+        let url = &branding.bookmarks[at].url;
+        if was_home && *url != before {
+            branding.home_page = optional_text(url);
+        }
     }
     if let Some(at) = remove {
+        if is_home(branding.home_page.as_deref(), &branding.bookmarks[at].url) {
+            branding.home_page = None;
+        }
         branding.bookmarks.remove(at);
     }
     if Btn::new("Add a bookmark").small().show(ui).clicked() {
@@ -408,8 +272,45 @@ pub fn welcome_and_bookmarks(ui: &mut Ui, settings: &mut Settings) {
     }
 }
 
-/// Title and address in the proportion 1 to 2, then the button. True to remove the bookmark.
-fn bookmark_row(ui: &mut Ui, bookmark: &mut Bookmark) -> bool {
+/// Whether a bookmark's address is the home page. An empty address never is.
+fn is_home(home: Option<&str>, url: &str) -> bool {
+    !url.trim().is_empty() && home == Some(url.trim())
+}
+
+/// What a click in a bookmark row asked for.
+struct Row {
+    remove: bool,
+    toggle_home: bool,
+}
+
+/// The house button: filled when the bookmark is the home page.
+fn house(ui: &mut Ui, on: bool) -> egui::Response {
+    let t = tokens(ui.ctx());
+    let size = t.s.button_small;
+    let (rect, response) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
+    let color = if on { t.c.accent } else { t.c.muted };
+    let c = rect.center();
+    let stroke = egui::Stroke::new(1.6, color);
+    let painter = ui.painter();
+    let roof = vec![
+        c + vec2(-8.0, -1.0),
+        c + vec2(0.0, -8.0),
+        c + vec2(8.0, -1.0),
+    ];
+    let body = egui::Rect::from_min_max(c + vec2(-5.5, -1.0), c + vec2(5.5, 7.0));
+    if on {
+        painter.rect_filled(body, 1.0, color);
+    } else {
+        painter.rect_stroke(body, 1.0, stroke, egui::StrokeKind::Inside);
+    }
+    painter.line(roof, stroke);
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, "Home page"));
+    response.on_hover_text("Home page")
+}
+
+/// House, title and address in the proportion 1 to 2, then the button.
+fn bookmark_row(ui: &mut Ui, bookmark: &mut Bookmark, home: bool) -> Row {
     let t = tokens(ui.ctx());
     let remove = ui.painter().layout_no_wrap(
         "Remove".to_owned(),
@@ -418,9 +319,10 @@ fn bookmark_row(ui: &mut Ui, bookmark: &mut Bookmark) -> bool {
     );
     // The padding of a small button.
     let button = remove.size().x + 24.0;
-    let third = (ui.available_width() - button - 2.0 * t.s.gap) / 3.0;
+    let third = (ui.available_width() - button - t.s.button_small - 3.0 * t.s.gap) / 3.0;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = t.s.gap;
+        let toggle_home = house(ui, home).clicked();
         let title = Input::new(&mut bookmark.title)
             .placeholder("Title")
             .width(third)
@@ -431,7 +333,11 @@ fn bookmark_row(ui: &mut Ui, bookmark: &mut Bookmark) -> bool {
             .width(2.0 * third)
             .show(ui);
         name_for_readers(ui, &url, "Bookmark address");
-        Btn::new("Remove").small().show(ui).clicked()
+        let remove = Btn::new("Remove").small().show(ui).clicked();
+        Row {
+            remove,
+            toggle_home,
+        }
     })
     .inner
 }
@@ -442,46 +348,44 @@ fn name_for_readers(ui: &Ui, response: &egui::Response, name: &str) {
         .accesskit_node_builder(response.id, |node| node.set_label(name));
 }
 
-/// The inside of "Network, Hub and screen recording".
-pub fn network(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
-    widgets::title(ui, "Network and Hub");
-    let hint = "One per line, such as kilonova.ro. Empty allows no extra site.";
-    field(ui, "Allowed sites", Some(hint), None, |ui, id| {
-        let sites = Input::new(&mut typed.domains)
-            .multiline(4)
-            .show(ui)
-            .labelled_by(id);
-        if sites.changed() {
-            settings.network.allowed_domains = parse_domains(&typed.domains);
+/// The page "Connectivity": the sites, Wi-Fi, Bluetooth and USB storage.
+pub fn connectivity(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
+    widgets::card(ui, |ui| {
+        widgets::title(ui, "Allowed sites");
+        let hint = "One per line, such as kilonova.ro. Empty allows no extra site.";
+        field(ui, "Sites", Some(hint), None, |ui, id| {
+            let sites = Input::new(&mut typed.domains)
+                .multiline(4)
+                .show(ui)
+                .labelled_by(id);
+            if sites.changed() {
+                settings.network.allowed_domains = parse_domains(&typed.domains);
+            }
+        });
+    });
+    widgets::card(ui, |ui| {
+        widgets::title(ui, "Wi-Fi");
+        let hint = "WPA2 or open networks only. Empty means none. The password is asked when you write sticks and is never saved.";
+        if text_field(ui, "Network name (SSID)", Some(hint), &mut typed.ssid).changed() {
+            limit(&mut typed.ssid, 32);
+            settings.wifi = wifi_for(&typed.ssid);
         }
     });
-    let held = settings.api.heartbeat_s.to_string();
-    let hint = "Sticks made while signed in to the Hub send heartbeats to it.";
-    number_field(ui, "Heartbeat every (seconds)", hint, held, |text| {
-        settings.api.heartbeat_s = whole_number(text, 1);
+    widgets::card(ui, |ui| {
+        widgets::title(ui, "Devices");
+        let label = "Block Bluetooth on the sticks";
+        widgets::check(ui, &mut settings.block_bluetooth, label);
+        let label = "Block the contestant's own USB drives and disks";
+        widgets::check(ui, &mut settings.block_usb_storage, label);
     });
-    between(ui);
-    widgets::title(ui, "Bluetooth and Wi-Fi");
-    let label = "Block Bluetooth on the sticks";
-    widgets::check(ui, &mut settings.block_bluetooth, label);
-    let label = "Block other USB storage devices on the sticks";
-    widgets::check(ui, &mut settings.block_usb_storage, label);
-    let hint = "Sticks join this network by themselves at every boot, with no login on the stick. It works for a network with a WPA2 password or an open one, not for a network that asks for a user name or a web page login. Empty means none. The password is asked on the Make page and is never saved in the profile.";
-    if text_field(ui, "Wi-Fi name (SSID)", Some(hint), &mut typed.ssid).changed() {
-        limit(&mut typed.ssid, 32);
-        settings.wifi = wifi_for(&typed.ssid);
-    }
-    between(ui);
-    widgets::title(ui, "Screen recording");
-    recording(ui, settings);
 }
 
-/// 22 points between two sections, with a line 18 points above the next title.
-fn between(ui: &mut Ui) {
-    let gap = tokens(ui.ctx()).s.gap;
-    ui.add_space(22.0 - gap);
-    widgets::hairline(ui);
-    ui.add_space(18.0 - gap);
+/// The page "Screen recording".
+pub fn recording_page(ui: &mut Ui, settings: &mut Settings) {
+    widgets::card(ui, |ui| {
+        widgets::title(ui, "Screen recording");
+        recording(ui, settings);
+    });
 }
 
 fn recording(ui: &mut Ui, settings: &mut Settings) {
@@ -578,12 +482,10 @@ mod tests {
     }
 
     #[test]
-    fn the_contest_end_is_empty_or_a_date_and_time() {
-        let mut typed = Typed::default();
-        assert!(typed.end_is_valid());
-        typed.contest_end = "2026-11-15T09:00".to_owned();
-        assert!(typed.end_is_valid());
-        typed.contest_end = "tomorrow".to_owned();
-        assert!(!typed.end_is_valid());
+    fn only_a_filled_in_bookmark_address_can_be_the_home_page() {
+        assert!(is_home(Some("https://a.example"), " https://a.example "));
+        assert!(!is_home(Some("https://a.example"), "https://b.example"));
+        assert!(!is_home(Some(""), ""));
+        assert!(!is_home(None, "https://a.example"));
     }
 }

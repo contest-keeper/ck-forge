@@ -4,11 +4,12 @@
 use std::path::{Path, PathBuf};
 
 use ck_admin_core::{HUB_URL, Profile, ProfileSummary, add_wallpaper, folder_of};
-use eframe::egui::{self, Ui};
+use eframe::egui::{self, Ui, vec2};
 
 use crate::contest::forms::{self, Typed};
 use crate::contest::hub_profiles::{Outcome, Panel};
 use crate::contest::preview::{self, Asked, Picture};
+use crate::folder::Local;
 use crate::state::AppState;
 use crate::theme::tokens;
 use crate::widgets::{self, Btn, Input, Tone, field};
@@ -22,8 +23,13 @@ pub struct Screen {
     typed: Typed,
     picture: Picture,
     hub: Panel,
-    /// The profiles on the Hub, while their card is shown.
+    /// The profiles on the Hub, listed when the admin signs in and after every save.
     pub(super) hub_profiles: Vec<ProfileSummary>,
+    /// The profiles in the Forge folder, read again when the open profile or its file changes.
+    local: Vec<Local>,
+    local_key: Option<(u64, Option<PathBuf>, bool)>,
+    /// The account the Hub's list was asked for.
+    listed_for: Option<String>,
     /// What the last action did, and why one failed.
     status: String,
     failure: String,
@@ -74,6 +80,38 @@ fn holds_another_wallpaper(folder: &Path, source: &Path) -> bool {
     })
 }
 
+/// One saved profile with its Open button. `on_hub` says whether the Hub has it, when signed in.
+fn profile_row(
+    ui: &mut Ui,
+    name: &str,
+    open: bool,
+    on_hub: Option<bool>,
+    mut clicked: impl FnMut(),
+) {
+    ui.horizontal(|ui| {
+        let t = tokens(ui.ctx());
+        ui.spacing_mut().item_spacing.x = t.s.gap;
+        // The name is centred on the button.
+        ui.spacing_mut().interact_size.y = t.s.button_small;
+        ui.label(name);
+        match (open, on_hub) {
+            (true, _) => {
+                widgets::pill(ui, Tone::Ok, "Open now");
+            }
+            (false, Some(true)) => {
+                widgets::pill(ui, Tone::Ok, "Also on the Hub");
+            }
+            (false, Some(false)) => {
+                widgets::pill(ui, Tone::Warn, "Not on the Hub");
+            }
+            (false, None) => {}
+        }
+        if !open && Btn::new("Open").small().show(ui).clicked() {
+            clicked();
+        }
+    });
+}
+
 fn profile_files() -> rfd::FileDialog {
     rfd::FileDialog::new().add_filter("Contest profile", &["json"])
 }
@@ -83,33 +121,35 @@ impl Screen {
     /// state and says whether the profile may be saved now.
     pub fn poll(&mut self, ctx: &egui::Context, state: &mut AppState) {
         if let Some(outcome) = self.hub.receive() {
-            self.take(outcome, state);
+            self.take(ctx, outcome, state);
         }
         self.follow(ctx, state);
-        // A save now would write the file a Hub request is writing, or leave typed text out.
-        state.blocked = if self.hub.busy() {
-            Some("Wait until the Hub request has ended.".to_owned())
-        } else {
-            (!self.typed.end_is_valid()).then(|| forms::BAD_END.to_owned())
-        };
+        if self.listed_for != state.hub_email && !self.hub.busy() {
+            self.listed_for.clone_from(&state.hub_email);
+            self.hub_profiles.clear();
+            if state.hub_email.is_some() {
+                self.hub.list(ctx);
+            }
+        }
+        // A save now would write the file a Hub request is writing.
+        state.blocked = self
+            .hub
+            .busy()
+            .then(|| "Wait until the Hub request has ended.".to_owned());
     }
 
-    fn take(&mut self, outcome: Outcome, state: &mut AppState) {
+    fn take(&mut self, ctx: &egui::Context, outcome: Outcome, state: &mut AppState) {
         match outcome {
-            Outcome::Listed(profiles) => {
-                if profiles.is_empty() {
-                    "The Hub has no profiles yet. Save one to it.".clone_into(&mut self.status);
-                }
-                self.hub_profiles = profiles;
-            }
+            Outcome::Listed(profiles) => self.hub_profiles = profiles,
             Outcome::Loaded(loaded) => {
                 self.status = format!("Loaded {} from the Hub", loaded.profile.name);
-                self.hub_profiles.clear();
                 state.use_profile(loaded.profile, Some(loaded.path));
             }
             Outcome::Saved(profile, path) => {
-                self.status = format!("Saved {} to the Hub", profile.name);
+                self.status = format!("Saved {} here and on the Hub", profile.name);
                 state.use_profile(*profile, Some(path));
+                // The Hub's list now has this profile.
+                self.hub.list(ctx);
             }
             Outcome::Failed(why) => self.failure = why,
         }
@@ -123,18 +163,35 @@ impl Screen {
             self.typed = state.profile.as_ref().map(Typed::read).unwrap_or_default();
             self.wallpaper_failure.clear();
         }
+        // A save changes `is_unsaved` even when the file and the profile stay the same ones.
+        let key = (
+            state.profile_revision,
+            state.profile_path.clone(),
+            state.is_unsaved(),
+        );
+        if self.local_key.as_ref() != Some(&key) {
+            self.local_key = Some(key);
+            self.refresh_local(state);
+        }
         self.picture.follow(ctx, state);
     }
 
+    fn refresh_local(&mut self, state: &AppState) {
+        self.local = state
+            .data()
+            .map(crate::folder::list_local)
+            .unwrap_or_default();
+    }
+
+    /// The page "Contest profile".
     pub fn show(&mut self, ui: &mut Ui, state: &mut AppState) {
         // A request to the Hub is running: nothing here can change until it has ended.
         if self.hub.busy() {
             ui.disable();
         }
         self.toolbar(ui, state);
-        self.hub_card(ui, state);
-        widgets::note(ui, Tone::Ok, &self.status);
-        widgets::note(ui, Tone::Error, &self.failure);
+        self.profiles_card(ui, state);
+        self.status_notes(ui);
         // An action above may have taken another profile in.
         self.follow(ui.ctx(), state);
         let Some(profile) = &mut state.profile else {
@@ -151,71 +208,120 @@ impl Screen {
                 Input::new(&mut profile.name).show(ui).labelled_by(id);
             });
         });
-        forms::contest(ui, &mut profile.settings, &mut self.typed);
-        forms::team_and_site(ui, &mut profile.settings);
-        preview::contestant(ui, &self.picture, profile);
-        forms::key_window(ui, profile, &mut self.typed);
-        widgets::details(ui, "What contestants see", |ui| self.branding(ui, state));
-        widgets::details(ui, "Network, Hub and screen recording", |ui| {
-            ui.spacing_mut().item_spacing.y = tokens(ui.ctx()).s.gap;
-            if let Some(profile) = &mut state.profile {
-                forms::network(ui, &mut profile.settings, &mut self.typed);
-            }
-        });
+        forms::contest(ui, &mut profile.settings);
+        widgets::card(ui, |ui| self.desktop(ui, state));
+        if let Some(profile) = &mut state.profile {
+            forms::team_and_site(ui, &mut profile.settings);
+        }
         self.other_places(ui, state);
+    }
+
+    /// The page "Connectivity".
+    pub fn show_connectivity(&mut self, ui: &mut Ui, state: &mut AppState) {
+        if self.hub.busy() {
+            ui.disable();
+        }
+        self.status_notes(ui);
+        self.follow(ui.ctx(), state);
+        if let Some(profile) = &mut state.profile {
+            forms::connectivity(ui, &mut profile.settings, &mut self.typed);
+        }
+    }
+
+    /// The page "Screen recording".
+    pub fn show_recording(&mut self, ui: &mut Ui, state: &mut AppState) {
+        if self.hub.busy() {
+            ui.disable();
+        }
+        self.status_notes(ui);
+        if let Some(profile) = &mut state.profile {
+            forms::recording_page(ui, &mut profile.settings);
+        }
+    }
+
+    /// Why the last save or Hub request failed, for pages that do not show the notes themselves.
+    pub fn failure(&self) -> &str {
+        &self.failure
+    }
+
+    fn status_notes(&self, ui: &mut Ui) {
+        widgets::note(ui, Tone::Ok, &self.status);
+        widgets::note(ui, Tone::Error, &self.failure);
     }
 
     fn toolbar(&mut self, ui: &mut Ui, state: &mut AppState) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = tokens(ui.ctx()).s.gap;
             let ready = state.profile.is_some();
+            if Btn::new("Save").primary().enabled(ready).show(ui).clicked() {
+                self.save(ui.ctx(), state);
+            }
+            if state.hub_email.is_some() && Btn::new("Refresh Hub list").show(ui).clicked() {
+                self.clear_messages();
+                self.hub.list(ui.ctx());
+            }
             if Btn::new("New profile").show(ui).clicked() {
                 self.create(state);
             }
-            if Btn::new("Open\u{2026}").show(ui).clicked()
+            if Btn::new("Open a file\u{2026}").show(ui).clicked()
                 && let Some(path) = profile_files().pick_file()
             {
                 self.open(state, path);
             }
-            if Btn::new("Save").primary().enabled(ready).show(ui).clicked() {
-                self.save(state);
-            }
-            if state.hub_email.is_some() {
-                if Btn::new("Load from Hub\u{2026}").show(ui).clicked() {
-                    self.clear_messages();
-                    self.hub.list(ui.ctx());
-                }
-                if Btn::new("Save to Hub").enabled(ready).show(ui).clicked() {
-                    self.save_to_hub(ui.ctx(), state);
-                }
-            }
         });
     }
 
-    fn hub_card(&mut self, ui: &mut Ui, state: &AppState) {
-        if self.hub_profiles.is_empty() {
+    /// The saved profiles: the ones on this computer and, when signed in, the ones on the Hub.
+    fn profiles_card(&mut self, ui: &mut Ui, state: &mut AppState) {
+        let signed_in = state.hub_email.is_some();
+        if self.local.is_empty() && self.hub_profiles.is_empty() {
             return;
         }
-        let mut chosen = None;
+        let mut open_local = None;
+        let mut open_hub = None;
         widgets::card(ui, |ui| {
-            widgets::title(ui, "Profiles on the Hub");
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 8.0;
-                for summary in &self.hub_profiles {
-                    ui.horizontal(|ui| {
-                        let t = tokens(ui.ctx());
-                        ui.spacing_mut().item_spacing.x = t.s.gap;
-                        // The name is centred on the button.
-                        ui.spacing_mut().interact_size.y = t.s.button_small;
-                        ui.label(&summary.name);
-                        if Btn::new("Open").small().show(ui).clicked() {
-                            chosen = Some(summary.id.clone());
-                        }
-                    });
-                }
+            widgets::title(ui, "Saved profiles");
+            let gap = tokens(ui.ctx()).s.gap;
+            let half = (ui.available_width() - gap) / 2.0;
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                ui.allocate_ui(vec2(half, 0.0), |ui| {
+                    ui.set_width(half);
+                    widgets::subtitle(ui, "On this computer");
+                    for item in &self.local {
+                        let there = item
+                            .hub_id
+                            .as_ref()
+                            .is_some_and(|id| self.hub_profiles.iter().any(|p| &p.id == id));
+                        let here = state.profile_path.as_ref() == Some(&item.path);
+                        profile_row(ui, &item.name, here, signed_in.then_some(there), || {
+                            open_local = Some(item.path.clone());
+                        });
+                    }
+                    if self.local.is_empty() {
+                        widgets::hint(ui, "Nothing saved here yet.");
+                    }
+                });
+                ui.allocate_ui(vec2(half, 0.0), |ui| {
+                    ui.set_width(half);
+                    widgets::subtitle(ui, "On the Hub");
+                    if !signed_in {
+                        widgets::hint(ui, "Sign in to see the Hub's profiles.");
+                    }
+                    for item in &self.hub_profiles {
+                        let here = state.profile.as_ref().and_then(|p| p.hub_id.as_ref())
+                            == Some(&item.id);
+                        profile_row(ui, &item.name, here, None, || {
+                            open_hub = Some(item.id.clone());
+                        });
+                    }
+                });
             });
         });
-        if let Some(id) = chosen {
+        if let Some(path) = open_local {
+            self.open(state, path);
+        }
+        if let Some(id) = open_hub {
             self.clear_messages();
             match state.data() {
                 Some(data) => self.hub.load(ui.ctx(), id, data.join("profiles")),
@@ -224,13 +330,13 @@ impl Screen {
         }
     }
 
-    /// The inside of "What contestants see".
-    fn branding(&mut self, ui: &mut Ui, state: &mut AppState) {
+    /// The card with the wallpaper, the welcome text and the bookmarks.
+    fn desktop(&mut self, ui: &mut Ui, state: &mut AppState) {
         ui.spacing_mut().item_spacing.y = tokens(ui.ctx()).s.gap;
+        widgets::title(ui, "Desktop");
         let Some(profile) = &mut state.profile else {
             return;
         };
-        forms::names(ui, &mut profile.settings, &mut self.typed);
         let name = profile.settings.branding.wallpaper.as_deref();
         match preview::picker(ui, &self.picture, name, &self.wallpaper_failure) {
             Some(Asked::Remove) => profile.settings.branding.wallpaper = None,
@@ -295,25 +401,25 @@ impl Screen {
         }
     }
 
-    fn save(&mut self, state: &mut AppState) {
+    /// Saves the file, and when signed in the Hub's copy too, so the two never differ.
+    pub fn save(&mut self, ctx: &egui::Context, state: &mut AppState) {
         self.clear_messages();
         match state.save_profile() {
-            Ok(path) => self.status = format!("Saved {}", path.display()),
+            Ok(path) => {
+                self.status = format!("Saved {}", path.display());
+                self.sync_hub(ctx, state, path);
+            }
             Err(why) => self.failure = why,
         }
     }
 
-    /// Saves the file first: the Hub copy takes its wallpaper from beside it.
-    fn save_to_hub(&mut self, ctx: &egui::Context, state: &mut AppState) {
-        self.clear_messages();
-        let started = state.save_profile().and_then(|path| {
-            let profile = state
-                .profile
-                .clone()
-                .ok_or_else(|| "There is no profile to save.".to_owned())?;
-            self.hub.save(ctx, profile, path)
-        });
-        match started {
+    /// Sends the saved profile to the Hub when signed in. The Hub copy takes its wallpaper from
+    /// beside the file, so the file is saved first.
+    pub fn sync_hub(&mut self, ctx: &egui::Context, state: &mut AppState, path: PathBuf) {
+        let (Some(_), Some(profile)) = (&state.hub_email, state.profile.clone()) else {
+            return;
+        };
+        match self.hub.save(ctx, profile, path) {
             Ok(assigned) => {
                 if let Some(profile) = &mut state.profile
                     && profile.hub_id.is_none()
@@ -436,24 +542,24 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_is_not_saved_with_a_contest_end_that_does_not_parse() {
-        let (data, mut state, mut screen) = sample();
+    fn a_renamed_profile_shows_its_new_name_in_the_saved_list_after_a_save() {
+        let (_data, mut state, mut screen) = sample();
         let ctx = egui::Context::default();
+        screen.save(&ctx, &mut state);
         screen.poll(&ctx, &mut state);
-        screen.typed.contest_end = "tomorrow".to_owned();
+        "Beta".clone_into(&mut state.profile.as_mut().expect("profile").name);
         screen.poll(&ctx, &mut state);
-        screen.save(&mut state);
-        assert_eq!(screen.failure, forms::BAD_END);
-        screen.save_in_forge_folder(&mut state);
-        assert_eq!(screen.failure, forms::BAD_END);
-        assert!(!data.path().join("profiles").exists());
+        screen.save(&ctx, &mut state);
+        screen.poll(&ctx, &mut state);
+        assert_eq!(screen.local.len(), 1);
+        assert_eq!(screen.local[0].name, "Beta");
     }
 
     #[test]
     fn a_saved_profile_opens_again() {
         let (data, mut state, mut screen) = sample();
         state.profile.as_mut().expect("profile").name = "Finals".to_owned();
-        screen.save(&mut state);
+        screen.save(&egui::Context::default(), &mut state);
         let path = state.profile_path.clone().expect("saved");
         assert_eq!(screen.status, format!("Saved {}", path.display()));
         screen.create(&mut state);

@@ -1,11 +1,8 @@
-//! The "Contest profile" page, laid out as `ContestPage.svelte` of the earlier web window.
+//! The pages that edit the profile: the contest, the connectivity and the screen recording.
 
-mod datetime;
 mod forms;
 pub mod hub_profiles;
 mod preview;
 pub mod profile;
-#[cfg(test)]
-mod shots;
 
 pub use profile::Screen as Page;

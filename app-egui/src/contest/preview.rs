@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use base64::Engine;
-use ck_admin_core::{Profile, wallpaper_data_url};
+use ck_admin_core::wallpaper_data_url;
 use eframe::egui::{
     self, Align2, Color32, Frame, Margin, Rect, Role, Sense, Shape, Stroke, TextureHandle, Ui,
     WidgetInfo, pos2, vec2,
@@ -164,73 +164,6 @@ fn thumbnail(ui: &mut Ui, picture: &Picture, name: Option<&str>) {
         font(Weight::Regular, t.s.hint),
         t.c.muted,
     );
-}
-
-/// The card "What a contestant will see" (`ContestPreview.svelte`).
-pub fn contestant(ui: &mut Ui, picture: &Picture, profile: &Profile) {
-    widgets::card(ui, |ui| {
-        widgets::title(ui, "What a contestant will see");
-        screen(ui, picture, profile);
-        widgets::hint(ui, "A preview. The real screen is the Keeper OS desktop.");
-    });
-}
-
-/// White on a dark panel whatever the picture is, so the text stays readable.
-fn dark_box(ui: &mut Ui, margin: Margin, add: impl FnOnce(&mut Ui)) {
-    let t = tokens(ui.ctx());
-    Frame::new()
-        .fill(Color32::from_rgba_unmultiplied(8, 20, 24, 209))
-        .corner_radius(t.s.radius)
-        .inner_margin(margin)
-        .show(ui, add);
-}
-
-fn screen(ui: &mut Ui, picture: &Picture, profile: &Profile) {
-    let t = tokens(ui.ctx());
-    let settings = &profile.settings;
-    let title = [settings.contest.name.trim(), profile.name.trim()]
-        .into_iter()
-        .find(|text| !text.is_empty())
-        .unwrap_or("Your contest");
-    let welcome = match settings.branding.welcome_text.as_str() {
-        "" => "No welcome text yet.",
-        text => text,
-    };
-    let start = settings.branding.home_page.as_deref().map(|page| {
-        page.strip_prefix("https://")
-            .or_else(|| page.strip_prefix("http://"))
-            .unwrap_or(page)
-    });
-    // The background is as tall as the contents, so its places are kept and filled afterwards.
-    let plain = ui.painter().add(Shape::Noop);
-    let wallpaper = ui.painter().add(Shape::Noop);
-    let shown = Frame::new().inner_margin(16).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.set_min_height(118.0);
-        ui.spacing_mut().item_spacing.y = 12.0;
-        dark_box(ui, Margin::symmetric(14, 12), |ui| {
-            ui.set_width(ui.available_width().min(380.0 - 28.0));
-            ui.spacing_mut().item_spacing.y = 4.0;
-            let white = Color32::WHITE;
-            widgets::paragraph(ui, title, Weight::Bold, t.s.rem, white, 1.35);
-            widgets::paragraph(ui, welcome, Weight::Regular, t.s.rem, white, 1.35);
-        });
-        if let Some(start) = start.filter(|start| !start.is_empty()) {
-            dark_box(ui, Margin::symmetric(10, 4), |ui| {
-                let text = format!("Start page: {start}");
-                let size = t.rem(0.8);
-                widgets::paragraph(ui, &text, Weight::Regular, size, Color32::WHITE, 1.35);
-            });
-        }
-    });
-    let rect = shown.response.rect;
-    let radius = f32::from(t.s.radius);
-    let teal = Color32::from_rgb(0x0f, 0x3d, 0x3c);
-    ui.painter()
-        .set(plain, Shape::rect_filled(rect, radius, teal));
-    if let Some(shape) = picture.cover(rect, radius) {
-        ui.painter().set(wallpaper, shape);
-    }
 }
 
 #[cfg(test)]

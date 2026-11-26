@@ -194,7 +194,7 @@ impl Screen {
             1,
             base.is_some(),
             "Base image",
-            "The system every stick is copied from. Choose it once; Forge remembers it.",
+            "The system every stick is copied from. Forge remembers your choice.",
         );
         match base {
             Some(base) if self.method.is_none() => self.chosen_ui(ui, base, locked),
@@ -222,7 +222,7 @@ impl Screen {
 
     fn choices_ui(&mut self, ui: &mut Ui, base: Option<&Path>, signed_in: bool, locked: bool) {
         let hub_text = if signed_in {
-            "The usual way. Forge checks the file."
+            "The usual way."
         } else {
             "Sign in to the Hub first."
         };
@@ -231,21 +231,13 @@ impl Screen {
             (
                 Method::File,
                 "Use a file from this PC",
-                "An image you already downloaded or built.",
+                "An image you already have.",
             ),
-            (
-                Method::Build,
-                "Build one",
-                "Advanced. Takes 15 to 40 minutes.",
-            ),
+            (Method::Build, "Build one", "Advanced. 15 to 40 minutes."),
         ];
-        // As many columns of at least 210 as fit, as the grid of the style sheet.
+        // Three equal columns, or one on a narrow window: never two and one left over.
         let across = ui.available_width() + 10.0;
-        let columns: u8 = match across {
-            w if w >= 660.0 => 3,
-            w if w >= 440.0 => 2,
-            _ => 1,
-        };
+        let columns: u8 = if across >= 540.0 { 3 } else { 1 };
         let width = (across / f32::from(columns) - 10.0).floor();
         for line in choices.chunks(usize::from(columns)) {
             let height = line
