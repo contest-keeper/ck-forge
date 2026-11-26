@@ -1,11 +1,25 @@
-//! The window's part of the updater: the check when the window opens, the offer, the download and
-//! the restart (on macOS, the opened disk image). What is decided (is it newer, is it mandatory, is
-//! it signed) lives in `update.rs`.
+//! The update dialog (`UpdatePrompt.svelte`): the check when the window opens and every few hours,
+//! the offer, the download and the restart (on macOS, the opened disk image). What is decided (is
+//! it newer, is it mandatory, is it signed) lives in `update.rs`.
 
+use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
+use std::time::{Duration, Instant};
 
+use eframe::egui::{
+    Align, Button, Context, Id, Key, LayerId, Layout, Order, Response, RichText, Stroke,
+    StrokeKind, Ui, ViewportCommand,
+};
+
+use crate::state::AppState;
+use crate::theme::{Weight, font, tokens};
 use crate::update::{self, Available};
+use crate::widgets::{self, Btn, Tone};
+
+/// A window left open still hears about a new build.
+const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+const RELEASES: &str = "https://github.com/contest-keeper/ck-forge/releases/tag/v";
 
 /// What a worker thread reports.
 enum Event {
@@ -15,15 +29,26 @@ enum Event {
     Started(Result<(), String>),
 }
 
+#[derive(Clone, Copy)]
 enum State {
     /// Nothing to say: no newer build, no key, or the check has not answered.
     Quiet,
-    Offer(Available),
+    Offer,
     Downloading(u64, u64),
     /// macOS: the disk image is open and the person takes it from here.
     Opened,
-    /// The download or the start failed: the update stays, so it can be tried again.
-    Failed(String),
+}
+
+/// What a click in the dialog asks for.
+#[derive(Clone, Copy)]
+enum Act {
+    Notes,
+    Skip,
+    Later,
+    Install,
+    Reopen,
+    Back,
+    Close,
 }
 
 pub struct Banner {
@@ -31,7 +56,13 @@ pub struct Banner {
     /// The update that was offered, kept while it downloads or after it failed: a mandatory one
     /// keeps the window blocked and any one can be tried again.
     pending: Option<Available>,
-    started: bool,
+    /// Why the last try failed.
+    failure: String,
+    /// The profile could not be saved: pressing the button again updates and drops the edits.
+    unsaved: bool,
+    /// The dialog was on screen in the last frame.
+    shown: bool,
+    next_check: Option<Instant>,
     events: Receiver<Event>,
     sender: Sender<Event>,
 }
@@ -42,7 +73,10 @@ impl Default for Banner {
         Self {
             state: State::Quiet,
             pending: None,
-            started: false,
+            failure: String::new(),
+            unsaved: false,
+            shown: false,
+            next_check: Some(Instant::now()),
             events,
             sender,
         }
@@ -54,142 +88,252 @@ impl Banner {
     #[cfg(test)]
     pub fn quiet() -> Self {
         Self {
-            started: true,
+            next_check: None,
             ..Self::default()
         }
     }
 
-    /// Whether this build is too old to be used until it has updated.
-    pub fn blocks(&self) -> bool {
-        !matches!(self.state, State::Quiet) && self.pending.as_ref().is_some_and(|u| u.mandatory)
-    }
-
-    /// Starts the check the first time and takes what the worker threads reported. Closes the
-    /// window when an update was started.
-    pub fn poll(&mut self, ctx: &eframe::egui::Context) {
-        if !self.started {
-            self.started = true;
-            self.check(ctx.clone());
-        }
-        self.receive(ctx);
-    }
-
-    /// Whether there is anything to show.
-    pub fn visible(&self) -> bool {
-        !matches!(self.state, State::Quiet)
-    }
-
-    /// `busy`: something is running that a restart would cut off, so nothing is installed now.
-    pub fn show(&mut self, ui: &mut eframe::egui::Ui, busy: bool) {
-        match &self.state {
-            State::Quiet => {}
-            State::Offer(update) => {
-                let update = update.clone();
-                self.offer_ui(ui, &update, busy);
-            }
-            State::Downloading(done, total) => {
-                let (done, total) = (done / (1024 * 1024), total / (1024 * 1024));
-                ui.label(format!("Downloading the update: {done} of {total} MB"));
-                ui.spinner();
-            }
-            State::Opened => {
-                ui.label(
-                    "The disk image is open. Close Keeper Forge, then drag the new Keeper Forge to Applications and replace the old one.",
-                );
-                if ui.button("Close Keeper Forge").clicked() {
-                    ui.ctx()
-                        .send_viewport_cmd(eframe::egui::ViewportCommand::Close);
-                }
-                // The disk image may have been ejected or its window lost: Install opens it again.
-                if let Some(update) = self.pending.clone()
-                    && ui.button("Back").clicked()
-                {
-                    self.state = State::Offer(update);
-                }
-            }
-            State::Failed(why) => {
-                ui.colored_label(ui.visuals().error_fg_color, format!("Update: {why}"));
-                if let Some(update) = self.pending.clone()
-                    && ui
-                        .add_enabled(!busy, eframe::egui::Button::new("Try again"))
-                        .clicked()
-                {
-                    self.download(update, ui.ctx().clone());
-                }
-            }
+    /// A banner that offers a sample build and never asks the feed. Nothing may press Install.
+    #[cfg(test)]
+    pub fn offering(mandatory: bool) -> Self {
+        let minimum = if mandatory { "0.5.0" } else { "0.1.0" };
+        let feed = format!(
+            r#"{{"version":"0.5.0","min_version":"{minimum}","platforms":{{"windows-x86_64":
+            {{"signature":"c2ln","url":"https://example.invalid/setup.exe"}}}}}}"#
+        );
+        let found = update::newer_in(&feed, "0.4.0", "windows").expect("sample feed");
+        Self {
+            state: State::Offer,
+            pending: found,
+            ..Self::quiet()
         }
     }
 
-    fn offer_ui(&mut self, ui: &mut eframe::egui::Ui, update: &Available, busy: bool) {
-        let text = if update.mandatory {
-            format!(
-                "This version of Keeper Forge is no longer supported. Version {} must be installed to continue.",
-                update.version
-            )
-        } else {
-            format!("Keeper Forge {} is available.", update.version)
-        };
-        ui.label(text);
-        ui.label(if cfg!(target_os = "macos") {
-            "Install downloads the disk image and opens it. You then drag Keeper Forge to Applications."
-        } else {
-            "The window closes and reopens when it is installed."
-        });
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!busy, eframe::egui::Button::new("Install"))
-                .clicked()
-            {
-                self.download(update.clone(), ui.ctx().clone());
+    /// Starts a check when one is due and takes what the worker threads reported. Closes the window
+    /// when an update was started. `data` is the Forge folder, which remembers a skipped version.
+    pub fn poll(&mut self, ctx: &Context, data: Option<&Path>) {
+        if let Some(due) = self.next_check {
+            let now = Instant::now();
+            let mut wait = due.saturating_duration_since(now);
+            if wait.is_zero() {
+                self.next_check = Some(now + CHECK_EVERY);
+                self.check(ctx.clone());
+                wait = CHECK_EVERY;
             }
-            if update.mandatory {
-                if ui.button("Close").clicked() {
-                    ui.ctx()
-                        .send_viewport_cmd(eframe::egui::ViewportCommand::Close);
-                }
-            } else {
-                if ui.button("Skip this version").clicked() {
-                    if let Some(folder) = crate::folder::data_dir() {
-                        let _ = update::remember_skipped(&folder, &update.version);
-                    }
-                    self.state = State::Quiet;
-                    self.pending = None;
-                }
-                if ui.button("Later").clicked() {
-                    self.state = State::Quiet;
-                    self.pending = None;
-                }
-            }
-        });
-    }
-
-    fn receive(&mut self, ctx: &eframe::egui::Context) {
+            // Asked every frame: egui forgets the request once the window repaints for another reason.
+            ctx.request_repaint_after(wait);
+        }
         while let Ok(event) = self.events.try_recv() {
-            match event {
-                Event::Found(Ok(Some(update))) => {
-                    let skipped = crate::folder::data_dir()
-                        .and_then(|folder| update::skipped_version(&folder));
-                    if update::worth_offering(&update, skipped.as_deref()) {
-                        self.pending = Some(update.clone());
-                        self.state = State::Offer(update);
-                    }
+            self.receive(ctx, data, event);
+        }
+    }
+
+    fn receive(&mut self, ctx: &Context, data: Option<&Path>, event: Event) {
+        match event {
+            // A later check never disturbs an install that is under way.
+            Event::Found(Ok(Some(update))) if matches!(self.state, State::Quiet | State::Offer) => {
+                let skipped = data.and_then(update::skipped_version);
+                if update::worth_offering(&update, skipped.as_deref()) {
+                    self.pending = Some(update);
+                    self.state = State::Offer;
                 }
-                // Offline or no feed yet: not worth bothering the admin, the next start tries again.
-                Event::Found(Ok(None) | Err(_)) => {}
-                Event::Progress(done, total) => self.state = State::Downloading(done, total),
-                Event::Started(Ok(())) if cfg!(target_os = "macos") => {
-                    self.state = State::Opened;
-                }
-                Event::Started(Ok(())) => {
-                    ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
-                }
-                Event::Started(Err(why)) => self.state = State::Failed(why),
+            }
+            // Offline or no feed yet: not worth bothering the admin, the next check tries again.
+            Event::Found(_) => {}
+            Event::Progress(done, total) => self.state = State::Downloading(done, total),
+            Event::Started(Ok(())) if cfg!(target_os = "macos") => self.state = State::Opened,
+            Event::Started(Ok(())) => ctx.send_viewport_cmd(ViewportCommand::Close),
+            Event::Started(Err(why)) => {
+                self.state = State::Offer;
+                self.failure = why;
             }
         }
+    }
+
+    /// The dialog over the window, while there is something to say. It is drawn every frame, so a
+    /// mandatory update keeps everything behind it out of reach.
+    pub fn show(&mut self, ctx: &Context, app: &mut AppState) {
+        let (Some(update), false) = (self.pending.clone(), matches!(self.state, State::Quiet))
+        else {
+            self.shown = false;
+            return;
+        };
+        let first = !std::mem::replace(&mut self.shown, true);
+        // Read before the dialog, which takes the key away. A click beside it does nothing.
+        let escape = ctx.input(|input| input.key_pressed(Key::Escape));
+        let (act, _) = widgets::dialog(ctx, "update", 460.0, |ui| {
+            self.contents(ui, &update, app.busy, first)
+        });
+        // A page's own dialog that opens later must not end up over a mandatory update.
+        ctx.move_to_top(LayerId::new(Order::Foreground, Id::unique("update")));
+        let can_put_off = !matches!(self.state, State::Downloading(..));
+        match act.or((escape && can_put_off).then_some(Act::Later)) {
+            None => {}
+            Some(Act::Notes) => {
+                // The page names only the version, which was read as a version number.
+                let _ = open::that(format!("{RELEASES}{}", update.version));
+            }
+            Some(Act::Skip) => {
+                if !update.mandatory {
+                    if let Some(folder) = app.data() {
+                        let _ = update::remember_skipped(folder, &update.version);
+                    }
+                    self.later();
+                }
+            }
+            Some(Act::Later) => self.later(),
+            Some(Act::Install) => {
+                if !app.busy && self.ready(app) {
+                    self.download(update, ctx.clone());
+                }
+            }
+            // Downloaded and checked again: the file left on disk is not trusted a second time.
+            Some(Act::Reopen) => self.download(update, ctx.clone()),
+            Some(Act::Back) => self.state = State::Offer,
+            Some(Act::Close) => ctx.send_viewport_cmd(ViewportCommand::Close),
+        }
+    }
+
+    /// Puts the update off until the next check. A mandatory one cannot be put off.
+    fn later(&mut self) {
+        if self.pending.as_ref().is_some_and(|u| u.mandatory) {
+            return;
+        }
+        self.state = State::Quiet;
+        self.pending = None;
+        self.failure.clear();
+        self.unsaved = false;
+    }
+
+    /// Saves the profile, because the restart would drop what was typed. False when it cannot be
+    /// saved and the admin has not yet been told; asking again goes on without saving.
+    fn ready(&mut self, app: &mut AppState) -> bool {
+        self.failure.clear();
+        if app.profile.is_some()
+            && !self.unsaved
+            && let Err(why) = app.save_profile()
+        {
+            self.unsaved = true;
+            self.failure = format!("{why} Updating now loses these edits.");
+            return false;
+        }
+        true
+    }
+
+    fn contents(&self, ui: &mut Ui, update: &Available, busy: bool, first: bool) -> Option<Act> {
+        let t = tokens(ui.ctx());
+        let mut act = None;
+        let words = |ui: &mut Ui, text: &str| {
+            widgets::paragraph(ui, text, Weight::Regular, t.s.rem, t.c.text, 1.45);
+        };
+        widgets::paragraph(
+            ui,
+            &format!("Keeper Forge {} is available", update.version),
+            Weight::Semibold,
+            t.rem(1.05),
+            t.c.text,
+            1.35,
+        );
+        if matches!(self.state, State::Opened) {
+            words(
+                ui,
+                "The disk image is open. Close Keeper Forge, then drag the new Keeper Forge to Applications and replace the old one.",
+            );
+        } else if update.mandatory {
+            words(
+                ui,
+                "This version is no longer supported. Update to continue.",
+            );
+        } else if cfg!(target_os = "macos") {
+            words(
+                ui,
+                "A new version is available. Would you like to download it and open the disk image?",
+            );
+        } else {
+            words(
+                ui,
+                "A new version is available. Would you like to relaunch with the updated version?",
+            );
+        }
+        let notes = link(ui, "What's new");
+        if first {
+            notes.request_focus();
+        }
+        if notes.clicked() {
+            act = Some(Act::Notes);
+        }
+        widgets::note(ui, Tone::Error, &self.failure);
+        if let State::Downloading(done, total) = self.state {
+            const MB: u64 = 1024 * 1024;
+            if total == 0 {
+                words(ui, &format!("Downloading the update: {} MB", done / MB));
+                ui.spinner();
+            } else {
+                widgets::split_line(
+                    ui,
+                    "Downloading the update",
+                    &format!("{} of {} MB", done / MB, total / MB),
+                );
+                // Only a picture of the numbers above.
+                #[allow(clippy::cast_precision_loss)]
+                widgets::progress_bar(ui, done as f32 / total as f32);
+            }
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            // The skip link sits at the left, the buttons of the earlier window at the right.
+            if matches!(self.state, State::Offer)
+                && !update.mandatory
+                && link(ui, "Skip this version").clicked()
+            {
+                act = Some(Act::Skip);
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                if let Some(clicked) = self.buttons(ui, update.mandatory, busy) {
+                    act = Some(clicked);
+                }
+            });
+        });
+        act
+    }
+
+    /// The buttons, from the right.
+    fn buttons(&self, ui: &mut Ui, mandatory: bool, busy: bool) -> Option<Act> {
+        let mut act = None;
+        let mut button = |ui: &mut Ui, button: Btn, what: Act| {
+            if button.show(ui).clicked() {
+                act = Some(what);
+            }
+        };
+        if matches!(self.state, State::Opened) {
+            button(ui, Btn::new("Close Keeper Forge").primary(), Act::Close);
+            button(ui, Btn::new("Open again"), Act::Reopen);
+            button(ui, Btn::new("Back"), Act::Back);
+            return act;
+        }
+        let installing = matches!(self.state, State::Downloading(..));
+        let label = if installing {
+            "Updating\u{2026}"
+        } else if self.unsaved {
+            "Update without saving"
+        } else if cfg!(target_os = "macos") {
+            "Download and open"
+        } else {
+            "Update and restart"
+        };
+        let ready = !installing && !busy;
+        button(ui, Btn::new(label).primary().enabled(ready), Act::Install);
+        if mandatory {
+            button(ui, Btn::new("Close").enabled(!installing), Act::Close);
+        } else {
+            button(ui, Btn::new("Later").enabled(!installing), Act::Later);
+        }
+        act
     }
 
     /// Checks in the background, so a slow or missing network never delays the window.
-    fn check(&self, ctx: eframe::egui::Context) {
+    fn check(&self, ctx: Context) {
         if !update::enabled() {
             return;
         }
@@ -201,8 +345,9 @@ impl Banner {
         });
     }
 
-    fn download(&mut self, update: Available, ctx: eframe::egui::Context) {
+    fn download(&mut self, update: Available, ctx: Context) {
         self.state = State::Downloading(0, 0);
+        self.failure.clear();
         let sender = self.sender.clone();
         thread::spawn(move || {
             let folder = std::env::temp_dir().join(format!("ck-update-{}", std::process::id()));
@@ -213,6 +358,172 @@ impl Banner {
             .and_then(|file| update::install(&file));
             let _ = sender.send(Event::Started(result));
             ctx.request_repaint();
+        });
+    }
+}
+
+/// A button that looks like a link (`.link`).
+fn link(ui: &mut Ui, text: &str) -> Response {
+    let t = tokens(ui.ctx());
+    let text = RichText::new(text)
+        .font(font(Weight::Regular, t.s.rem))
+        .color(t.c.accent)
+        .underline();
+    let response = ui.add(Button::new(text).frame(false));
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect.expand(2.0),
+            t.s.radius.min(4),
+            Stroke::new(2.0, t.c.accent),
+            StrokeKind::Outside,
+        );
+    }
+    response.on_hover_cursor(eframe::egui::CursorIcon::PointingHand)
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::accesskit::Role;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+    use crate::app::{CONTEST, Forge, MAKE};
+
+    /// A window that saves into `data`, so that leaving the profile works.
+    fn window(data: &Path, update: Banner) -> Harness<'static, Forge> {
+        let mut forge = Forge::sample();
+        forge.state = AppState::load(Some(data.to_owned()));
+        forge.update = update;
+        let mut harness = Harness::builder()
+            .with_size([1000.0, 760.0])
+            .with_accessibility_check(false)
+            .build_ui_state(|ui, forge: &mut Forge| forge.draw(ui), forge);
+        harness.run_steps(4);
+        harness
+    }
+
+    /// Clicks the second step in the sidebar and presses it from the keyboard.
+    fn try_to_leave(harness: &mut Harness<'static, Forge>) {
+        let step = harness.get_by_role_and_label(Role::Button, "Make sticks");
+        step.click();
+        harness.run_steps(3);
+        harness
+            .get_by_role_and_label(Role::Button, "Make sticks")
+            .focus();
+        harness.run_steps(2);
+        harness.key_press(Key::Enter);
+        harness.run_steps(3);
+    }
+
+    #[test]
+    fn a_mandatory_update_keeps_the_window_out_of_reach_and_cannot_be_put_off() {
+        let data = tempfile::tempdir().expect("folder");
+        // The same actions do reach the window when nothing is in the way.
+        let mut open = window(data.path(), Banner::quiet());
+        try_to_leave(&mut open);
+        assert_eq!(open.state().step, MAKE);
+
+        let mut blocked = window(data.path(), Banner::offering(true));
+        try_to_leave(&mut blocked);
+        assert_eq!(blocked.state().step, CONTEST);
+        blocked.key_press(Key::Escape);
+        blocked.run_steps(3);
+        assert!(blocked.query_by_label("Later").is_none());
+        assert!(blocked.query_by_label("Skip this version").is_none());
+        assert!(
+            blocked.query_by_label("Update and restart").is_some() || cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn escape_puts_an_optional_update_off_and_skip_remembers_it_in_the_forge_folder() {
+        let data = tempfile::tempdir().expect("folder");
+        let mut harness = window(data.path(), Banner::offering(false));
+        harness.key_press(Key::Escape);
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Later").is_none());
+        assert_eq!(update::skipped_version(data.path()), None);
+
+        let mut harness = window(data.path(), Banner::offering(false));
+        harness.get_by_label("Skip this version").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Later").is_none());
+        assert_eq!(
+            update::skipped_version(data.path()).as_deref(),
+            Some("0.5.0")
+        );
+        // The next check stays quiet about it.
+        let found = Banner::offering(false).pending;
+        let forge = harness.state_mut();
+        forge.update.receive(
+            &Context::default(),
+            Some(data.path()),
+            Event::Found(Ok(found)),
+        );
+        assert!(matches!(forge.update.state, State::Quiet));
+    }
+
+    #[test]
+    fn a_profile_that_cannot_be_saved_asks_before_it_is_lost() {
+        let data = tempfile::tempdir().expect("folder");
+        let mut app = AppState::load(Some(data.path().to_owned()));
+        app.blocked = Some("fix the contest end".to_owned());
+        let mut banner = Banner::offering(false);
+        assert!(!banner.ready(&mut app));
+        assert!(banner.failure.contains("loses these edits"));
+        assert!(banner.ready(&mut app));
+        assert!(app.profile_path.is_none());
+
+        app.blocked = None;
+        let mut banner = Banner::offering(false);
+        assert!(banner.ready(&mut app));
+        assert!(app.profile_path.is_some() && !app.is_unsaved());
+    }
+
+    #[test]
+    fn a_failed_install_stays_offered_and_a_later_check_leaves_a_download_alone() {
+        let ctx = Context::default();
+        let mut banner = Banner::offering(true);
+        banner.state = State::Downloading(1, 2);
+        let found = Banner::offering(false).pending;
+        banner.receive(&ctx, None, Event::Found(Ok(found)));
+        assert!(matches!(banner.state, State::Downloading(..)));
+        assert!(banner.pending.as_ref().is_some_and(|u| u.mandatory));
+        banner.receive(&ctx, None, Event::Started(Err("no".to_owned())));
+        assert!(matches!(banner.state, State::Offer));
+        assert_eq!(banner.failure, "no");
+        banner.later();
+        assert!(banner.pending.is_some());
+    }
+
+    #[test]
+    #[ignore = "writes pictures; needs CK_SHOTS_DIR and a graphics adapter"]
+    fn shots_of_the_update_dialog() {
+        use crate::shots::capture;
+        capture("update-offer", 0.0, |forge| {
+            forge.update = Banner::offering(false);
+        });
+        capture("update-mandatory", 0.0, |forge| {
+            forge.update = Banner::offering(true);
+        });
+        capture("update-downloading", 0.0, |forge| {
+            forge.update = Banner::offering(false);
+            forge.update.state = State::Downloading(21 << 20, 48 << 20);
+        });
+        capture("update-failed", 0.0, |forge| {
+            forge.update = Banner::offering(false);
+            forge.update.failure =
+                "could not download the update: the connection was reset".to_owned();
+        });
+        capture("update-unsaved", 0.0, |forge| {
+            forge.update = Banner::offering(true);
+            forge.update.unsaved = true;
+            forge.update.failure = "the profile has problems:\n- bookmark 1 needs a title Updating now loses these edits.".to_owned();
+        });
+        capture("update-opened", 0.0, |forge| {
+            forge.update = Banner::offering(false);
+            forge.update.state = State::Opened;
         });
     }
 }

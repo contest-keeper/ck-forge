@@ -126,15 +126,6 @@ impl Forge {
 
         let t = tokens(&ctx);
         ui.painter().rect_filled(ui.max_rect(), 0.0, t.c.bg);
-        if self.update.visible() {
-            Panel::top("update")
-                .frame(Frame::new().fill(t.c.panel).inner_margin(14))
-                .show(ui, |ui| self.update.show(ui, self.state.busy));
-        }
-        // A build that is too old shows nothing but the update, until it is installed.
-        if self.update.blocks() {
-            return;
-        }
         let window = ui.available_rect_before_wrap();
         self.sidebar(ui, &t);
         self.footer(ui, &t);
@@ -168,6 +159,8 @@ impl Forge {
                 painter.rect_filled(Rect::from_min_max(min, max), 0.0, color);
             }
         }
+        // Last, so the dialog is over everything.
+        self.update.show(&ctx, &mut self.state);
     }
 
     fn sidebar(&mut self, ui: &mut Ui, t: &Tokens) {
@@ -361,7 +354,7 @@ impl Forge {
 
 impl eframe::App for Forge {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        self.update.poll(ui.ctx());
+        self.update.poll(ui.ctx(), self.state.data());
         self.draw(ui);
     }
 }
