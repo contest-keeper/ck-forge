@@ -105,12 +105,13 @@
     typed = '';
   }
 
-  async function lookUpEarlier(found: api.DiskView[]) {
+  async function lookUpEarlier(found: api.DiskView[], current: () => boolean) {
     earlier = {};
     lookupNote = '';
     if (!app.hubEmail || !found.some((disk) => disk.hardware_id !== null)) return;
     try {
       const sticks = await api.hubListSticks();
+      if (!current()) return;
       const known: Record<number, api.HubStick> = {};
       for (const disk of found) {
         const stick = sticks.find(
@@ -124,6 +125,7 @@
       }
       earlier = known;
     } catch (error) {
+      if (!current()) return;
       lookupNote = `Forge could not check which sticks these disks held before: ${describeError(error)}`;
     }
   }
@@ -142,7 +144,7 @@
       // An older listing that comes back late must not replace a newer one the admin may have used.
       if (!current()) return;
       disks = found;
-      await lookUpEarlier(found);
+      await lookUpEarlier(found, current);
     } catch (error) {
       failure = describeError(error);
     }
