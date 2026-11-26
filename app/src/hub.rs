@@ -8,8 +8,8 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{HubSession, PairingEnd, Profile, ProfileSummary, Pushed};
@@ -25,7 +25,8 @@ const POLL_EVERY: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub struct HubState {
-    session: Mutex<Option<HubSession>>,
+    /// Shared, so a request runs without the lock: a slow Hub must not block every other command.
+    session: Mutex<Option<Arc<HubSession>>>,
     /// Whether the Hub has said yes to the session saved by an earlier run.
     checked: AtomicBool,
     /// Set by the Cancel button to stop a sign-in that is waiting for the browser.
@@ -36,16 +37,20 @@ impl HubState {
     /// Starts signed in when an earlier run saved a session.
     pub fn restored() -> Self {
         Self {
-            session: Mutex::new(ck_admin_core::vault::load()),
+            session: Mutex::new(ck_admin_core::vault::load().map(Arc::new)),
             checked: AtomicBool::new(false),
             cancel: AtomicBool::new(false),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<HubSession>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Arc<HubSession>>> {
         self.session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn current(&self) -> Option<Arc<HubSession>> {
+        self.lock().clone()
     }
 
     pub fn signed_in(&self) -> bool {
@@ -54,10 +59,9 @@ impl HubState {
 
     /// Sends the registry as the signed-in admin. `None` when nobody is signed in.
     pub fn push(&self, registry: &Path) -> Option<Result<String, String>> {
-        let guard = self.lock();
-        let session = guard.as_ref()?;
+        let session = self.current()?;
         Some(
-            ck_admin_core::push_registry_signed_in(HUB_URL, session, registry)
+            ck_admin_core::push_registry_signed_in(HUB_URL, &session, registry)
                 .map(|pushed| describe(&pushed))
                 .map_err(|e| message(&e)),
         )
@@ -109,7 +113,9 @@ pub async fn hub_sign_in(
             let email = session.email.clone();
             ck_admin_core::vault::save(&session);
             state.checked.store(true, Ordering::Relaxed);
-            if let Some(old) = state.lock().replace(session) {
+            // Taken out of the lock first: signing out is a slow request.
+            let old = state.lock().replace(Arc::new(session));
+            if let Some(old) = old {
                 ck_admin_core::sign_out(HUB_URL, &old);
             }
             let registry = profile_path
@@ -157,13 +163,20 @@ fn sign_in(app: &AppHandle) -> Result<PairingEnd, String> {
 /// asked whether it still stands; a Hub that cannot be reached is not an answer, so it is kept.
 #[tauri::command]
 pub async fn hub_status(state: State<'_, HubState>) -> Result<Option<String>, String> {
-    if !state.checked.swap(true, Ordering::Relaxed) && state.signed_in() {
-        let ended = state
-            .as_admin(|session| ck_admin_core::list_profiles(HUB_URL, session))
-            .err()
-            .is_some_and(|why| why.contains("sign in again"));
-        if ended {
-            state.lock().take();
+    if !state.checked.swap(true, Ordering::Relaxed)
+        && let Some(session) = state.current()
+        && matches!(
+            ck_admin_core::list_profiles(HUB_URL, &session),
+            Err(ck_admin_core::Error::SignedOut(_))
+        )
+    {
+        // Only the session that was asked: a sign-in may have replaced it meanwhile.
+        let mut current = state.lock();
+        if current
+            .as_ref()
+            .is_some_and(|now| Arc::ptr_eq(now, &session))
+        {
+            current.take();
             ck_admin_core::vault::forget();
         }
     }
@@ -201,11 +214,10 @@ impl HubState {
         &self,
         request: impl FnOnce(&HubSession) -> Result<T, ck_admin_core::Error>,
     ) -> Result<T, String> {
-        let guard = self.lock();
-        let session = guard
-            .as_ref()
+        let session = self
+            .current()
             .ok_or_else(|| "sign in to the Hub first".to_owned())?;
-        request(session).map_err(|e| message(&e))
+        request(&session).map_err(|e| message(&e))
     }
 }
 
@@ -233,9 +245,8 @@ pub async fn hub_load_profile(
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("profiles");
-    let loaded = state.as_admin(|session| {
-        ck_admin_core::load_hub_profile(HUB_URL, session, &id, &folder)
-    })?;
+    let loaded = state
+        .as_admin(|session| ck_admin_core::load_hub_profile(HUB_URL, session, &id, &folder))?;
     Ok(Loaded {
         profile: loaded.profile,
         path: loaded.path,
@@ -250,4 +261,26 @@ pub async fn hub_save_profile(
     profile: Profile,
 ) -> Result<Profile, String> {
     state.as_admin(|session| ck_admin_core::save_hub_profile(HUB_URL, session, &path, profile))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hub_request_does_not_hold_the_session_lock() {
+        let state = Arc::new(HubState::default());
+        *state.lock() = Some(Arc::new(HubSession::restore(
+            "token".to_owned(),
+            "a@example.test".to_owned(),
+        )));
+        let (done, result) = std::sync::mpsc::channel();
+        let again = Arc::clone(&state);
+        std::thread::spawn(move || {
+            // Another command asks while this request is still running.
+            let seen = again.as_admin(|_| Ok(again.signed_in()));
+            let _ = done.send(seen);
+        });
+        assert_eq!(result.recv_timeout(Duration::from_secs(5)), Ok(Ok(true)));
+    }
 }

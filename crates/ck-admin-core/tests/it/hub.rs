@@ -666,7 +666,7 @@ mod signed_in {
         ]);
         let session = paired(&hub);
         let error = push_registry_signed_in(&hub, &session, &registry_file(&dir)).unwrap_err();
-        assert!(matches!(error, Error::Hub(text) if text.contains("sign in again")));
+        assert!(matches!(error, Error::SignedOut(text) if text.contains("sign in again")));
     }
 }
 
@@ -836,5 +836,18 @@ mod profiles {
         let session = paired(&hub);
         let error = list_profiles(&hub, &session).unwrap_err();
         assert!(error.to_string().contains("not an admin"), "{error}");
+    }
+
+    #[test]
+    fn an_ended_session_is_a_typed_error_not_a_sentence_to_search() {
+        let mut replies = signed_in_replies();
+        replies.push(reply("401 Unauthorized", "", "{}"));
+        let (hub, _handle) = fake_hub(replies);
+        let session = paired(&hub);
+        let error = list_profiles(&hub, &session).unwrap_err();
+        assert!(
+            matches!(error, ck_admin_core::Error::SignedOut(_)),
+            "{error}"
+        );
     }
 }

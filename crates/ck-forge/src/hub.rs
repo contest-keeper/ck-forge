@@ -21,9 +21,7 @@ fn session() -> Result<HubSession, Error> {
 
 /// Drops the saved session when the Hub says it ended, so the next command asks to sign in.
 fn forget_ended<T>(result: Result<T, Error>) -> Result<T, Error> {
-    if let Err(Error::Hub(text)) = &result
-        && text.contains("sign in again")
-    {
+    if matches!(result, Err(Error::SignedOut(_))) {
         vault::forget();
     }
     result

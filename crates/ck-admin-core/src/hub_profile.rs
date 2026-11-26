@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Error;
 use crate::file::folder_of;
-use crate::hub::{HubProfile, HubSession, fetch_profile, new_profile_id, upload_profile};
+use crate::hub::{
+    HubProfile, HubSession, check_profile_id, fetch_profile, new_profile_id, upload_profile,
+};
 use crate::profile::Profile;
 use crate::wallpaper::Wallpaper;
 
@@ -35,15 +37,7 @@ pub fn load_hub_profile(
     folder: &Path,
 ) -> Result<LoadedProfile, Error> {
     // The id becomes a folder name, so it must not be able to leave `folder`.
-    if id.is_empty()
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(Error::Hub(
-            "the Hub gave a profile id that cannot be used as a folder name".to_owned(),
-        ));
-    }
+    check_profile_id(id)?;
     let remote = fetch_profile(hub, session, id)?;
     let folder = folder.join(id);
     fs::create_dir_all(&folder)

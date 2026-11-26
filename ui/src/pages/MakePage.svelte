@@ -5,6 +5,7 @@
   import ProgressBar from '../components/ProgressBar.svelte';
   import RetireOldKeys from '../components/RetireOldKeys.svelte';
   import { describeError, eraseConfirmation, formatDuration, stickLabel } from '../core/format';
+  import { newestOnly } from '../core/latest';
   import * as api from '../lib/api';
   import { app } from '../state.svelte';
 
@@ -104,12 +105,16 @@
     typed = '';
   }
 
-  async function lookUpEarlier(found: api.DiskView[]) {
+  async function lookUpEarlier(found: api.DiskView[], current: () => boolean) {
     earlier = {};
     lookupNote = '';
     if (!app.hubEmail || !found.some((disk) => disk.hardware_id !== null)) return;
+    // Another account may sign in while the Hub answers; its answer is not for this one.
+    const email = app.hubEmail;
+    const stale = () => !current() || app.hubEmail !== email;
     try {
       const sticks = await api.hubListSticks();
+      if (stale()) return;
       const known: Record<number, api.HubStick> = {};
       for (const disk of found) {
         const stick = sticks.find(
@@ -123,17 +128,26 @@
       }
       earlier = known;
     } catch (error) {
+      if (stale()) return;
       lookupNote = `Forge could not check which sticks these disks held before: ${describeError(error)}`;
     }
   }
 
+  const beginListing = newestOnly();
+
   async function refresh() {
+    const current = beginListing();
     failure = '';
     chosen = [];
     typed = '';
+    // The old rows must not stay selectable: the new listing may put another disk at a number.
+    disks = [];
     try {
-      disks = await api.listDisks(app.basePath ?? '', allowVirtual);
-      await lookUpEarlier(disks);
+      const found = await api.listDisks(app.basePath ?? '', allowVirtual);
+      // An older listing that comes back late must not replace a newer one the admin may have used.
+      if (!current()) return;
+      disks = found;
+      await lookUpEarlier(found, current);
     } catch (error) {
       failure = describeError(error);
     }
@@ -143,15 +157,24 @@
     testFile = (await api.chooseImageToSave()) ?? testFile;
   }
 
+  /** The chosen disks with the identity token of each as it was listed and confirmed. */
+  function diskTarget() {
+    const disk = [...chosen];
+    const confirmed = disks
+      .filter((d) => disk.includes(d.number))
+      .map((d) => `${d.number}=${d.token}`);
+    return { disks: disk, confirmed };
+  }
+
   /** Pressing the write button: when it replaces sticks the Hub knows, ask first. */
   function begin() {
     if (replaced.length > 0) asking = true;
-    else void write({ disks: [...chosen] }, false);
+    else void write(diskTarget(), false);
   }
 
   function decided(choice: 'retire' | 'keep' | 'cancel') {
     asking = false;
-    if (choice !== 'cancel') void write({ disks: [...chosen] }, choice === 'retire');
+    if (choice !== 'cancel') void write(diskTarget(), choice === 'retire');
   }
 
   /** Retires the old keys one by one; a key that fails is told, and the others still go. */
@@ -170,7 +193,10 @@
     }
   }
 
-  async function write(target: { disks: number[] } | { file: string }, retireAfter = false) {
+  async function write(
+    target: { disks: number[]; confirmed: string[] } | { file: string },
+    retireAfter = false,
+  ) {
     if (!app.profilePath || !app.basePath) return;
     app.busy = true;
     failure = '';

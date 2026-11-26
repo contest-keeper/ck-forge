@@ -5,10 +5,11 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    EnrolmentBuild, HardwareId, HubImage, HubImageStep, Profile, SignSettings, Wallpaper,
-    build_enrolment_image, build_thin_image, enrolment_config_sha256, folder_of,
-    import_image, local_now, mint_enrolment_code, record_config_hash, record_stick_write,
-    requires_signed_settings, sign_settings, stick_config_sha256, supports_enrolment,
+    EnrolmentBuild, HardwareId, HubImage, HubImageStep, Profile, Registry, SignSettings, Wallpaper,
+    build_enrolment_image, build_thin_image, enrolment_config_sha256, folder_of, import_image,
+    local_now, mint_enrolment_code, record_config_hash, record_stick_write,
+    requires_signed_settings, retire_stick_credential, sign_settings, stick_config_sha256,
+    supports_enrolment,
 };
 use ck_protocol::{StickId, WifiPassword};
 use serde::{Deserialize, Serialize};
@@ -114,6 +115,7 @@ pub async fn enrolment_supported(base: PathBuf) -> Result<bool, String> {
 }
 
 /// A stick Forge made: what the Hub is told about it once its write is finished.
+#[derive(Clone)]
 struct MadeStick {
     id: StickId,
     /// The SHA-256 of the settings file on the stick.
@@ -173,14 +175,7 @@ fn build_stick(
             &options,
             |settings, machine_number, scope| {
                 hub.as_admin(|session| {
-                    mint_enrolment_code(
-                        HUB_URL,
-                        session,
-                        settings,
-                        machine_number,
-                        scope,
-                        hardware,
-                    )
+                    mint_enrolment_code(HUB_URL, session, settings, machine_number, scope, hardware)
                 })
                 .map(|minted| minted.code)
                 .map_err(ck_admin_core::Error::Hub)
@@ -238,6 +233,9 @@ pub struct DiskView {
     serial: String,
     /// The start of the disk's fingerprint, the same id the Hub shows for a stick written to it.
     hardware_id: Option<String>,
+    /// `Disk::identity_token` as listed. The window sends it back with the write, and the helper
+    /// erases only a disk that still has it.
+    token: String,
     size: String,
     bus: String,
     /// Why this disk is never written, or nothing when it may be.
@@ -266,6 +264,7 @@ pub async fn list_disks(base: PathBuf, allow_virtual: bool) -> Result<Vec<DiskVi
                         .to_owned(),
                     hardware_id: HardwareId::of(disk)
                         .map(|id| id.fingerprint.chars().take(8).collect()),
+                    token: disk.identity_token(),
                     size: disk.size_text(),
                     bus: disk.bus_type.clone(),
                     refused: refusal.as_ref().map(ToString::to_string),
@@ -308,6 +307,10 @@ struct HelperState {
     total: u64,
     sha256: Option<String>,
     message: Option<String>,
+    /// Which sticks (by position) the helper could not write. Empty when it stopped before or
+    /// without saying, so none can be trusted.
+    #[serde(default)]
+    failed: Vec<usize>,
 }
 
 fn read_state(file: &Path) -> Option<HelperState> {
@@ -322,6 +325,56 @@ fn quote(path: &Path) -> Result<String, String> {
         return Err(format!("{text} cannot be used as a file name here"));
     }
     Ok(format!("\"{text}\""))
+}
+
+/// The token the admin confirmed for each disk, in order of `disks`. A disk without a valid one
+/// is refused, so nothing is built or erased for it.
+fn confirmed_tokens<'a>(
+    disks: &[u32],
+    confirmed: &'a [String],
+) -> Result<Vec<(u32, &'a str)>, String> {
+    disks
+        .iter()
+        .map(|&disk| {
+            let prefix = format!("{disk}=");
+            confirmed
+                .iter()
+                .find_map(|pair| pair.strip_prefix(&prefix))
+                .filter(|token| !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit()))
+                .map(|token| (disk, token))
+                .ok_or_else(|| format!("disk {disk} was not confirmed; list the disks again"))
+        })
+        .collect()
+}
+
+/// The argument string of the elevated `ck-forge stick write`. Every disk must come with the identity
+/// token the admin confirmed, so the helper refuses a stick that took its number in the meantime;
+/// without one nothing is started.
+fn helper_arguments(
+    images: &[PathBuf],
+    progress_file: &Path,
+    disks: &[u32],
+    confirmed: &[String],
+    allow_virtual: bool,
+) -> Result<String, String> {
+    let tokens = confirmed_tokens(disks, confirmed)?;
+    let mut arguments = vec!["stick".to_owned(), "write".to_owned()];
+    for image in images {
+        arguments.push(quote(image)?);
+    }
+    arguments.extend([
+        "--yes".to_owned(),
+        "--progress-file".to_owned(),
+        quote(progress_file)?,
+    ]);
+    for (disk, token) in tokens {
+        arguments.extend(["--disk".to_owned(), disk.to_string()]);
+        arguments.extend(["--confirmed".to_owned(), format!("{disk}={token}")]);
+    }
+    if allow_virtual {
+        arguments.push("--allow-virtual".to_owned());
+    }
+    Ok(arguments.join(" "))
 }
 
 /// Makes one image for each stick from `base` and the saved profile, so every stick has its own
@@ -339,6 +392,7 @@ pub async fn write_stick(
     profile_path: PathBuf,
     disks: Vec<u32>,
     to_file: Option<PathBuf>,
+    confirmed: Vec<String>,
     allow_virtual: bool,
     wifi_password: Option<String>,
     first_boot_enrolment: Option<bool>,
@@ -358,6 +412,7 @@ pub async fn write_stick(
             .map_err(|e| format!("could not make {}: {e}", work.display()))?;
         let target = Target {
             disks: &disks,
+            confirmed: &confirmed,
             to_file: to_file.as_deref(),
             allow_virtual,
             wifi_password: wifi_password.as_ref(),
@@ -374,6 +429,8 @@ pub async fn write_stick(
 /// Where the sticks go and what is typed for this write only.
 struct Target<'a> {
     disks: &'a [u32],
+    /// `NUMBER=TOKEN` of each disk as the admin saw it when confirming.
+    confirmed: &'a [String],
     to_file: Option<&'a Path>,
     allow_virtual: bool,
     wifi_password: Option<&'a WifiPassword>,
@@ -448,10 +505,15 @@ fn make_and_write(
 ) -> Result<String, String> {
     let Target {
         disks,
+        confirmed,
         to_file,
         allow_virtual,
         ..
     } = *target;
+    // Before any stick is built: a refusal here must not leave keys in the registry or on the Hub.
+    if to_file.is_none() {
+        confirmed_tokens(disks, confirmed)?;
+    }
     let Made { images, written } = build_images(app, base, profile_path, work, target)?;
     // A file needs no administrator rights, so it is written here: a test without a stick.
     if let Some(file) = to_file {
@@ -460,22 +522,7 @@ fn make_and_write(
     let exe = forge_exe()?;
     let progress_file = std::env::temp_dir().join(format!("ck-write-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&progress_file);
-    let mut arguments = vec!["stick".to_owned(), "write".to_owned()];
-    for image in &images {
-        arguments.push(quote(image)?);
-    }
-    arguments.extend([
-        "--yes".to_owned(),
-        "--progress-file".to_owned(),
-        quote(&progress_file)?,
-    ]);
-    for disk in disks {
-        arguments.push("--disk".to_owned());
-        arguments.push(disk.to_string());
-    }
-    if allow_virtual {
-        arguments.push("--allow-virtual".to_owned());
-    }
+    let arguments = helper_arguments(&images, &progress_file, disks, confirmed, allow_virtual)?;
     // The program and its arguments go in environment variables, so nothing chosen in the
     // window is ever part of the PowerShell command text.
     let mut powershell = Command::new("powershell.exe");
@@ -488,7 +535,7 @@ fn make_and_write(
                  -WindowStyle Hidden -Wait",
         ])
         .env("CK_EXE", &exe)
-        .env("CK_ARGS", arguments.join(" "));
+        .env("CK_ARGS", arguments);
     // The elevated helper starts hidden, but PowerShell itself would still show a console.
     let mut child = ck_writer::without_console_window(&mut powershell)
         .spawn()
@@ -519,6 +566,9 @@ fn make_and_write(
     };
     let finished = read_state(&progress_file);
     let _ = std::fs::remove_file(&progress_file);
+    let failed = finished
+        .as_ref()
+        .map_or_else(Vec::new, |state| state.failed.clone());
     match finished {
         Some(HelperState {
             state,
@@ -528,16 +578,114 @@ fn make_and_write(
             record_written(app, &written);
             Ok(hash)
         }
-        Some(HelperState {
-            message: Some(why), ..
-        }) => Err(why),
-        _ if !status.success() => {
-            Err("the administrator permission was refused, so nothing was written".to_owned())
+        other => {
+            let why = match other {
+                Some(HelperState {
+                    message: Some(why), ..
+                }) => why,
+                _ if !status.success() => {
+                    "the administrator permission was refused, so nothing was written".to_owned()
+                }
+                _ => "the writer stopped without saying why; nothing on the stick can be trusted"
+                    .to_owned(),
+            };
+            Err(settle_failure(app, profile_path, &written, &failed, why))
         }
-        _ => Err(
-            "the writer stopped without saying why; nothing on the stick can be trusted".to_owned(),
-        ),
     }
+}
+
+/// What follows a write that did not finish: the sticks that were written stay and are recorded, the
+/// others leave the registry file and the Hub. Returns the reason, with what could not be cleaned up.
+fn settle_failure(
+    app: &AppHandle,
+    profile_path: &Path,
+    written: &[MadeStick],
+    failed: &[usize],
+    why: String,
+) -> String {
+    let (kept, unwritten) = split_written(written, failed);
+    let kept: Vec<MadeStick> = kept.into_iter().cloned().collect();
+    record_written(app, &kept);
+    let hub = app.state::<HubState>();
+    let registry = registry_of(profile_path);
+    let problems = clean_up_unwritten(
+        &unwritten,
+        |id| {
+            Registry::remove(&registry, id)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        },
+        |id| {
+            if !hub.signed_in() {
+                return Ok(());
+            }
+            hub.as_admin(
+                |session| match retire_stick_credential(HUB_URL, session, id.as_str()) {
+                    Err(ck_admin_core::Error::NoSuchStick) => Ok(()),
+                    other => other,
+                },
+            )
+        },
+    );
+    if problems.is_empty() {
+        why
+    } else {
+        format!("{why}. {}", problems.join(". "))
+    }
+}
+
+/// The sticks whose write the helper confirmed, and those that must not stay: when it names no
+/// failed stick it stopped as a whole (refused, cancelled, died), so none can be trusted.
+fn split_written<'a>(
+    made: &'a [MadeStick],
+    failed: &[usize],
+) -> (Vec<&'a MadeStick>, Vec<&'a MadeStick>) {
+    if failed.is_empty() {
+        return (Vec::new(), made.iter().collect());
+    }
+    let mut parts = (Vec::new(), Vec::new());
+    for (index, stick) in made.iter().enumerate() {
+        if failed.contains(&index) {
+            parts.1.push(stick);
+        } else {
+            parts.0.push(stick);
+        }
+    }
+    parts
+}
+
+/// The registry file is written when an image is built, and every push sends the whole file; the Hub
+/// is told at the same time. A stick that was not written does not exist, so it leaves both: it must
+/// never reach the Hub later as a live stick. A failure does not stop the others; each is named.
+fn clean_up_unwritten(
+    unwritten: &[&MadeStick],
+    mut remove: impl FnMut(&StickId) -> Result<(), String>,
+    mut retire: impl FnMut(&StickId) -> Result<(), String>,
+) -> Vec<String> {
+    let mut not_removed = Vec::new();
+    let mut not_retired = Vec::new();
+    for stick in unwritten {
+        if remove(&stick.id).is_err() {
+            not_removed.push(stick.id.to_string());
+        }
+        if retire(&stick.id).is_err() {
+            not_retired.push(stick.id.to_string());
+        }
+    }
+    let mut problems = Vec::new();
+    if !not_removed.is_empty() {
+        problems.push(format!(
+            "these sticks could not be taken out of the registry file, so delete them from it before the next push: {}",
+            not_removed.join(", ")
+        ));
+    }
+    if !not_retired.is_empty() {
+        problems.push(format!(
+            "these sticks could not be retired on the Hub, so retire them there: {}",
+            not_retired.join(", ")
+        ));
+    }
+    problems
 }
 
 fn write_to_file(app: &AppHandle, image: &Path, file: &Path) -> Result<String, String> {
@@ -586,6 +734,54 @@ mod tests {
         assert!(quote(Path::new(r#"x.img" --to "C:\Windows\win.ini"#)).is_err());
         // A backslash before the closing quote would make the quote part of the argument.
         assert!(quote(Path::new(r"C:\folder\")).is_err());
+    }
+
+    #[test]
+    fn a_disk_is_written_only_with_the_token_the_admin_confirmed() {
+        let image = [PathBuf::from(r"C:\w\stick-1.img")];
+        let progress = Path::new(r"C:\w\p.json");
+        let ok = helper_arguments(&image, progress, &[3], &["3=ab12".to_owned()], false).unwrap();
+        assert!(ok.contains("--disk 3 --confirmed 3=ab12"), "{ok}");
+        for bad in [vec![], vec!["4=ab12".to_owned()], vec!["3=zz".to_owned()]] {
+            assert!(helper_arguments(&image, progress, &[3], &bad, false).is_err());
+        }
+    }
+
+    #[test]
+    fn a_failed_write_keeps_only_the_sticks_the_helper_confirmed() {
+        let stick = |id: &str| MadeStick {
+            id: StickId::parse(id).unwrap(),
+            config_sha256: String::new(),
+            disk: None,
+        };
+        let made = [stick("stick-a"), stick("stick-b"), stick("stick-c")];
+        // Stopped as a whole: refused, cancelled or died. Nothing can be trusted.
+        let (kept, gone) = split_written(&made, &[]);
+        assert!(kept.is_empty() && gone.len() == 3);
+        // One stick failed: the others were written and checked.
+        let (kept, gone) = split_written(&made, &[1]);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(gone[0].id.as_str(), "stick-b");
+
+        // Every unwritten stick leaves the registry and the Hub; one failing does not stop the rest.
+        let (mut removed, mut retired) = (Vec::new(), Vec::new());
+        let problems = clean_up_unwritten(
+            &gone,
+            |id| {
+                removed.push(id.to_string());
+                Ok(())
+            },
+            |id| {
+                retired.push(id.to_string());
+                Err("down".to_owned())
+            },
+        );
+        assert_eq!(
+            (removed, retired),
+            (vec!["stick-b".to_owned()], vec!["stick-b".to_owned()])
+        );
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("stick-b"));
     }
 
     #[test]

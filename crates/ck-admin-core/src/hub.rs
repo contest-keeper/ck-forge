@@ -121,7 +121,7 @@ fn post_registry(
     match status {
         200 | 409 => serde_json::from_str(&text)
             .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}"))),
-        401 => Err(Error::Hub("the sign-in ended; sign in again".into())),
+        401 => Err(Error::SignedOut("the sign-in ended; sign in again".into())),
         403 => Err(Error::Hub("this account is not an admin".into())),
         400 => Err(Error::Hub(format!("the Hub refused the registry: {text}"))),
         code => Err(Error::Hub(format!("the Hub answered {code}"))),
@@ -153,7 +153,7 @@ fn org_url(
         .map_err(|e| unreachable_hub(base, &e))?;
     match answer.status().as_u16() {
         200 => {}
-        401 => return Err(Error::Hub("the sign-in ended; sign in again".into())),
+        401 => return Err(Error::SignedOut("the sign-in ended; sign in again".into())),
         code => return Err(Error::Hub(format!("the Hub answered {code}"))),
     }
     let me: MeAnswer = answer
@@ -495,7 +495,7 @@ pub fn mint_enrolment_code(
                 .read_json()
                 .map_err(|_| Error::Hub("the Hub returned an invalid enrolment code".into()));
         }
-        401 => "sign in to the Hub again".into(),
+        401 => return Err(Error::SignedOut("sign in to the Hub again".into())),
         403 => "this account cannot make enrolment codes".into(),
         409 => "making enrolment codes in Forge requires a sign-in with one organization".into(),
         429 => "too many enrolment codes requested. Try again in a minute".into(),
@@ -529,7 +529,7 @@ pub fn record_stick_write(
         .map_err(|e| unreachable_hub(base, &e))?;
     match answer.status().as_u16() {
         200 => Ok(()),
-        401 => Err(Error::Hub("sign in again to record the disk".into())),
+        401 => Err(Error::SignedOut("sign in again to record the disk".into())),
         403 => Err(Error::Hub("this account cannot record disks".into())),
         status => Err(Error::Hub(format!(
             "the Hub answered {status} while recording the disk"
@@ -582,7 +582,7 @@ pub fn list_sticks(hub: &str, session: &HubSession) -> Result<Vec<HubStick>, Err
             .limit(8 * 1024 * 1024)
             .read_json()
             .map_err(|e| Error::Hub(format!("unreadable answer from the Hub: {e}"))),
-        401 => Err(Error::Hub("sign in again to see the sticks".into())),
+        401 => Err(Error::SignedOut("sign in again to see the sticks".into())),
         403 => Err(Error::Hub("this account cannot see the sticks".into())),
         409 => Err(Error::Hub(
             "listing sticks in Forge requires a sign-in with one organization".into(),
@@ -625,7 +625,7 @@ pub fn sign_settings(hub: &str, session: &HubSession, settings: &[u8]) -> Result
             .read_json::<SignAnswer>()
             .map(|answer| answer.signature)
             .map_err(|_| Error::Hub("the Hub returned an unreadable signature".into())),
-        401 => Err(Error::Hub(
+        401 => Err(Error::SignedOut(
             "sign in again to get the settings signed".into(),
         )),
         403 => Err(Error::Hub("this account cannot get settings signed".into())),
@@ -669,7 +669,9 @@ pub fn record_config_hash(
         .map_err(|e| unreachable_hub(base, &e))?;
     match answer.status().as_u16() {
         204 => Ok(()),
-        401 => Err(Error::Hub("sign in again to record the settings".into())),
+        401 => Err(Error::SignedOut(
+            "sign in again to record the settings".into(),
+        )),
         403 => Err(Error::Hub("this account cannot record settings".into())),
         status => Err(Error::Hub(format!(
             "the Hub answered {status} while recording the settings"
@@ -689,7 +691,9 @@ pub fn retire_stick_credential(hub: &str, session: &HubSession, id: &str) -> Res
     let status = answer.status().as_u16();
     match status {
         204 => Ok(()),
-        401 => Err(Error::Hub("sign in again to retire the stick key".into())),
+        401 => Err(Error::SignedOut(
+            "sign in again to retire the stick key".into(),
+        )),
         403 => Err(Error::Hub("this account cannot retire stick keys".into())),
         404 => Err(Error::NoSuchStick),
         409 => Err(Error::Hub(
@@ -745,6 +749,7 @@ pub fn list_profiles(hub: &str, session: &HubSession) -> Result<Vec<ProfileSumma
 
 /// One profile of the organization, with its wallpaper picture.
 pub fn fetch_profile(hub: &str, session: &HubSession, id: &str) -> Result<HubProfile, Error> {
+    check_profile_id(id)?;
     let base = checked_base(hub)?;
     let bearer = session.authorization()?;
     let mut answer = agent()
@@ -803,6 +808,7 @@ pub fn upload_profile(
     id: &str,
     profile: &HubProfile,
 ) -> Result<(), Error> {
+    check_profile_id(id)?;
     let base = checked_base(hub)?;
     let wallpaper = profile.wallpaper.as_ref().map(|w| {
         json!({ "name": w.name, "data_base64": base64::engine::general_purpose::STANDARD.encode(&w.bytes) })
@@ -825,6 +831,22 @@ pub fn upload_profile(
     check_profile_status(&mut answer)
 }
 
+/// The id goes into a Hub address, and a profile file from another admin can hold any `hub_id`,
+/// so one with a `/`, `..` or `?` must not steer the admin's token to another Hub route. It is
+/// also a folder name when a profile is loaded.
+pub(crate) fn check_profile_id(id: &str) -> Result<(), Error> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(Error::Hub(
+            "the Hub gave a profile id that cannot be used as a folder name".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn unreachable_hub(base: &str, error: &ureq::Error) -> Error {
     Error::Hub(format!("cannot reach the Hub at {base}: {error}"))
 }
@@ -837,7 +859,11 @@ fn check_profile_status(answer: &mut ureq::http::Response<ureq::Body>) -> Result
     }
     let text = answer.body_mut().read_to_string().unwrap_or_default();
     Err(Error::Hub(match status {
-        401 => "the sign-in ended; sign in again".to_owned(),
+        401 => {
+            return Err(Error::SignedOut(
+                "the sign-in ended; sign in again".to_owned(),
+            ));
+        }
         403 => "this account is not an admin".to_owned(),
         404 => "the Hub has no such profile".to_owned(),
         409 => "this account is in several organizations; profiles need exactly one".to_owned(),
@@ -901,6 +927,31 @@ mod tests {
         assert!(!safe_for_password("http://localhost:80@evil.org"));
         assert!(!safe_for_password("http://localhost@evil.org/"));
         assert!(!safe_for_password("hub.example.org"));
+    }
+
+    #[test]
+    fn a_profile_id_cannot_steer_the_request_to_another_hub_route() {
+        let session = HubSession::restore("token".to_owned(), "a@example.test".to_owned());
+        // Port 1 is closed: a request that was sent would say "cannot reach", not "profile id".
+        let hub = "http://127.0.0.1:1";
+        let profile = super::HubProfile {
+            name: String::new(),
+            settings: serde_json::from_value(serde_json::json!({})).unwrap_or_default(),
+            stick_key_window: None,
+            wallpaper: None,
+        };
+        for id in ["../me", "a/b", "a?b", ""] {
+            let fetched = super::fetch_profile(hub, &session, id)
+                .unwrap_err()
+                .to_string();
+            let sent = super::upload_profile(hub, &session, id, &profile)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                fetched.contains("profile id") && sent.contains("profile id"),
+                "{id}"
+            );
+        }
     }
 
     #[test]

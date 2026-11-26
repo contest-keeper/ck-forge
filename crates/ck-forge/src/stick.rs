@@ -49,7 +49,8 @@ pub(crate) fn stick_write_reported(
     yes: bool,
     control: &Control<'_>,
 ) -> Result<String, Error> {
-    let result = stick_write(images, disks, to, allow_virtual, yes, control);
+    let mut failed = Vec::new();
+    let result = stick_write(images, disks, to, allow_virtual, yes, control, &mut failed);
     if let Err(error) = &result {
         let state = if matches!(error, Error::Writer(ck_writer::Error::Cancelled)) {
             "cancelled"
@@ -58,7 +59,8 @@ pub(crate) fn stick_write_reported(
         };
         report_progress(
             control.progress,
-            &json!({ "state": state, "message": error.to_string() }),
+            // `failed` lets the window tell the sticks that were not written from those that were.
+            &json!({ "state": state, "message": error.to_string(), "failed": failed }),
         );
     }
     result
@@ -71,6 +73,7 @@ fn stick_write(
     allow_virtual: bool,
     yes: bool,
     control: &Control<'_>,
+    failed_targets: &mut Vec<usize>,
 ) -> Result<String, Error> {
     let count = disks.len().max(to.len());
     let images = images_for(images, count)?;
@@ -121,7 +124,9 @@ fn stick_write(
     let mut text = String::new();
     let mut failures = Vec::new();
     let mut hash = String::new();
-    for ((image, target), result) in jobs.iter().zip(results.map_err(admin_hint)?) {
+    for (index, ((image, target), result)) in
+        jobs.iter().zip(results.map_err(admin_hint)?).enumerate()
+    {
         match result {
             Ok(ck_writer::Written { sha256, unchanged }) => {
                 let _ = write!(text, "Wrote {} to {}", image.display(), target.display());
@@ -136,7 +141,10 @@ fn stick_write(
                 text.push('\n');
                 hash = sha256;
             }
-            Err(error) => failures.push(format!("{}: {}", label(target), admin_hint(error))),
+            Err(error) => {
+                failed_targets.push(index);
+                failures.push(format!("{}: {}", label(target), admin_hint(error)));
+            }
         }
     }
     if !failures.is_empty() {

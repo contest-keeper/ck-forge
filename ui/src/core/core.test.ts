@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { newestOnly } from './latest';
 import {
   describeError,
   eraseConfirmation,
@@ -153,5 +154,15 @@ describe('profile helpers', () => {
     expect(wholeNumber(2.7, 1)).toBe(2);
     expect(wholeNumber('', 1)).toBe(1);
     expect(wholeNumber(Number.NaN, 0)).toBe(0);
+  });
+});
+
+describe('newestOnly', () => {
+  it('keeps only the newest request current', () => {
+    const begin = newestOnly();
+    const first = begin();
+    const second = begin();
+    expect(first()).toBe(false);
+    expect(second()).toBe(true);
   });
 });

@@ -97,7 +97,10 @@ pub fn create_base_image(
 
     let work = work_dir(&options.out);
     fs::create_dir_all(&work).map_err(|e| Error::io("creating the work folder", e))?;
-    let partial = options.out.with_extension("partial");
+    // Appended, never an extension swap: `base.partial` as the output must not be its own staging file.
+    let mut staging = options.out.as_os_str().to_owned();
+    staging.push(".partial");
+    let partial = PathBuf::from(staging);
     let _ = fs::remove_file(&partial);
 
     let record = match build(options, &qemu, &source, &partial, &work, &mut progress) {
@@ -107,12 +110,24 @@ pub fn create_base_image(
             return Err(error);
         }
     };
-    fs::rename(&partial, &options.out).map_err(|e| Error::io("naming the finished image", e))?;
+    publish(&partial, &options.out)?;
     let text = serde_json::to_string_pretty(&record)?;
     fs::write(record_path(&options.out), text).map_err(|e| Error::io("writing the record", e))?;
     // The logs are only for a failed build.
     let _ = fs::remove_dir_all(&work);
     Ok(record)
+}
+
+/// Gives the finished image its name without replacing a file that appeared there since the start
+/// of the build. The partial file is removed by the move, or by the error when `out` exists.
+fn publish(partial: &Path, out: &Path) -> Result<(), Error> {
+    tempfile::TempPath::try_from_path(partial)
+        .map_err(|e| Error::io("naming the finished image", e))?
+        .persist_noclobber(out)
+        .map_err(|e| match e.error.kind() {
+            std::io::ErrorKind::AlreadyExists => Error::Exists(out.display().to_string()),
+            _ => Error::io("naming the finished image", e.error),
+        })
 }
 
 fn build(
@@ -166,4 +181,24 @@ fn build(
         size_bytes,
         image_sha256: sha256_file(image)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_finished_image_never_replaces_a_file_that_appeared_meanwhile() {
+        let dir = tempfile::tempdir().expect("folder");
+        let (partial, out) = (dir.path().join("a.partial"), dir.path().join("a.img"));
+        fs::write(&partial, b"new").expect("partial");
+        fs::write(&out, b"mine").expect("existing");
+        assert!(matches!(publish(&partial, &out), Err(Error::Exists(_))));
+        assert_eq!(fs::read(&out).expect("kept"), b"mine");
+        fs::remove_file(&out).expect("remove");
+        fs::write(&partial, b"new").expect("partial again");
+        publish(&partial, &out).expect("publish");
+        assert_eq!(fs::read(&out).expect("image"), b"new");
+        assert!(!partial.exists());
+    }
 }

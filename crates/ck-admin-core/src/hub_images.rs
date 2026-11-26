@@ -147,7 +147,9 @@ fn hub_get(hub: &str, session: &HubSession, path: &str) -> Result<Response<ureq:
 
 fn hub_status(status: StatusCode) -> Error {
     let message = match status {
-        StatusCode::UNAUTHORIZED => "sign in to the Hub again".into(),
+        StatusCode::UNAUTHORIZED => {
+            return Error::SignedOut("sign in to the Hub again".into());
+        }
         StatusCode::FORBIDDEN => "this account cannot download Keeper OS images".into(),
         _ => format!("the Hub image request returned HTTP {}", status.as_u16()),
     };

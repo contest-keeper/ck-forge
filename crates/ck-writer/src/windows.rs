@@ -31,14 +31,40 @@ impl DiskBackend for Windows {
 const LISTING: &str = "ConvertTo-Json -InputObject @(Get-Disk | ForEach-Object { \
     [pscustomobject]@{ Number = [int]$_.Number; FriendlyName = $_.FriendlyName; \
     SerialNumber = $_.SerialNumber; Path = $_.Path; Size = [uint64]$_.Size; BusType = [string]$_.BusType; \
-    IsSystem = [bool]$_.IsSystem; IsBoot = [bool]$_.IsBoot } }) -Compress";
+    IsSystem = [bool]$_.IsSystem; IsBoot = [bool]$_.IsBoot;     Removable = [bool]((Get-CimInstance -ClassName Win32_DiskDrive -Filter ('Index = ' + $_.Number)).Capabilities -contains 7) } }) -Compress";
+
+/// A disk as the listing prints it: the disk, and whether WMI calls its media removable.
+#[derive(serde::Deserialize)]
+struct Listed {
+    #[serde(flatten)]
+    disk: Disk,
+    #[serde(rename = "Removable", default)]
+    removable: Option<bool>,
+}
 
 fn parse_disks(text: &str) -> Result<Vec<Disk>, Error> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_str(text).map_err(|e| Error::Listing(format!("unreadable answer: {e}")))
+    let listed: Vec<Listed> = serde_json::from_str(text)
+        .map_err(|e| Error::Listing(format!("unreadable answer: {e}")))?;
+    Ok(listed
+        .into_iter()
+        .map(
+            |Listed {
+                 mut disk,
+                 removable,
+             }| {
+                // An external hard drive is on the USB bus too, and may hold a backup; macOS refuses it the same way.
+                if disk.bus_type == "USB" && removable == Some(false) {
+                    disk.blocked =
+                        Some("an external drive, not removable media like a stick".to_owned());
+                }
+                disk
+            },
+        )
+        .collect())
 }
 
 const PREPARE: &str = r"
@@ -139,6 +165,24 @@ mod tests {
         assert_eq!(parse_disks(one).unwrap().len(), 1);
         assert_eq!(parse_disks("").unwrap().len(), 0);
         assert!(parse_disks("nonsense").is_err());
+    }
+
+    #[test]
+    fn a_usb_disk_that_is_not_removable_media_is_blocked() {
+        let listing = |bus: &str, removable: &str| {
+            format!(
+                r#"[{{"Number":1,"FriendlyName":null,"SerialNumber":null,"Size":5,"BusType":"{bus}","IsSystem":false,"IsBoot":false,"Removable":{removable}}}]"#
+            )
+        };
+        for (bus, removable, blocked) in [
+            ("USB", "true", false),
+            ("USB", "false", true),
+            ("File Backed Virtual", "false", false),
+        ] {
+            let disks = parse_disks(&listing(bus, removable)).unwrap();
+            assert_eq!(disks[0].blocked.is_some(), blocked, "{bus} {removable}");
+            assert_eq!(disks[0].check(1, true).is_err(), blocked);
+        }
     }
 
     #[cfg(windows)]
