@@ -443,15 +443,17 @@ pub(crate) fn report_slowest(file: Option<&Path>, state: &[(u64, u64)], total: u
 /// write to. A plain `fs::write` follows a symbolic link put there and would overwrite its target as
 /// the administrator. So the state is written to a new file that must not exist (`create_new` does
 /// not follow links) and then renamed over the path, which replaces a link instead of following it.
+// shortcut: a link in a folder above the path is still followed. Closing that needs a folder the
+// person's own programs cannot change, which the window cannot make without elevation; upgrade
+// when the helper gets its own root-owned folder for progress files.
 pub(crate) fn report_progress(file: Option<&Path>, state: &serde_json::Value) {
     let Some(path) = file else {
         return;
     };
+    // Named for this process, so it is never a file that belongs to anyone else.
     let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".new");
+    temporary.push(format!(".{}.new", std::process::id()));
     let temporary = PathBuf::from(temporary);
-    // Removes a left-over file or a planted link itself, never what a link points to.
-    let _ = std::fs::remove_file(&temporary);
     let written = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
