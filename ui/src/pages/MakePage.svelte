@@ -109,9 +109,12 @@
     earlier = {};
     lookupNote = '';
     if (!app.hubEmail || !found.some((disk) => disk.hardware_id !== null)) return;
+    // Another account may sign in while the Hub answers; its answer is not for this one.
+    const email = app.hubEmail;
+    const stale = () => !current() || app.hubEmail !== email;
     try {
       const sticks = await api.hubListSticks();
-      if (!current()) return;
+      if (stale()) return;
       const known: Record<number, api.HubStick> = {};
       for (const disk of found) {
         const stick = sticks.find(
@@ -125,7 +128,7 @@
       }
       earlier = known;
     } catch (error) {
-      if (!current()) return;
+      if (stale()) return;
       lookupNote = `Forge could not check which sticks these disks held before: ${describeError(error)}`;
     }
   }
