@@ -1,6 +1,6 @@
 # Signs the given files with the organization's code signing certificate (Authenticode).
 # Needs CK_CODESIGN_PFX_BASE64 (the .pfx file in base64) and CK_CODESIGN_PASSWORD in the environment.
-# The release workflow runs it only when the certificate secret exists.
+# The develop workflow runs it only when the certificate secret exists.
 param([Parameter(Mandatory, ValueFromRemainingArguments)][string[]]$Files)
 
 $ErrorActionPreference = 'Stop'

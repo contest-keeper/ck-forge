@@ -17,10 +17,9 @@ Thumbs.db
 node_modules/
 dist/
 build/
-.svelte-kit/
-*.tsbuildinfo
-/app/target/
-/app/gen/
-# The helper copied next to the window for the installer (see .github/workflows/release.yml)
-/app/binaries/
+# Leftovers of the removed window (build output, packages) in older checkouts
+/app/
+/ui/
+/tools/update-signer/target/
+/egui-out/
 /app-egui/target

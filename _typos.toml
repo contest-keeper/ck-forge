@@ -1,0 +1,3 @@
+# StrCpy is an NSIS instruction.
+[default.extend-identifiers]
+StrCpy = "StrCpy"

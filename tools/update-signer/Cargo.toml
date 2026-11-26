@@ -1,0 +1,33 @@
+[package]
+name = "update-signer"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/contest-keeper/ck-forge"
+rust-version = "1.89"
+description = "Makes the update key and signs Keeper Forge installers with it"
+publish = false
+
+# Its own workspace, so the root build does not carry the signing code.
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+
+[dependencies]
+base64 = "0.22.1"
+# The version `tauri signer` uses: 0.7.4 and later of 0.7 skip the key derivation for an empty
+# password, so they cannot read the key that is already in use.
+minisign = "0.9.1"
+
+[dev-dependencies]
+minisign-verify = "0.2.5"

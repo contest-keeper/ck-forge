@@ -1,6 +1,6 @@
 # ck-forge
 
-Keeper Forge: the admin tool that configures and writes contest sticks (Rust, Tauri window with Svelte).
+Keeper Forge: the admin tool that configures and writes contest sticks (Rust, window in egui).
 
 Part of Contest Keeper (github.com/contest-keeper). Read these before changing anything:
 
@@ -44,7 +44,7 @@ Part of Contest Keeper (github.com/contest-keeper). Read these before changing a
 
 ### Checks
 
-Run before committing: cargo fmt --all; cargo clippy --all-targets -- -D warnings; cargo test; in the UI folder: pnpm lint, pnpm check, pnpm test
+Run before committing: cargo fmt --all; cargo clippy --all-targets -- -D warnings; cargo test. The window (`app-egui/`) and the update signer (`tools/update-signer/`) are their own workspaces: run the same three in those folders when you change them or a crate they use.
 
 ### Rules
 
@@ -55,6 +55,6 @@ Run before committing: cargo fmt --all; cargo clippy --all-targets -- -D warning
   promotions into `main` use merge commits after all required checks pass.
 - Commit and PR titles: `type: lowercase imperative subject` (e.g. `feat: add ESP config reader`).
 - No `Co-Authored-By` trailers, "Generated with" lines or other tool attribution in commits or PRs.
-- Never store, log or send passwords, cookies, session ids or tokens. The user types credentials. The one exception: the Hub session token may be kept in the operating system's credential vault (`app/src/vault.rs`), never in a file.
+- Never store, log or send passwords, cookies, session ids or tokens. The user types credentials. The one exception: the Hub session token may be kept in the operating system's credential vault (`crates/ck-admin-core/src/vault.rs`), never in a file.
 - Ask before deleting, force pushing or anything that leaves this machine.
 - Skills: `/ck:next-step` for the next plan step, `/ck:commit-pr` to commit and open a PR.

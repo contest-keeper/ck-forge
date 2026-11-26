@@ -1,7 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: cargo
-    directory: /
+    directories: ["/", "/app-egui", "/tools/update-signer"]
     target-branch: develop
     schedule:
       interval: monthly
@@ -10,17 +10,6 @@ updates:
       prefix: chore
     groups:
       cargo:
-        patterns: ["*"]
-  - package-ecosystem: npm
-    directory: /ui
-    target-branch: develop
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: chore
-    groups:
-      npm:
         patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
