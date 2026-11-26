@@ -7,6 +7,8 @@ mod app;
 mod contest;
 mod folder;
 mod make;
+#[cfg(test)]
+mod shots;
 mod side;
 mod state;
 mod theme;
