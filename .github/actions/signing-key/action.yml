@@ -34,9 +34,9 @@ runs:
         ENVIRONMENT: ${{ inputs.environment }}
       run: |
         set -euo pipefail
+        # Each environment has its own subscription, so the group has the same name in both.
         case "$ENVIRONMENT" in
-          develop) group=rg-ckhub-dev ;;
-          production) group=rg-ckhub ;;
+          develop|production) group=rg-ckhub ;;
           *) echo "environment must be develop or production" >&2; exit 1 ;;
         esac
         vault=$(az keyvault list --resource-group "$group" --query "[0].name" -o tsv)
