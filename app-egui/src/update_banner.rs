@@ -90,6 +90,12 @@ impl Banner {
                     ui.ctx()
                         .send_viewport_cmd(eframe::egui::ViewportCommand::Close);
                 }
+                // The disk image may have been ejected or its window lost: Install opens it again.
+                if let Some(update) = self.pending.clone()
+                    && ui.button("Back").clicked()
+                {
+                    self.state = State::Offer(update);
+                }
             }
             State::Failed(why) => {
                 ui.colored_label(ui.visuals().error_fg_color, format!("Update: {why}"));

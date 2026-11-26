@@ -21,7 +21,7 @@ Unicode true
 !define UNINSTALL "Software\Microsoft\Windows\CurrentVersion\Uninstall"
 ; Not "Keeper Forge": an entry of that name is how a Tauri install is recognised.
 !define UNINSTKEY "${UNINSTALL}\KeeperForge"
-; The Tauri installer keeps its folder in the default value of this key, and so does this one.
+; The Tauri installer keeps its folder in the default value of this key; this one writes it too.
 !define DIRKEY "Software\Contest Keeper\Keeper Forge"
 !define TAURIKEY "${UNINSTALL}\Keeper Forge"
 !define PREVIEWKEY "Software\Contest Keeper\Keeper Forge New"
@@ -44,8 +44,6 @@ Var Busy
 
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 !insertmacro MUI_PAGE_LICENSE "${LICENCE}"
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-!insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -81,13 +79,9 @@ Function .onInit
       StrCpy $TauriDir "$PROGRAMFILES64\Keeper Forge"
     ${EndIf}
   ${EndIf}
-  ; Empty unless /D= named a folder.
-  ${If} $INSTDIR == ""
-    StrCpy $INSTDIR $R1
-  ${EndIf}
-  ${If} $INSTDIR == ""
-    StrCpy $INSTDIR "$PROGRAMFILES64\Keeper Forge"
-  ${EndIf}
+  ; Always here, whatever /D= or the registry say: ck-forge.exe is started with administrator
+  ; rights, so a standard user must not be able to write to its folder and swap it.
+  StrCpy $INSTDIR "$PROGRAMFILES64\Keeper Forge"
 
   ; The preview installer wrote the 32-bit registry.
   SetRegView 32
@@ -151,6 +145,7 @@ Function RemoveTauri
   ${If} $TauriDir == ""
     Return
   ${EndIf}
+  ; CheckTauri has made sure that without an uninstaller there is no program left either.
   ${If} ${FileExists} "$TauriDir\uninstall.exe"
     ClearErrors
     StrCpy $0 1
@@ -160,12 +155,32 @@ Function RemoveTauri
     ${OrIf} $0 <> 0
       Abort "The earlier Keeper Forge could not be removed (code $0)."
     ${EndIf}
+    ${If} ${FileExists} "$TauriDir\ck-forge-app.exe"
+      Abort "The earlier Keeper Forge in $TauriDir could not be removed. Restart Windows, then run this installer again."
+    ${EndIf}
     ; Run with _?= it cannot delete itself.
     Delete "$TauriDir\uninstall.exe"
     RMDir "$TauriDir"
   ${EndIf}
-  ; Left over only when its uninstaller was missing.
+  ; Left over only when its uninstaller and its program were already gone.
   DeleteRegKey HKLM "${TAURIKEY}"
+FunctionEnd
+
+; A program without its uninstaller cannot be removed cleanly, and forgetting its entry would leave
+; it behind for good. Stops before anything is changed.
+Function CheckTauri
+  ${If} $TauriDir == ""
+  ${OrIf} ${FileExists} "$TauriDir\uninstall.exe"
+    Return
+  ${EndIf}
+  ${If} ${FileExists} "$TauriDir\ck-forge-app.exe"
+    StrCpy $R0 "The earlier Keeper Forge has no uninstaller. Delete $TauriDir\ck-forge-app.exe (your profiles are not kept there), then run this installer again."
+    ; A passive run shows the same line on its progress page and asks nothing.
+    ${If} $Passive = 0
+      MessageBox MB_ICONSTOP $R0 /SD IDOK
+    ${EndIf}
+    Abort $R0
+  ${EndIf}
 FunctionEnd
 
 ; Only the files the preview installed, so nothing else in its folder is lost.
@@ -173,11 +188,21 @@ Function RemovePreview
   ${If} $PreviewDir == ""
     Return
   ${EndIf}
+  ClearErrors
   Delete "$PreviewDir\keeper-forge.exe"
   Delete "$PreviewDir\ck-forge.exe"
   Delete "$PreviewDir\LICENSE.txt"
   Delete "$PreviewDir\THIRD-PARTY-LICENSES.txt"
+  ; Its uninstaller and entry stay while a file does, so the preview can still be removed.
+  ${If} ${Errors}
+    DetailPrint "The preview in $PreviewDir could not be removed: remove it in Windows Settings."
+    Return
+  ${EndIf}
   Delete "$PreviewDir\uninstall.exe"
+  ${If} ${Errors}
+    DetailPrint "The preview in $PreviewDir could not be removed: remove it in Windows Settings."
+    Return
+  ${EndIf}
   RMDir "$PreviewDir"
   Delete "$SMPROGRAMS\Keeper Forge New.lnk"
   SetRegView 32
@@ -186,8 +211,36 @@ Function RemovePreview
   SetRegView 64
 FunctionEnd
 
+; Moves one staged file into place.
+!macro Activate NAME
+  ClearErrors
+  Delete "$INSTDIR\${NAME}"
+  Rename "$INSTDIR\staging\${NAME}" "$INSTDIR\${NAME}"
+  ${If} ${Errors}
+    Abort "Could not put ${NAME} in place: run this installer again."
+  ${EndIf}
+!macroend
+
 Section "Install"
+  Call CheckTauri
   Call WaitUntilClosed
+
+  ; Everything new is written out before anything old is removed, so a failed extraction (a full
+  ; disk, an antivirus) leaves the earlier install working.
+  ClearErrors
+  SetOutPath "$INSTDIR\staging"
+  File /oname=keeper-forge.exe "${APP}"
+  File /oname=ck-forge.exe "${HELPER}"
+  File /oname=LICENSE.txt "${LICENCE}"
+  File /oname=THIRD-PARTY-LICENSES.txt "${THIRDPARTY}"
+  File "keeper-forge.ico"
+  WriteUninstaller "$INSTDIR\staging\uninstall.exe"
+  ${If} ${Errors}
+    Abort "Could not unpack Keeper Forge: nothing was removed."
+  ${EndIf}
+  ; Windows does not delete the folder a program is working in.
+  SetOutPath "$INSTDIR"
+
   ; Looked at before the Tauri uninstaller deletes it.
   StrCpy $HadDesktop 0
   ${If} ${FileExists} "$DESKTOP\Keeper Forge.lnk"
@@ -196,13 +249,13 @@ Section "Install"
   Call RemoveTauri
   Call RemovePreview
 
-  SetOutPath "$INSTDIR"
-  File /oname=keeper-forge.exe "${APP}"
-  File /oname=ck-forge.exe "${HELPER}"
-  File /oname=LICENSE.txt "${LICENCE}"
-  File /oname=THIRD-PARTY-LICENSES.txt "${THIRDPARTY}"
-  File "keeper-forge.ico"
-  WriteUninstaller "$INSTDIR\uninstall.exe"
+  !insertmacro Activate "keeper-forge.exe"
+  !insertmacro Activate "ck-forge.exe"
+  !insertmacro Activate "LICENSE.txt"
+  !insertmacro Activate "THIRD-PARTY-LICENSES.txt"
+  !insertmacro Activate "keeper-forge.ico"
+  !insertmacro Activate "uninstall.exe"
+  RMDir "$INSTDIR\staging"
   CreateShortCut "$SMPROGRAMS\Keeper Forge.lnk" "$INSTDIR\keeper-forge.exe" "" "$INSTDIR\keeper-forge.ico"
   ${If} $HadDesktop = 1
     CreateShortCut "$DESKTOP\Keeper Forge.lnk" "$INSTDIR\keeper-forge.exe" "" "$INSTDIR\keeper-forge.ico"
@@ -243,12 +296,28 @@ Section "Uninstall"
   ${If} $Busy = 1
     Abort "Keeper Forge is still running: close it and uninstall again."
   ${EndIf}
+  ClearErrors
   Delete "$INSTDIR\keeper-forge.exe"
   Delete "$INSTDIR\ck-forge.exe"
   Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\THIRD-PARTY-LICENSES.txt"
   Delete "$INSTDIR\keeper-forge.ico"
+  ; Left by an install that failed half way.
+  Delete "$INSTDIR\staging\keeper-forge.exe"
+  Delete "$INSTDIR\staging\ck-forge.exe"
+  Delete "$INSTDIR\staging\LICENSE.txt"
+  Delete "$INSTDIR\staging\THIRD-PARTY-LICENSES.txt"
+  Delete "$INSTDIR\staging\keeper-forge.ico"
+  Delete "$INSTDIR\staging\uninstall.exe"
+  ; The uninstaller and the entry stay while a file does, so it can be tried again.
+  ${If} ${Errors}
+    Abort "Some files could not be deleted: restart Windows and uninstall again."
+  ${EndIf}
   Delete "$INSTDIR\uninstall.exe"
+  ${If} ${Errors}
+    Abort "The uninstaller could not be deleted: restart Windows and uninstall again."
+  ${EndIf}
+  RMDir "$INSTDIR\staging"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\Keeper Forge.lnk"
   Delete "$DESKTOP\Keeper Forge.lnk"
