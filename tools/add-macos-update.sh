@@ -8,6 +8,7 @@ url=$2
 signature_file=$3
 manifest=$4
 # A missing signature would publish a feed that every Mac rejects.
+# An assignment of its own, so a failed read stops the script (inside jq's arguments it would not).
 signature=$(cat "$signature_file")
 [[ $signature =~ [^[:space:]] ]] || { echo "add-macos-update: no signature in $signature_file" >&2; exit 1; }
 # The feed has one version for all systems, so a disk image of another build must not join it.

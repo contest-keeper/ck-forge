@@ -11,6 +11,7 @@ signature_file=$3
 min_version=$(tr -d '[:space:]' < "$4")
 output=$5
 # A missing signature would publish a feed that every installed copy rejects.
+# An assignment of its own, so a failed read stops the script (inside jq's arguments it would not).
 signature=$(cat "$signature_file")
 [[ $signature =~ [^[:space:]] ]] || { echo "make-update-manifest: no signature in $signature_file" >&2; exit 1; }
 
