@@ -25,7 +25,7 @@ const PUBKEY: Option<&str> = option_env!("CK_UPDATE_PUBKEY");
 /// Where the newest build is announced.
 const FEED: &str = match option_env!("CK_UPDATE_FEED") {
     Some(feed) => feed,
-    None => "https://github.com/contest-keeper/ck-forge/releases/download/dev/update-egui.json",
+    None => "https://github.com/contest-keeper/ck-forge/releases/latest/download/update.json",
 };
 
 /// The version of this build: the release workflow sets it, otherwise it is the crate's.
@@ -330,6 +330,17 @@ mod tests {
     fn a_feed_without_a_build_for_this_system_offers_nothing() {
         let text = r#"{"version":"9.0.0","platforms":{"linux-x86_64":{"signature":"x","url":"https://x"}}}"#;
         assert_eq!(newer_in(text, "0.1.0"), Ok(None));
+    }
+
+    #[test]
+    fn the_feed_the_tauri_window_reads_is_understood() {
+        // The shape `tools/make-update-manifest.sh` writes.
+        let text = r#"{"version":"0.3.0","pub_date":"2026-11-26T10:00:00Z","min_version":"0.2.0",
+            "platforms":{"windows-x86_64":{"signature":"c2ln",
+            "url":"https://github.com/contest-keeper/ck-forge/releases/download/dev/keeper-forge-setup-x64.exe"}}}"#;
+        let found = newer_in(text, "0.1.0").expect("feed").expect("newer");
+        assert_eq!(found.version, "0.3.0");
+        assert!(found.mandatory);
     }
 
     #[test]

@@ -11,11 +11,10 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use ck_admin_core::{
-    EnrolmentBuild, Error as AdminError, HUB_URL, HardwareId, HubSession, Profile, Registry, SignSettings,
-    Wallpaper,
-    build_enrolment_image, build_thin_image, enrolment_config_sha256, folder_of, local_now,
-    mint_enrolment_code, push_registry_signed_in, record_config_hash, record_stick_write,
-    retire_stick_credential, sign_settings, stick_config_sha256, vault,
+    EnrolmentBuild, Error as AdminError, HUB_URL, HardwareId, HubSession, Profile, Registry,
+    SignSettings, Wallpaper, build_enrolment_image, build_thin_image, enrolment_config_sha256,
+    folder_of, local_now, mint_enrolment_code, push_registry_signed_in, record_config_hash,
+    record_stick_write, retire_stick_credential, sign_settings, stick_config_sha256, vault,
 };
 use ck_protocol::{StickId, WifiPassword};
 use serde::Deserialize;
@@ -126,7 +125,11 @@ fn write_all(
         return result;
     };
     let registry = registry_of(&request.profile);
-    let mut problems = unregister(&made, |id| Registry::remove(&registry, id).map(|_| ()).map_err(|e| e.to_string()));
+    let mut problems = unregister(&made, |id| {
+        Registry::remove(&registry, id)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    });
     // The Hub learns of a stick when its image is built, before anything is written, so it must not
     // keep it as a live stick either. A Hub that has no such stick has nothing to retire.
     if let Some(session) = session.as_ref() {
@@ -596,11 +599,19 @@ mod tests {
 
     #[test]
     fn every_stick_of_a_failed_write_leaves_the_registry_and_the_ones_that_stay_are_named() {
-        let sticks = [made("stick-a", true), made("stick-b", false), made("stick-c", true)];
+        let sticks = [
+            made("stick-a", true),
+            made("stick-b", false),
+            made("stick-c", true),
+        ];
         let mut tried = Vec::new();
         let problems = unregister(&sticks, |id| {
             tried.push(id.to_string());
-            if id.as_str() == "stick-b" { Err("locked".to_owned()) } else { Ok(()) }
+            if id.as_str() == "stick-b" {
+                Err("locked".to_owned())
+            } else {
+                Ok(())
+            }
         });
         assert_eq!(tried, ["stick-a", "stick-b", "stick-c"]);
         assert_eq!(problems.len(), 1);
