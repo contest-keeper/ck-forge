@@ -682,15 +682,27 @@ pub fn check(ui: &mut Ui, ticked: &mut bool, label: &str) -> Response {
 }
 
 pub fn check_weight(ui: &mut Ui, ticked: &mut bool, label: &str, weight: Weight) -> Response {
+    check_parts(ui, ticked, &[(label, weight)])
+}
+
+/// A check box whose label is a bold part and a regular one after it.
+pub fn check_suffixed(ui: &mut Ui, ticked: &mut bool, label: &str, suffix: &str) -> Response {
+    let parts = [(label, Weight::Semibold), (suffix, Weight::Regular)];
+    check_parts(ui, ticked, &parts)
+}
+
+fn check_parts(ui: &mut Ui, ticked: &mut bool, parts: &[(&str, Weight)]) -> Response {
     let t = tokens(ui.ctx());
     let enabled = ui.is_enabled();
     let box_side = 14.0;
-    let galley = ui.painter().layout(
-        label.to_owned(),
-        font(weight, t.s.rem),
-        t.c.text,
-        (ui.available_width() - box_side - 8.0).max(40.0),
-    );
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = (ui.available_width() - box_side - 8.0).max(40.0);
+    for (text, weight) in parts {
+        let format = TextFormat::simple(font(*weight, t.s.rem), t.c.text);
+        job.append(text, 0.0, format);
+    }
+    let label = job.text.clone();
+    let galley = ui.painter().layout_job(job);
     let size = vec2(
         box_side + 8.0 + galley.size().x,
         galley.size().y.max(t.s.check_row),
@@ -700,7 +712,7 @@ pub fn check_weight(ui: &mut Ui, ticked: &mut bool, label: &str, weight: Weight)
         *ticked = !*ticked;
         response.mark_changed();
     }
-    response.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, *ticked, label));
+    response.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, *ticked, &label));
     let mark = Rect::from_center_size(
         pos2(rect.left() + box_side / 2.0, rect.center().y),
         Vec2::splat(box_side),

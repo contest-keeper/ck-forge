@@ -48,7 +48,7 @@ pub struct AppState {
 }
 
 /// What went wrong with a profile, in the words of the earlier window.
-fn message(error: &Error) -> String {
+pub fn message(error: &Error) -> String {
     match error {
         Error::InvalidProfile(problems) => {
             let lines: Vec<String> = problems.iter().map(|p| format!("- {p}")).collect();

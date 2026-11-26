@@ -1,473 +1,355 @@
-//! The profile editor: the settings every stick of a contest gets. It edits one profile file and
-//! shows what `ck-admin-core` says is wrong with it, as the Svelte window does.
+//! The profile editor: the settings every stick of a contest gets. It shows what `ck-admin-core`
+//! says is wrong with the profile, as `ContestPage.svelte` of the earlier web window does.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::contest::hub_profiles::Outcome;
+use ck_admin_core::{HUB_URL, Profile, ProfileSummary, add_wallpaper, folder_of};
+use eframe::egui::{self, Ui};
+
+use crate::contest::forms::{self, Typed};
+use crate::contest::hub_profiles::{Outcome, Panel};
+use crate::contest::preview::{self, Asked, Picture};
 use crate::state::AppState;
-use base64::Engine;
-use ck_admin_core::{Profile, add_wallpaper, wallpaper_data_url};
-use ck_protocol::{Bookmark, LocalDateTime, RecordingMode, UploadMode, Wifi};
+use crate::theme::tokens;
+use crate::widgets::{self, Btn, Input, Tone, field};
+
+const PICTURES: [&str; 5] = ["png", "jpg", "jpeg", "webp", "bmp"];
 
 #[derive(Default)]
 pub struct Screen {
-    /// The file the profile is read from and saved to, as typed.
-    path: String,
-    /// The profile and the file that the typed texts were last read from.
+    /// The profile that the typed texts were last read from.
     revision: Option<u64>,
-    file: Option<PathBuf>,
-    /// The profile file, picture name and picture revision the preview was made from.
-    pictured: Option<(PathBuf, String, u64)>,
-    /// One site name per line, kept as typed until it is applied to the profile.
-    domains: String,
-    /// The contest end as typed, `2026-11-15T09:00`, until it is applied to the profile.
-    contest_end: String,
-    /// The Wi-Fi name as typed. The password is not here: it is typed for each write and never
-    /// saved in the profile.
-    ssid: String,
-    wallpaper_source: String,
-    /// The wallpaper as a picture, made once when it changes and not on every frame.
-    preview: Option<eframe::egui::TextureHandle>,
-    hub: crate::contest::hub_profiles::Panel,
-    /// What the last open, save or picture said.
-    message: String,
+    typed: Typed,
+    picture: Picture,
+    hub: Panel,
+    /// The profiles on the Hub, while their card is shown.
+    pub(super) hub_profiles: Vec<ProfileSummary>,
+    /// What the last action did, and why one failed.
+    status: String,
+    failure: String,
+    wallpaper_failure: String,
 }
 
-/// The sites as the profile keeps them: one per non-empty line.
-fn parse_domains(text: &str) -> Vec<String> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
-/// Which recording settings matter for a mode, so only those are shown. Hidden settings keep their
-/// values: switching the mode back brings them back as they were.
-#[derive(Debug, PartialEq, Eq)]
-struct RecordingFields {
-    timing: bool,
-    snapshot_interval: bool,
-    keeping: bool,
-}
-
-fn recording_fields(mode: RecordingMode) -> RecordingFields {
-    RecordingFields {
-        timing: mode != RecordingMode::Off,
-        snapshot_interval: mode == RecordingMode::Snapshots,
-        keeping: mode != RecordingMode::Off,
+/// What is wrong with a profile and what is odd about it.
+fn checked(profile: &Profile) -> (Vec<String>, Vec<String>) {
+    let mut profile = profile.clone();
+    // The server address is not set in the window: a stick gets it when the admin is signed in.
+    HUB_URL.clone_into(&mut profile.settings.api.url);
+    let mut problems: Vec<String> = profile.problems().iter().map(ToString::to_string).collect();
+    if let Err(error) = profile.credential_scope() {
+        problems.push(error.to_string());
     }
+    (problems, profile.warnings())
 }
 
-fn mode_label(mode: RecordingMode) -> &'static str {
-    match mode {
-        RecordingMode::Off => "Off: no recording",
-        RecordingMode::Snapshots => "Snapshots: a picture every few seconds",
-        RecordingMode::Low => "Low: video at 1 frame a second, half size",
-        RecordingMode::Standard => "Standard: video at 2 frames a second, full size",
-    }
-}
-
-fn upload_label(upload: UploadMode) -> &'static str {
-    match upload {
-        UploadMode::AfterContest => "Upload after the contest",
-        UploadMode::DuringContest => "Upload during the contest",
-        _ => "Keep on the stick",
-    }
-}
-
-/// The Wi-Fi settings for a typed name: none when it is empty. The password is never set here.
-fn wifi_for(ssid: &str) -> Option<Wifi> {
-    let ssid = ssid.trim();
-    (!ssid.is_empty()).then(|| Wifi {
-        ssid: ssid.to_owned(),
-        password: None,
+/// Whether a wallpaper other than `source` lies in `folder`, where copying `source` would replace
+/// or remove it.
+fn holds_another_wallpaper(folder: &Path, source: &Path) -> bool {
+    let ours = std::fs::read(source).ok();
+    PICTURES.iter().any(|extension| {
+        std::fs::read(folder.join(format!("wallpaper.{extension}")))
+            .is_ok_and(|there| Some(there) != ours)
     })
 }
 
-/// A number that may be left out: a box to turn it on, then its value.
-fn optional_count(ui: &mut eframe::egui::Ui, label: &str, value: &mut Option<u64>, default: u64) {
-    ui.horizontal(|ui| {
-        let mut on = value.is_some();
-        ui.checkbox(&mut on, label);
-        if on {
-            let number = value.get_or_insert(default);
-            ui.add(eframe::egui::DragValue::new(number).range(1..=u64::from(u32::MAX)));
-        } else {
-            *value = None;
-        }
-    });
+fn profile_files() -> rfd::FileDialog {
+    rfd::FileDialog::new().add_filter("Contest profile", &["json"])
 }
-
-fn recording_ui(ui: &mut eframe::egui::Ui, recording: &mut ck_protocol::Recording) {
-    ui.label("Screen recording");
-    eframe::egui::ComboBox::from_label("Mode")
-        .selected_text(mode_label(recording.mode))
-        .show_ui(ui, |ui| {
-            for mode in RecordingMode::ALL {
-                ui.selectable_value(&mut recording.mode, mode, mode_label(mode));
-            }
-        });
-    let fields = recording_fields(recording.mode);
-    if !fields.timing {
-        ui.label("Nothing is recorded, so there is nothing else to set.");
-        return;
-    }
-    ui.horizontal(|ui| {
-        ui.label("Start after (seconds)");
-        ui.add(eframe::egui::DragValue::new(&mut recording.start_delay_s));
-    });
-    if fields.snapshot_interval {
-        optional_count(
-            ui,
-            "Snapshot every N seconds (10 when off)",
-            &mut recording.snapshot_interval_s,
-            10,
-        );
-    }
-    if fields.keeping {
-        eframe::egui::ComboBox::from_label("Recording upload")
-            .selected_text(upload_label(recording.upload))
-            .show_ui(ui, |ui| {
-                for upload in [
-                    UploadMode::Keep,
-                    UploadMode::AfterContest,
-                    UploadMode::DuringContest,
-                ] {
-                    ui.selectable_value(&mut recording.upload, upload, upload_label(upload));
-                }
-            });
-        let mut days = recording.retention_days.map(u64::from);
-        optional_count(ui, "Delete recordings after N days", &mut days, 30);
-        recording.retention_days = days.and_then(|days| u32::try_from(days).ok());
-    }
-}
-
-fn bookmarks_ui(ui: &mut eframe::egui::Ui, bookmarks: &mut Vec<Bookmark>) {
-    let mut remove = None;
-    for (at, bookmark) in bookmarks.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            ui.text_edit_singleline(&mut bookmark.title);
-            ui.text_edit_singleline(&mut bookmark.url);
-            if ui.button("Remove").clicked() {
-                remove = Some(at);
-            }
-        });
-    }
-    if let Some(at) = remove {
-        bookmarks.remove(at);
-    }
-    if ui.button("Add a bookmark").clicked() {
-        bookmarks.push(new_bookmark());
-    }
-}
-
-/// An empty bookmark for the admin to fill in; the check reports it until it has a title and a link.
-fn new_bookmark() -> Bookmark {
-    Bookmark {
-        title: String::new(),
-        url: String::new(),
-    }
-}
-
-/// The contest end, the Wi-Fi name and the recording settings.
-fn contest_end_wifi_recording_ui(
-    ui: &mut eframe::egui::Ui,
-    profile: &mut Profile,
-    contest_end: &mut String,
-    ssid: &mut String,
-) {
-    ui.horizontal(|ui| {
-        ui.label("Contest end");
-        if ui.text_edit_singleline(contest_end).changed() {
-            match contest_end.trim() {
-                "" => profile.settings.contest.end = None,
-                text => {
-                    if let Ok(end) = text.parse::<LocalDateTime>() {
-                        profile.settings.contest.end = Some(end);
-                    }
-                }
-            }
-        }
-        if !end_is_valid(contest_end) {
-            ui.colored_label(
-                ui.visuals().error_fg_color,
-                "use a date and time like 2026-11-15T09:00",
-            );
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label("Wi-Fi name (SSID)");
-        if ui.text_edit_singleline(ssid).changed() {
-            profile.settings.wifi = wifi_for(ssid);
-        }
-    });
-    ui.label(
-        "Sticks join this Wi-Fi at every boot. The password is asked when you write sticks and is never saved in the profile.",
-    );
-    recording_ui(ui, &mut profile.settings.recording);
-}
-
-/// The longest side of the preview picture, so a large wallpaper never exceeds a texture size.
-const PREVIEW_SIDE: u32 = 1024;
-
-/// The picture inside a `data:<type>;base64,<data>` address, made small enough to show.
-fn picture_of(data_url: &str) -> Option<eframe::egui::ColorImage> {
-    let (_, encoded) = data_url.split_once(";base64,")?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .ok()?;
-    let mut picture = image::load_from_memory(&bytes).ok()?;
-    // `thumbnail` also enlarges, which a small picture does not need.
-    if picture.width() > PREVIEW_SIDE || picture.height() > PREVIEW_SIDE {
-        picture = picture.thumbnail(PREVIEW_SIDE, PREVIEW_SIDE);
-    }
-    let picture = picture.to_rgba8();
-    let size = [picture.width() as usize, picture.height() as usize];
-    Some(eframe::egui::ColorImage::from_rgba_unmultiplied(
-        size,
-        picture.as_raw(),
-    ))
-}
-
-/// Whether the typed contest end is empty (none) or a date and time.
-fn end_is_valid(text: &str) -> bool {
-    text.trim().is_empty() || text.parse::<LocalDateTime>().is_ok()
-}
-
-const BAD_END: &str = "Fix the contest end first: use a date and time like 2026-11-15T09:00";
 
 impl Screen {
     /// Called every frame, whatever page is shown: takes what the Hub answered, follows the shared
     /// state and says whether the profile may be saved now.
-    pub fn poll(&mut self, ctx: &eframe::egui::Context, state: &mut AppState) {
-        match self.hub.receive() {
-            Some(Outcome::Loaded(loaded)) => {
-                state.use_profile(loaded.profile, Some(loaded.path));
-                "Loaded from the Hub".clone_into(&mut self.message);
-            }
-            Some(Outcome::Saved(id)) => {
-                if let Some(profile) = &mut state.profile {
-                    profile.hub_id = id;
-                }
-            }
-            Some(Outcome::Assigned(_)) | None => {}
+    pub fn poll(&mut self, ctx: &egui::Context, state: &mut AppState) {
+        if let Some(outcome) = self.hub.receive() {
+            self.take(outcome, state);
         }
         self.follow(ctx, state);
         // A save now would write the file a Hub request is writing, or leave typed text out.
         state.blocked = if self.hub.busy() {
             Some("Wait until the Hub request has ended.".to_owned())
         } else {
-            (!end_is_valid(&self.contest_end)).then(|| BAD_END.to_owned())
+            (!self.typed.end_is_valid()).then(|| forms::BAD_END.to_owned())
         };
     }
 
-    /// Reads the typed texts again when another profile or file is being edited.
-    fn follow(&mut self, ctx: &eframe::egui::Context, state: &AppState) {
+    fn take(&mut self, outcome: Outcome, state: &mut AppState) {
+        match outcome {
+            Outcome::Listed(profiles) => {
+                if profiles.is_empty() {
+                    "The Hub has no profiles yet. Save one to it.".clone_into(&mut self.status);
+                }
+                self.hub_profiles = profiles;
+            }
+            Outcome::Loaded(loaded) => {
+                self.status = format!("Loaded {} from the Hub", loaded.profile.name);
+                self.hub_profiles.clear();
+                state.use_profile(loaded.profile, Some(loaded.path));
+            }
+            Outcome::Saved(profile, path) => {
+                self.status = format!("Saved {} to the Hub", profile.name);
+                state.use_profile(*profile, Some(path));
+            }
+            Outcome::Failed(why) => self.failure = why,
+        }
+    }
+
+    /// Reads the typed texts again when another profile is being edited, and the wallpaper when it
+    /// changed.
+    fn follow(&mut self, ctx: &egui::Context, state: &AppState) {
         if self.revision != Some(state.profile_revision) {
             self.revision = Some(state.profile_revision);
-            if let Some(profile) = &state.profile {
-                self.read(profile);
-            }
-            self.file = None;
-            self.path.clear();
+            self.typed = state.profile.as_ref().map(Typed::read).unwrap_or_default();
+            self.wallpaper_failure.clear();
         }
-        if self.file != state.profile_path {
-            self.file.clone_from(&state.profile_path);
-            if let Some(file) = &self.file {
-                self.path = file.display().to_string();
-            }
-        }
-        let wanted = state.profile_path.as_ref().and_then(|file| {
-            let name = state
-                .profile
-                .as_ref()?
-                .settings
-                .branding
-                .wallpaper
-                .clone()?;
-            Some((file.clone(), name, state.wallpaper_revision))
-        });
-        if self.pictured != wanted {
-            self.pictured = wanted;
-            self.refresh_preview(ctx);
-        }
+        self.picture.follow(ctx, state);
     }
 
-    fn read(&mut self, profile: &Profile) {
-        self.domains = profile.settings.network.allowed_domains.join("\n");
-        self.contest_end = profile
-            .settings
-            .contest
-            .end
-            .map(|end| end.to_string())
-            .unwrap_or_default();
-        self.ssid = profile
-            .settings
-            .wifi
-            .as_ref()
-            .map(|wifi| wifi.ssid.clone())
-            .unwrap_or_default();
-    }
-
-    pub fn show(&mut self, ui: &mut eframe::egui::Ui, state: &mut AppState) {
+    pub fn show(&mut self, ui: &mut Ui, state: &mut AppState) {
         // A request to the Hub is running: nothing here can change until it has ended.
         if self.hub.busy() {
             ui.disable();
         }
-        ui.horizontal(|ui| {
-            ui.label("File");
-            ui.text_edit_singleline(&mut self.path);
+        self.toolbar(ui, state);
+        self.hub_card(ui, state);
+        widgets::note(ui, Tone::Ok, &self.status);
+        widgets::note(ui, Tone::Error, &self.failure);
+        // An action above may have taken another profile in.
+        self.follow(ui.ctx(), state);
+        let Some(profile) = &mut state.profile else {
+            widgets::card(ui, |ui| {
+                widgets::text(ui, "Start with a new profile, or open one you saved.");
+            });
+            return;
+        };
+        let (problems, warnings) = checked(profile);
+        widgets::messages(ui, &problems, &warnings);
+        widgets::card(ui, |ui| {
+            let hint = "Only for you. Contestants never see it.";
+            field(ui, "Profile name", Some(hint), None, |ui, id| {
+                Input::new(&mut profile.name).show(ui).labelled_by(id);
+            });
         });
+        forms::contest(ui, &mut profile.settings, &mut self.typed);
+        forms::team_and_site(ui, &mut profile.settings);
+        preview::contestant(ui, &self.picture, profile);
+        forms::key_window(ui, profile, &mut self.typed);
+        widgets::details(ui, "What contestants see", |ui| self.branding(ui, state));
+        widgets::details(ui, "Network, Hub and screen recording", |ui| {
+            ui.spacing_mut().item_spacing.y = tokens(ui.ctx()).s.gap;
+            if let Some(profile) = &mut state.profile {
+                forms::network(ui, &mut profile.settings, &mut self.typed);
+            }
+        });
+        self.other_places(ui, state);
+    }
+
+    fn toolbar(&mut self, ui: &mut Ui, state: &mut AppState) {
         ui.horizontal_wrapped(|ui| {
-            if ui.button("New").clicked() {
-                state.use_profile(Profile::template(), None);
-                "A new profile".clone_into(&mut self.message);
+            ui.spacing_mut().item_spacing.x = tokens(ui.ctx()).s.gap;
+            let ready = state.profile.is_some();
+            if Btn::new("New profile").show(ui).clicked() {
+                self.create(state);
             }
-            if ui.button("Open").clicked() {
-                self.open(state);
+            if Btn::new("Open\u{2026}").show(ui).clicked()
+                && let Some(path) = profile_files().pick_file()
+            {
+                self.open(state, path);
             }
-            if ui.button("Save").clicked() {
+            if Btn::new("Save").primary().enabled(ready).show(ui).clicked() {
                 self.save(state);
             }
-            if ui.button("Save in the Forge folder").clicked() {
-                self.save_in_forge_folder(state);
+            if state.hub_email.is_some() {
+                if Btn::new("Load from Hub\u{2026}").show(ui).clicked() {
+                    self.clear_messages();
+                    self.hub.list(ui.ctx());
+                }
+                if Btn::new("Save to Hub").enabled(ready).show(ui).clicked() {
+                    self.save_to_hub(ui.ctx(), state);
+                }
             }
         });
-        if !self.message.is_empty() {
-            ui.label(&self.message);
+    }
+
+    fn hub_card(&mut self, ui: &mut Ui, state: &AppState) {
+        if self.hub_profiles.is_empty() {
+            return;
         }
-        self.hub_ui(ui, state);
-        self.follow(ui.ctx(), state);
+        let mut chosen = None;
+        widgets::card(ui, |ui| {
+            widgets::title(ui, "Profiles on the Hub");
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                for summary in &self.hub_profiles {
+                    ui.horizontal(|ui| {
+                        let t = tokens(ui.ctx());
+                        ui.spacing_mut().item_spacing.x = t.s.gap;
+                        // The name is centred on the button.
+                        ui.spacing_mut().interact_size.y = t.s.button_small;
+                        ui.label(&summary.name);
+                        if Btn::new("Open").small().show(ui).clicked() {
+                            chosen = Some(summary.id.clone());
+                        }
+                    });
+                }
+            });
+        });
+        if let Some(id) = chosen {
+            self.clear_messages();
+            match state.data() {
+                Some(data) => self.hub.load(ui.ctx(), id, data.join("profiles")),
+                None => "Could not find the Forge folder".clone_into(&mut self.failure),
+            }
+        }
+    }
+
+    /// The inside of "What contestants see".
+    fn branding(&mut self, ui: &mut Ui, state: &mut AppState) {
+        ui.spacing_mut().item_spacing.y = tokens(ui.ctx()).s.gap;
         let Some(profile) = &mut state.profile else {
             return;
         };
-        ui.separator();
-        eframe::egui::Grid::new("profile")
-            .num_columns(2)
-            .show(ui, |ui| {
-                let settings = &mut profile.settings;
-                for (label, value) in [
-                    ("Name", &mut profile.name),
-                    ("Contest", &mut settings.contest.name),
-                    ("Contest ID", &mut settings.contest.contest_id),
-                    ("Team", &mut settings.team),
-                    ("Site", &mut settings.site),
-                    (
-                        "Computer name",
-                        &mut settings.branding.computer_name_pattern,
-                    ),
-                    ("USB label", &mut settings.branding.usb_label),
-                    ("Server address", &mut settings.api.url),
-                ] {
-                    ui.label(label);
-                    ui.text_edit_singleline(value);
-                    ui.end_row();
+        forms::names(ui, &mut profile.settings, &mut self.typed);
+        let name = profile.settings.branding.wallpaper.as_deref();
+        match preview::picker(ui, &self.picture, name, &self.wallpaper_failure) {
+            Some(Asked::Remove) => profile.settings.branding.wallpaper = None,
+            Some(Asked::Choose) => {
+                self.wallpaper_failure.clear();
+                let picked = rfd::FileDialog::new()
+                    .add_filter("Picture", &PICTURES)
+                    .pick_file();
+                if let Some(source) = picked {
+                    self.use_wallpaper(state, &source);
                 }
-            });
-        let home = profile
-            .settings
-            .branding
-            .home_page
-            .get_or_insert_with(String::new);
-        ui.horizontal(|ui| {
-            ui.label("Home page");
-            ui.text_edit_singleline(home);
-        });
-        if home.trim().is_empty() {
-            profile.settings.branding.home_page = None;
+            }
+            None => {}
         }
-        ui.label("Welcome text");
-        ui.text_edit_multiline(&mut profile.settings.branding.welcome_text);
-        ui.checkbox(
-            &mut profile.settings.block_bluetooth,
-            "Block Bluetooth on the stick",
-        );
-        ui.checkbox(
-            &mut profile.settings.block_usb_storage,
-            "Block other USB storage devices on the stick",
-        );
-        contest_end_wifi_recording_ui(ui, profile, &mut self.contest_end, &mut self.ssid);
-        ui.label("Bookmarks");
-        bookmarks_ui(ui, &mut profile.settings.branding.bookmarks);
-        ui.label("Allowed sites, one per line");
-        if ui.text_edit_multiline(&mut self.domains).changed() {
-            profile.settings.network.allowed_domains = parse_domains(&self.domains);
+        if let Some(profile) = &mut state.profile {
+            forms::welcome_and_bookmarks(ui, &mut profile.settings);
         }
-        ui.separator();
-        for problem in profile.problems() {
-            ui.colored_label(ui.visuals().error_fg_color, problem.to_string());
-        }
-        for warning in profile.warnings() {
-            ui.colored_label(ui.visuals().warn_fg_color, warning);
-        }
-        ui.separator();
-        self.wallpaper_ui(ui, state);
     }
 
-    fn wallpaper_ui(&mut self, ui: &mut eframe::egui::Ui, state: &mut AppState) {
-        ui.horizontal(|ui| {
-            ui.label("Wallpaper picture");
-            ui.text_edit_singleline(&mut self.wallpaper_source);
-            if ui.button("Use").clicked() {
-                self.use_wallpaper(state);
+    /// Saving a profile that has a file to somewhere else. The earlier web window had neither
+    /// button, so they stand apart at the end of the page.
+    fn other_places(&mut self, ui: &mut Ui, state: &mut AppState) {
+        let Some(path) = &state.profile_path else {
+            return;
+        };
+        let outside = state.data().is_some_and(|data| !path.starts_with(data));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = tokens(ui.ctx()).s.gap;
+            if Btn::new("Save as\u{2026}").small().show(ui).clicked()
+                && let Some(path) = profile_files()
+                    .set_file_name("contest-profile.json")
+                    .save_file()
+            {
+                self.save_as(state, &path);
+            }
+            let copy = "Save a copy in the Forge folder";
+            if outside && Btn::new(copy).small().show(ui).clicked() {
+                self.save_in_forge_folder(state);
             }
         });
-        if let Some(name) = state
-            .profile
-            .as_ref()
-            .and_then(|profile| profile.settings.branding.wallpaper.as_ref())
-        {
-            ui.label(format!("Wallpaper: {name}"));
-        }
-        if let Some(preview) = &self.preview {
-            ui.add(eframe::egui::Image::new(preview).max_width(320.0));
-        }
     }
 
-    /// The Hub's profiles. A started save keeps the id it runs under, even if it fails, so that a
-    /// retry updates the same Hub profile and does not make another one.
-    fn hub_ui(&mut self, ui: &mut eframe::egui::Ui, state: &mut AppState) {
-        let file = state
-            .profile_path
-            .as_ref()
-            .map(|file| file.display().to_string())
-            .unwrap_or_default();
-        let current = state
-            .profile
-            .as_ref()
-            .map(|profile| (profile, file.as_str()));
-        // The same refusal as a local save: the typed end is not applied to the profile.
-        let blocked = (!end_is_valid(&self.contest_end)).then_some(BAD_END);
-        if let Some(Outcome::Assigned(id)) = self.hub.show(ui, current, blocked)
-            && let Some(profile) = &mut state.profile
-        {
-            profile.hub_id.get_or_insert(id);
-        }
+    fn clear_messages(&mut self) {
+        self.status.clear();
+        self.failure.clear();
     }
 
-    fn open(&mut self, state: &mut AppState) {
-        let path = PathBuf::from(self.path.trim());
+    fn create(&mut self, state: &mut AppState) {
+        self.clear_messages();
+        state.use_profile(Profile::template(), None);
+        "A new profile. Save it to build sticks.".clone_into(&mut self.status);
+    }
+
+    fn open(&mut self, state: &mut AppState, path: PathBuf) {
+        self.clear_messages();
         match Profile::load(&path) {
             Ok(profile) => {
+                self.status = format!("Opened {}", path.display());
                 state.use_profile(profile, Some(path));
-                "Opened".clone_into(&mut self.message);
             }
-            Err(error) => self.message = error.to_string(),
+            Err(error) => self.failure = crate::state::message(&error),
+        }
+    }
+
+    fn save(&mut self, state: &mut AppState) {
+        self.clear_messages();
+        match state.save_profile() {
+            Ok(path) => self.status = format!("Saved {}", path.display()),
+            Err(why) => self.failure = why,
+        }
+    }
+
+    /// Saves the file first: the Hub copy takes its wallpaper from beside it.
+    fn save_to_hub(&mut self, ctx: &egui::Context, state: &mut AppState) {
+        self.clear_messages();
+        let started = state.save_profile().and_then(|path| {
+            let profile = state
+                .profile
+                .clone()
+                .ok_or_else(|| "There is no profile to save.".to_owned())?;
+            self.hub.save(ctx, profile, path)
+        });
+        match started {
+            Ok(assigned) => {
+                if let Some(profile) = &mut state.profile
+                    && profile.hub_id.is_none()
+                {
+                    profile.hub_id = assigned;
+                }
+            }
+            Err(why) => self.failure = why,
+        }
+    }
+
+    /// Saves to another file, taking the wallpaper along.
+    fn save_as(&mut self, state: &mut AppState, path: &Path) {
+        self.clear_messages();
+        let wallpaper = state.profile_path.as_ref().and_then(|old| {
+            let branding = &state.profile.as_ref()?.settings.branding;
+            let name = branding.wallpaper.as_ref()?;
+            (folder_of(old) != folder_of(path)).then(|| folder_of(old).join(name))
+        });
+        // The folder may belong to another profile, whose picture must not be replaced.
+        if let Some(source) = &wallpaper
+            && holds_another_wallpaper(folder_of(path), source)
+        {
+            "That folder already holds another wallpaper. Choose another folder."
+                .clone_into(&mut self.failure);
+            return;
+        }
+        let saved = state.save_profile_to(path.to_owned()).and_then(|()| {
+            let Some(source) = &wallpaper else {
+                return Ok(());
+            };
+            let name = add_wallpaper(path, source).map_err(|e| e.to_string())?;
+            state.wallpaper_revision += 1;
+            match &mut state.profile {
+                // The copy may have another name than the picture had.
+                Some(profile) if profile.settings.branding.wallpaper.as_ref() != Some(&name) => {
+                    profile.settings.branding.wallpaper = Some(name);
+                    state.save_profile_to(path.to_owned())
+                }
+                _ => Ok(()),
+            }
+        });
+        match saved {
+            Ok(()) => self.status = format!("Saved {}", path.display()),
+            Err(why) => self.failure = why,
         }
     }
 
     /// Saves a copy of the profile in the Forge folder and makes that file the one being edited.
     fn save_in_forge_folder(&mut self, state: &mut AppState) {
-        let Some(profile) = &state.profile else {
-            return;
-        };
-        if !end_is_valid(&self.contest_end) {
-            BAD_END.clone_into(&mut self.message);
+        self.clear_messages();
+        // The same refusals as every other save.
+        if let Some(why) = &state.blocked {
+            self.failure.clone_from(why);
             return;
         }
-        let Some(data) = state.data() else {
-            "Could not find the Forge folder".clone_into(&mut self.message);
+        let (Some(profile), Some(data)) = (&state.profile, state.data()) else {
+            "Could not find the Forge folder".clone_into(&mut self.failure);
             return;
         };
         // The wallpaper lies beside the file the profile was opened from: it goes along.
@@ -475,68 +357,31 @@ impl Screen {
             state
                 .profile_path
                 .as_ref()
-                .and_then(|file| file.parent())
-                .map_or_else(|| PathBuf::from(name), |folder| folder.join(name))
+                .map_or_else(|| PathBuf::from(name), |file| folder_of(file).join(name))
         });
         match crate::folder::save_in(data, profile, wallpaper.as_deref()) {
             Ok((path, saved)) => {
-                self.message = format!("Saved in {}", path.display());
+                self.status = format!("Saved {}", path.display());
                 // The wallpaper of the copy may have another name than the one the editor had.
                 state.use_profile(saved, Some(path));
             }
-            Err(why) => self.message = why,
+            Err(why) => self.failure = why,
         }
     }
 
-    /// Saves to the typed file, or in the Forge folder when none is typed.
-    fn save(&mut self, state: &mut AppState) {
-        // Otherwise the end that was typed would be left out and an older one saved.
-        if !end_is_valid(&self.contest_end) {
-            BAD_END.clone_into(&mut self.message);
-            return;
-        }
-        let typed = self.path.trim();
-        let result = if typed.is_empty() {
-            state.save_profile().map(|_| ())
-        } else {
-            state.save_profile_to(PathBuf::from(typed))
-        };
-        self.message = match result {
-            Ok(()) => "Saved".to_owned(),
-            Err(why) => why,
-        };
-    }
-
-    /// Makes the picture of the profile's wallpaper, or none when there is no picture or it is too
-    /// large or not readable. The texture is replaced, so a new picture is never shown stale.
-    fn refresh_preview(&mut self, ctx: &eframe::egui::Context) {
-        self.preview = self
-            .pictured
-            .as_ref()
-            .and_then(|(file, name, _)| wallpaper_data_url(file, name))
-            .as_deref()
-            .and_then(picture_of)
-            .map(|picture| {
-                ctx.load_texture("wallpaper", picture, eframe::egui::TextureOptions::LINEAR)
-            });
-    }
-
-    fn use_wallpaper(&mut self, state: &mut AppState) {
-        let Some(file) = state.profile_path.clone() else {
-            "Save the profile first: the picture is copied next to it"
-                .clone_into(&mut self.message);
-            return;
-        };
-        let Some(profile) = &mut state.profile else {
-            return;
-        };
-        match add_wallpaper(&file, &PathBuf::from(self.wallpaper_source.trim())) {
+    /// Copies a picture next to the profile, which is saved first so that it has a place.
+    fn use_wallpaper(&mut self, state: &mut AppState, source: &Path) {
+        let added = state
+            .save_profile()
+            .and_then(|path| add_wallpaper(&path, source).map_err(|e| e.to_string()));
+        match added {
             Ok(name) => {
-                profile.settings.branding.wallpaper = Some(name);
-                state.wallpaper_revision += 1;
-                "The picture was copied next to the profile".clone_into(&mut self.message);
+                if let Some(profile) = &mut state.profile {
+                    profile.settings.branding.wallpaper = Some(name);
+                    state.wallpaper_revision += 1;
+                }
             }
-            Err(error) => self.message = error.to_string(),
+            Err(why) => self.wallpaper_failure = why,
         }
     }
 }
@@ -545,108 +390,95 @@ impl Screen {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_sites_are_one_per_line_without_blanks() {
-        assert_eq!(
-            parse_domains(" codeforces.com \n\n  example.org\n"),
-            ["codeforces.com", "example.org"]
-        );
+    fn picture(path: &Path, shade: u8) {
+        image::RgbImage::from_pixel(4, 4, image::Rgb([shade; 3]))
+            .save(path)
+            .expect("picture");
     }
 
-    #[test]
-    fn only_the_recording_settings_of_the_mode_are_shown() {
-        let off = recording_fields(RecordingMode::Off);
-        assert!(!off.timing && !off.snapshot_interval && !off.keeping);
-        let snapshots = recording_fields(RecordingMode::Snapshots);
-        assert!(snapshots.timing && snapshots.snapshot_interval && snapshots.keeping);
-        let low = recording_fields(RecordingMode::Low);
-        assert!(low.timing && !low.snapshot_interval && low.keeping);
-    }
-
-    #[test]
-    fn an_empty_wifi_name_means_no_wifi_and_the_password_is_never_set() {
-        assert_eq!(wifi_for("  "), None);
-        let wifi = wifi_for(" venue ").expect("a network");
-        assert_eq!(wifi.ssid, "venue");
-        assert!(wifi.password.is_none());
-    }
-
-    #[test]
-    fn a_wallpaper_address_becomes_a_picture_and_garbage_does_not() {
-        // A 2 by 1 PNG made in memory, then handed over as the data address the engine builds.
-        let mut png = Vec::new();
-        image::DynamicImage::new_rgba8(2, 1)
-            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-            .expect("png");
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
-        let picture = picture_of(&format!("data:image/png;base64,{encoded}")).expect("picture");
-        assert_eq!(picture.size, [2, 1]);
-        assert!(picture_of("data:image/png;base64,@@@").is_none());
-        assert!(picture_of("not an address").is_none());
-    }
-
-    #[test]
-    fn the_contest_end_is_empty_or_a_local_date_and_time() {
-        assert!(end_is_valid(""));
-        assert!(end_is_valid("2026-11-15T09:00"));
-        assert!(!end_is_valid("tomorrow"));
-    }
-
-    #[test]
-    fn a_new_bookmark_is_reported_until_it_is_filled_in() {
-        let mut profile = Profile::template();
-        let before = profile.problems().len();
-        profile.settings.branding.bookmarks.push(new_bookmark());
-        assert!(profile.problems().len() > before);
-        let bookmark = profile
-            .settings
-            .branding
-            .bookmarks
-            .last_mut()
-            .expect("added");
-        bookmark.title = "Judge".to_owned();
-        bookmark.url = "https://judge.example.org".to_owned();
-        assert_eq!(profile.problems(), []);
+    /// A window state with a Forge folder of its own.
+    fn sample() -> (tempfile::TempDir, AppState, Screen) {
+        let data = tempfile::tempdir().expect("folder");
+        let state = AppState::load(Some(data.path().to_owned()));
+        (data, state, Screen::default())
     }
 
     #[test]
     fn a_profile_is_not_saved_with_a_contest_end_that_does_not_parse() {
-        let dir = tempfile::tempdir().expect("folder");
-        let ctx = eframe::egui::Context::default();
-        let mut state = AppState::load(None);
-        let mut screen = Screen::default();
+        let (data, mut state, mut screen) = sample();
+        let ctx = egui::Context::default();
         screen.poll(&ctx, &mut state);
-        screen.path = dir.path().join("p.json").display().to_string();
-        screen.contest_end = "tomorrow".to_owned();
+        screen.typed.contest_end = "tomorrow".to_owned();
+        screen.poll(&ctx, &mut state);
         screen.save(&mut state);
-        assert_ne!(screen.message, "Saved");
-        // The footer's Continue is refused for the same reason.
-        screen.poll(&ctx, &mut state);
-        assert!(state.save_profile().is_err());
-        assert!(!dir.path().join("p.json").exists());
+        assert_eq!(screen.failure, forms::BAD_END);
+        screen.save_in_forge_folder(&mut state);
+        assert_eq!(screen.failure, forms::BAD_END);
+        assert!(!data.path().join("profiles").exists());
     }
 
     #[test]
-    fn a_saved_profile_opens_again_with_its_sites() {
-        let dir = tempfile::tempdir().expect("folder");
-        let ctx = eframe::egui::Context::default();
-        let mut state = AppState::load(None);
-        let mut screen = Screen::default();
-        screen.poll(&ctx, &mut state);
-        screen.path = dir.path().join("p.json").display().to_string();
-        let profile = state.profile.as_mut().expect("profile");
-        profile.settings.network.allowed_domains = parse_domains("a.example.org\nb.example.org");
+    fn a_saved_profile_opens_again() {
+        let (data, mut state, mut screen) = sample();
+        state.profile.as_mut().expect("profile").name = "Finals".to_owned();
         screen.save(&mut state);
-        assert_eq!(screen.message, "Saved");
+        let path = state.profile_path.clone().expect("saved");
+        assert_eq!(screen.status, format!("Saved {}", path.display()));
+        screen.create(&mut state);
+        assert!(state.profile_path.is_none() && state.is_unsaved());
+        screen.open(&mut state, path.clone());
+        assert_eq!(state.profile.as_ref().expect("profile").name, "Finals");
+        assert!(!state.is_unsaved());
+        screen.open(&mut state, data.path().join("missing.json"));
+        assert_ne!(screen.failure, "");
+        assert_eq!(state.profile_path, Some(path));
+    }
 
-        let mut state = AppState::load(None);
-        let mut again = Screen {
-            path: screen.path.clone(),
-            ..Screen::default()
-        };
-        again.open(&mut state);
-        again.poll(&ctx, &mut state);
-        assert_eq!(again.domains, "a.example.org\nb.example.org");
-        assert_eq!(again.path, screen.path);
+    #[test]
+    fn choosing_a_wallpaper_saves_the_profile_first() {
+        let (data, mut state, mut screen) = sample();
+        let source = data.path().join("source.png");
+        picture(&source, 1);
+        screen.use_wallpaper(&mut state, &source);
+        assert_eq!(screen.wallpaper_failure, "");
+        let path = state.profile_path.clone().expect("saved");
+        assert!(folder_of(&path).join("wallpaper.png").is_file());
+        assert!(state.is_unsaved(), "the new name is not in the file yet");
+    }
+
+    #[test]
+    fn save_as_takes_the_wallpaper_along_and_replaces_no_other() {
+        let (data, mut state, mut screen) = sample();
+        let source = data.path().join("source.png");
+        picture(&source, 1);
+        screen.use_wallpaper(&mut state, &source);
+        let first = state.profile_path.clone();
+
+        let other = tempfile::tempdir().expect("folder");
+        let theirs = other.path().join("wallpaper.png");
+        picture(&theirs, 2);
+        let before = std::fs::read(&theirs).expect("picture");
+        screen.save_as(&mut state, &other.path().join("p.json"));
+        assert!(screen.failure.contains("another wallpaper"));
+        assert!(!other.path().join("p.json").exists());
+        assert_eq!(std::fs::read(&theirs).expect("picture"), before);
+        assert_eq!(state.profile_path, first);
+
+        let free = tempfile::tempdir().expect("folder");
+        screen.save_as(&mut state, &free.path().join("p.json"));
+        assert_eq!(screen.failure, "");
+        assert!(free.path().join("wallpaper.png").is_file());
+        assert!(!state.is_unsaved());
+    }
+
+    #[test]
+    fn the_check_does_not_ask_for_a_server_address_and_reports_the_key_window() {
+        let mut profile = Profile::template();
+        assert_eq!(checked(&profile), (Vec::new(), Vec::new()));
+        profile.stick_key_window = Some(ck_admin_core::StickKeyWindow {
+            valid_from: String::new(),
+            valid_until: String::new(),
+        });
+        assert_eq!(checked(&profile).0.len(), 1);
     }
 }

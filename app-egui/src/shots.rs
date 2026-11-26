@@ -14,6 +14,11 @@ use crate::theme::{Mode, Theme};
 /// Writes `<name>-<theme>-<mode>.png` at 1000 by 760 for both looks, light and dark. `setup` puts
 /// a sample window into the state to show; `scroll` is how far down the page is.
 pub fn capture(name: &str, scroll: f32, setup: impl Fn(&mut Forge)) {
+    capture_then(name, setup, |harness| wheel(harness, scroll));
+}
+
+/// Like [`capture`], with `act` to click and scroll before the picture is taken.
+pub fn capture_then(name: &str, setup: impl Fn(&mut Forge), act: impl Fn(&mut Harness<'_>)) {
     let Some(folder) = std::env::var_os("CK_SHOTS_DIR").map(PathBuf::from) else {
         #[allow(clippy::print_stdout)]
         {
@@ -45,18 +50,7 @@ pub fn capture(name: &str, scroll: f32, setup: impl Fn(&mut Forge)) {
                 });
             // A few frames: the fonts load and the panels find their sizes.
             harness.run_steps(4);
-            if scroll > 0.0 {
-                harness.hover_at(eframe::egui::pos2(600.0, 400.0));
-                harness.event(eframe::egui::Event::MouseWheel {
-                    unit: eframe::egui::MouseWheelUnit::Point,
-                    delta: eframe::egui::vec2(0.0, -scroll),
-                    phase: eframe::egui::TouchPhase::Move,
-                    source: eframe::egui::MouseWheelSource::Wheel,
-                    modifiers: eframe::egui::Modifiers::NONE,
-                });
-                // Scrolling is smoothed over several frames.
-                harness.run_steps(60);
-            }
+            act(&mut harness);
             let picture = harness.render().expect("render");
             picture
                 .save(folder.join(format!("{name}-{theme_name}-{mode_name}.png")))
@@ -65,20 +59,27 @@ pub fn capture(name: &str, scroll: f32, setup: impl Fn(&mut Forge)) {
     }
 }
 
+/// Turns the wheel over the page, `scroll` points down.
+pub fn wheel(harness: &mut Harness<'_>, scroll: f32) {
+    if scroll <= 0.0 {
+        return;
+    }
+    harness.hover_at(eframe::egui::pos2(600.0, 400.0));
+    harness.event(eframe::egui::Event::MouseWheel {
+        unit: eframe::egui::MouseWheelUnit::Point,
+        delta: eframe::egui::vec2(0.0, -scroll),
+        phase: eframe::egui::TouchPhase::Move,
+        source: eframe::egui::MouseWheelSource::Wheel,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    // Scrolling is smoothed over several frames.
+    harness.run_steps(60);
+}
+
 /// The shell itself. The pages add their own states in their own files.
 #[test]
 #[ignore = "writes pictures; needs CK_SHOTS_DIR and a graphics adapter"]
 fn shots_of_the_shell() {
-    capture("contest-default", 0.0, |_| {});
-    capture("contest-invalid", 0.0, |forge| {
-        forge.leave_failure = "the profile has problems:\n- bookmark 1 needs a title".to_owned();
-    });
-    capture("contest-saved-back", 0.0, |forge| {
-        let long = r"C:\Users\admin\AppData\Roaming\org.contest-keeper.forge\profiles\my-contest-1a2b3c4d\contest-profile.json";
-        let profile = ck_admin_core::Profile::template();
-        forge.state.use_profile(profile, Some(PathBuf::from(long)));
-    });
-    capture("contest-bottom", 4000.0, |_| {});
     capture("make-default", 0.0, |forge| {
         forge.step = MAKE;
         forge.state.profile_path = Some(PathBuf::from("contest-profile.json"));
@@ -87,7 +88,4 @@ fn shots_of_the_shell() {
             .set_base_path(Some(PathBuf::from(r"D:\images\keeper-os-0.4.0.img")));
     });
     capture("sidebar-settings", 0.0, |forge| forge.settings.open = true);
-    capture("contest-signed-in", 0.0, |forge| {
-        forge.hub.state = crate::side::hub_sign_in::State::SignedIn("admin@example.org".to_owned());
-    });
 }

@@ -338,12 +338,7 @@ impl Forge {
                             ui.set_width(ui.available_width());
                             ui.spacing_mut().item_spacing.y = t.s.gap;
                             match self.step {
-                                CONTEST => {
-                                    // Until the page is rebuilt, its screen sits in one card.
-                                    widgets::card(ui, |ui| {
-                                        self.contest.show(ui, &mut self.state);
-                                    });
-                                }
+                                CONTEST => self.contest.show(ui, &mut self.state),
                                 _ => self.make.show(ui, &mut self.state),
                             }
                         });
