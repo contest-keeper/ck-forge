@@ -438,9 +438,27 @@ pub(crate) fn report_slowest(file: Option<&Path>, state: &[(u64, u64)], total: u
 
 /// Keeps the progress file of `stick write` up to date, when one was asked for. A failure to write it
 /// is ignored: the write itself must not fail because the window stopped listening.
+///
+/// This runs with administrator rights and the path is in a folder the person's own programs can
+/// write to. A plain `fs::write` follows a symbolic link put there and would overwrite its target as
+/// the administrator. So the state is written to a new file that must not exist (`create_new` does
+/// not follow links) and then renamed over the path, which replaces a link instead of following it.
 pub(crate) fn report_progress(file: Option<&Path>, state: &serde_json::Value) {
-    if let Some(path) = file {
-        let _ = std::fs::write(path, state.to_string());
+    let Some(path) = file else {
+        return;
+    };
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".new");
+    let temporary = PathBuf::from(temporary);
+    // Removes a left-over file or a planted link itself, never what a link points to.
+    let _ = std::fs::remove_file(&temporary);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .and_then(|mut out| Write::write_all(&mut out, state.to_string().as_bytes()));
+    if written.is_err() || std::fs::rename(&temporary, path).is_err() {
+        let _ = std::fs::remove_file(&temporary);
     }
 }
 
@@ -457,5 +475,37 @@ mod confirmed_tests {
         for bad in ["3", "x=ab", "3=", "3=zz", "3=ab;calc", "-1=ab"] {
             assert!(parse_confirmed(&[bad.to_owned()]).is_err(), "{bad}");
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn a_link_at_the_progress_path_is_replaced_and_its_target_is_left_alone() {
+        let folder = tempfile::tempdir().expect("folder");
+        let target = folder.path().join("precious");
+        std::fs::write(&target, "keep me").expect("target");
+        let path = folder.path().join("progress.json");
+        std::os::unix::fs::symlink(&target, &path).expect("link");
+        report_progress(Some(&path), &json!({ "state": "writing" }));
+        assert_eq!(std::fs::read_to_string(&target).expect("target"), "keep me");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("progress"),
+            r#"{"state":"writing"}"#
+        );
+    }
+
+    #[test]
+    fn the_progress_file_is_rewritten_each_time() {
+        let folder = tempfile::tempdir().expect("folder");
+        let path = folder.path().join("progress.json");
+        report_progress(Some(&path), &json!({ "state": "writing", "done": 1 }));
+        report_progress(Some(&path), &json!({ "state": "done" }));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("progress"),
+            r#"{"state":"done"}"#
+        );
     }
 }
