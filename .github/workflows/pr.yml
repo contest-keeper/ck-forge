@@ -62,7 +62,7 @@ jobs:
           BASE: ${{ github.base_ref }}
         run: |
           git fetch --no-tags --depth=1 origin "$BASE"
-          if git diff --name-only FETCH_HEAD HEAD | grep -qE '^(app-egui/installer/|tools/|about\.(toml|hbs)$|app-egui/(about\.toml|Cargo\.(toml|lock))$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/(pr|release)\.yml$)'; then
+          if git diff --name-only --no-renames FETCH_HEAD HEAD | grep -qE '^(app-egui/installer/|tools/|about\.(toml|hbs)$|app-egui/(about\.toml|Cargo\.(toml|lock))$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/(pr|release)\.yml$)'; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
             echo "build=false" >> "$GITHUB_OUTPUT"

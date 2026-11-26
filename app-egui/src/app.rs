@@ -124,7 +124,11 @@ impl Forge {
                 Ok(path) => self.contest.sync_hub(ctx, &mut self.state, path),
                 Err(why) => {
                     self.leave_failure = why;
-                    return;
+                    // Between the editing pages the move goes on, so the page that holds the
+                    // field to correct stays reachable; Make needs the saved file.
+                    if target >= MAKE {
+                        return;
+                    }
                 }
             }
         }
@@ -631,5 +635,10 @@ mod tests {
         forge.go(MAKE, &egui::Context::default());
         assert_eq!(forge.step, RETIRE);
         assert!(forge.leave_failure.contains("problems"));
+        // The page with the field to fix stays reachable.
+        forge.go(CONNECTIVITY, &egui::Context::default());
+        assert_eq!(forge.step, CONNECTIVITY);
+        forge.go(RECORDING, &egui::Context::default());
+        assert_eq!(forge.step, RECORDING);
     }
 }
