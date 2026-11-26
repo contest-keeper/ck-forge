@@ -98,6 +98,8 @@ pub struct Screen {
     registry: Option<String>,
     /// The saved session has not been checked with the Hub yet.
     check: bool,
+    /// The session on screen is still the one an earlier run saved.
+    restored: bool,
     /// Set by Cancel; each sign-in has its own.
     cancel: Arc<AtomicBool>,
     events: Receiver<Event>,
@@ -112,6 +114,7 @@ impl Screen {
             code: None,
             registry: None,
             check: false,
+            restored: false,
             cancel: Arc::default(),
             events,
             sender,
@@ -122,7 +125,8 @@ impl Screen {
     pub fn from_vault() -> Self {
         let mut screen =
             Self::new(vault::load().map_or(State::SignedOut, |s| State::SignedIn(s.email)));
-        screen.check = matches!(screen.state, State::SignedIn(_));
+        screen.restored = matches!(screen.state, State::SignedIn(_));
+        screen.check = screen.restored;
         screen
     }
 
@@ -140,17 +144,41 @@ impl Screen {
             check_saved(self.sender.clone(), ctx.clone());
         }
         while let Ok(event) = self.events.try_recv() {
-            match &event {
-                Event::Code(code) => self.code = Some((code.clone(), Instant::now())),
-                Event::SignedIn(_, registry) => self.registry.clone_from(registry),
-                _ => {}
+            match self.take(event) {
+                Some(Saved::Forget) => vault::forget(),
+                Some(Saved::Revoke) => {
+                    self.sign_out();
+                    self.state = State::Ended(Ended::Cancelled);
+                }
+                None => {}
             }
-            self.state = self.state.after(event);
         }
         app.hub_email = match &self.state {
             State::SignedIn(email) => Some(email.clone()),
             _ => None,
         };
+    }
+
+    /// Applies a worker's answer and returns what is left to do with the saved session.
+    fn take(&mut self, event: Event) -> Option<Saved> {
+        match &event {
+            Event::Code(code) => self.code = Some((code.clone(), Instant::now())),
+            // Cancel was pressed after the worker last looked.
+            Event::SignedIn(..) if self.cancel.load(Ordering::Relaxed) => {
+                return Some(Saved::Revoke);
+            }
+            Event::SignedIn(_, registry) => self.registry.clone_from(registry),
+            // About the saved session only: a sign-out or a newer sign-in made it old news.
+            Event::SessionEnded if !self.restored => return None,
+            Event::SessionEnded => {
+                self.restored = false;
+                self.state = self.state.after(event);
+                return Some(Saved::Forget);
+            }
+            _ => {}
+        }
+        self.state = self.state.after(event);
+        None
     }
 
     /// The part at the foot of the sidebar.
@@ -235,6 +263,7 @@ impl Screen {
         self.state = State::SigningIn;
         self.code = None;
         self.registry = None;
+        self.restored = false;
         self.cancel = Arc::default();
         let cancel = Arc::clone(&self.cancel);
         let sender = self.sender.clone();
@@ -251,11 +280,20 @@ impl Screen {
         vault::forget();
         self.state = State::SignedOut;
         self.registry = None;
+        self.restored = false;
         if let Some(session) = session {
             // On a thread: a slow Hub must not freeze the window.
             thread::spawn(move || ck_admin_core::sign_out(HUB_URL, &session));
         }
     }
+}
+
+/// What an answer asks of the credential vault.
+#[derive(Debug, PartialEq, Eq)]
+enum Saved {
+    Forget,
+    /// Forget it and end it at the Hub.
+    Revoke,
 }
 
 /// Asks the Hub whether the saved session still stands. A Hub that cannot be reached is not an
@@ -272,7 +310,7 @@ fn check_saved(sender: Sender<Event>, ctx: Context) {
         // Only the session that was asked: a sign-in may have replaced it meanwhile.
             && vault::load().is_some_and(|now| now.token() == session.token())
         {
-            vault::forget();
+            // The window forgets it, in step with its own sign-ins.
             let _ = sender.send(Event::SessionEnded);
             ctx.request_repaint();
         }
@@ -307,7 +345,6 @@ fn sign_in(
                 ck_admin_core::sign_out(HUB_URL, &session);
                 return Event::Ended(Ended::Cancelled);
             }
-            vault::save(&session);
             let registry = profile
                 .map(|path| ck_admin_core::folder_of(&path).join("ck-registry.json"))
                 .filter(|registry| registry.is_file())
@@ -315,6 +352,12 @@ fn sign_in(
                     ck_admin_core::push_registry_signed_in(HUB_URL, &session, &registry)
                         .map_or_else(|why| format!("not sent: {why}"), |pushed| describe(&pushed))
                 });
+            // Cancel may have been pressed while the registry was being sent.
+            if cancel.load(Ordering::Relaxed) {
+                ck_admin_core::sign_out(HUB_URL, &session);
+                return Event::Ended(Ended::Cancelled);
+            }
+            vault::save(&session);
             Event::SignedIn(session.email, registry)
         }
         Ok(PairingEnd::Cancelled) => Event::Ended(Ended::Cancelled),
@@ -425,6 +468,28 @@ mod tests {
             State::SignedOut.after(Event::SignedIn("a@b.c".into(), None)),
             State::SignedOut
         );
+    }
+
+    #[test]
+    fn a_late_end_of_the_saved_session_leaves_a_newer_sign_in_alone() {
+        let mut screen = Screen::new(State::SignedIn("old@b.c".into()));
+        screen.restored = true;
+        assert_eq!(screen.take(Event::SessionEnded), Some(Saved::Forget));
+        assert_eq!(screen.state, State::SignedOut);
+
+        // A second sign-in has completed; `restored` was cleared when it started.
+        let mut screen = Screen::new(State::SignedIn("new@b.c".into()));
+        assert_eq!(screen.take(Event::SessionEnded), None);
+        assert_eq!(screen.state, State::SignedIn("new@b.c".into()));
+    }
+
+    #[test]
+    fn a_sign_in_that_was_cancelled_is_revoked_even_when_it_still_arrives() {
+        let mut screen = Screen::new(State::SigningIn);
+        screen.cancel.store(true, Ordering::Relaxed);
+        let late = Event::SignedIn("a@b.c".into(), None);
+        assert_eq!(screen.take(late), Some(Saved::Revoke));
+        assert_eq!(screen.state, State::SigningIn);
     }
 
     #[test]
