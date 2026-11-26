@@ -7,6 +7,8 @@
   let offer = $state<api.UpdateOffer | null>(null);
   let installing = $state(false);
   let failure = $state('');
+  /** The profile could not be saved: pressing the button again updates and drops the edits. */
+  let unsaved = $state(false);
   let dialog = $state<HTMLDialogElement>();
 
   // The check can finish before this page opens or while it is open: ask once, then listen.
@@ -36,8 +38,17 @@
     installing = true;
     failure = '';
     try {
-      // The restart would drop what was typed; a profile that cannot be saved stops the update.
-      if (app.profile) await saveProfile();
+      // The restart would drop what was typed; a profile that cannot be saved asks first.
+      if (app.profile && !unsaved) {
+        try {
+          await saveProfile();
+        } catch (error) {
+          unsaved = true;
+          failure = `${describeError(error)} Updating now loses these edits.`;
+          installing = false;
+          return;
+        }
+      }
       await api.installUpdate();
     } catch (error) {
       failure = describeError(error);
@@ -74,7 +85,7 @@
         <button type="button" class="btn" disabled={installing} onclick={later}>Later</button>
       {/if}
       <button type="button" class="btn pri" disabled={installing || app.busy} onclick={update}>
-        {installing ? 'Updating…' : 'Update and restart'}
+        {installing ? 'Updating…' : unsaved ? 'Update without saving' : 'Update and restart'}
       </button>
     </div>
   {/if}
