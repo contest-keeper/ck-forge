@@ -42,6 +42,28 @@ fn checked(profile: &Profile) -> (Vec<String>, Vec<String>) {
     (problems, profile.warnings())
 }
 
+/// `add_wallpaper`, but a picture that is already in place is not copied onto itself: it may be
+/// the chosen file under another name (a link), which copying would empty.
+fn copy_wallpaper(profile: &Path, source: &Path) -> Result<String, String> {
+    let there = source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            let name = format!("wallpaper.{}", extension.to_ascii_lowercase());
+            folder_of(profile).join(name)
+        })
+        .filter(|there| same_picture(there, source));
+    add_wallpaper(profile, there.as_deref().unwrap_or(source)).map_err(|e| e.to_string())
+}
+
+fn same_picture(first: &Path, second: &Path) -> bool {
+    let size = |path| std::fs::metadata(path).map(|meta| meta.len()).ok();
+    // The sizes first, so that a huge file is not read to compare it.
+    size(first).is_some()
+        && size(first) == size(second)
+        && std::fs::read(first).ok() == std::fs::read(second).ok()
+}
+
 /// Whether a wallpaper other than `source` lies in `folder`, where copying `source` would replace
 /// or remove it.
 fn holds_another_wallpaper(folder: &Path, source: &Path) -> bool {
@@ -319,24 +341,34 @@ impl Screen {
                 .clone_into(&mut self.failure);
             return;
         }
-        let saved = state.save_profile_to(path.to_owned()).and_then(|()| {
-            let Some(source) = &wallpaper else {
-                return Ok(());
-            };
-            let name = add_wallpaper(path, source).map_err(|e| e.to_string())?;
-            state.wallpaper_revision += 1;
-            match &mut state.profile {
-                // The copy may have another name than the picture had.
-                Some(profile) if profile.settings.branding.wallpaper.as_ref() != Some(&name) => {
-                    profile.settings.branding.wallpaper = Some(name);
-                    state.save_profile_to(path.to_owned())
+        // The picture goes first: if it cannot be copied, the editor stays on the old file, which
+        // has it. Nothing is copied while saving is blocked.
+        let mut before = None;
+        if let Some(source) = &wallpaper
+            && state.blocked.is_none()
+        {
+            match copy_wallpaper(path, source) {
+                Ok(name) => {
+                    if let Some(profile) = &mut state.profile {
+                        before = profile.settings.branding.wallpaper.replace(name);
+                        state.wallpaper_revision += 1;
+                    }
                 }
-                _ => Ok(()),
+                Err(why) => {
+                    self.failure = why;
+                    return;
+                }
             }
-        });
-        match saved {
+        }
+        match state.save_profile_to(path.to_owned()) {
             Ok(()) => self.status = format!("Saved {}", path.display()),
-            Err(why) => self.failure = why,
+            Err(why) => {
+                // The old file is still the one edited, so its picture keeps its name.
+                if let (Some(profile), Some(name)) = (&mut state.profile, before) {
+                    profile.settings.branding.wallpaper = Some(name);
+                }
+                self.failure = why;
+            }
         }
     }
 
@@ -373,7 +405,7 @@ impl Screen {
     fn use_wallpaper(&mut self, state: &mut AppState, source: &Path) {
         let added = state
             .save_profile()
-            .and_then(|path| add_wallpaper(&path, source).map_err(|e| e.to_string()));
+            .and_then(|path| copy_wallpaper(&path, source));
         match added {
             Ok(name) => {
                 if let Some(profile) = &mut state.profile {
@@ -469,6 +501,40 @@ mod tests {
         assert_eq!(screen.failure, "");
         assert!(free.path().join("wallpaper.png").is_file());
         assert!(!state.is_unsaved());
+    }
+
+    #[test]
+    fn a_failed_wallpaper_copy_leaves_the_editor_on_the_old_file() {
+        let (data, mut state, mut screen) = sample();
+        let source = data.path().join("source.png");
+        picture(&source, 1);
+        screen.use_wallpaper(&mut state, &source);
+        let first = state.profile_path.clone().expect("saved");
+        std::fs::remove_file(folder_of(&first).join("wallpaper.png")).expect("removed");
+
+        let free = tempfile::tempdir().expect("folder");
+        screen.save_as(&mut state, &free.path().join("p.json"));
+        assert_ne!(screen.failure, "");
+        assert!(!free.path().join("p.json").exists());
+        assert_eq!(state.profile_path, Some(first));
+    }
+
+    #[test]
+    fn choosing_a_link_to_the_wallpaper_keeps_the_picture() {
+        let (data, mut state, mut screen) = sample();
+        let source = data.path().join("source.png");
+        picture(&source, 1);
+        screen.use_wallpaper(&mut state, &source);
+        let folder = folder_of(state.profile_path.as_ref().expect("saved")).to_owned();
+        let link = folder.join("link.png");
+        std::fs::hard_link(folder.join("wallpaper.png"), &link).expect("link");
+
+        screen.use_wallpaper(&mut state, &link);
+        assert_eq!(screen.wallpaper_failure, "");
+        assert_eq!(
+            std::fs::read(folder.join("wallpaper.png")).expect("picture"),
+            std::fs::read(&source).expect("picture")
+        );
     }
 
     #[test]
