@@ -4,6 +4,8 @@
 //! The pages that are being rebuilt use these; until then some have no caller.
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
 use eframe::egui::{
     self, Align, Align2, Color32, Frame, Id, Layout, Rect, Response, RichText, Role, Sense, Shadow,
     Stroke, StrokeKind, TextEdit, TextFormat, Ui, UiBuilder, Vec2, WidgetInfo, pos2,
@@ -374,46 +376,48 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// A card that opens and closes under its title (`details.card`). `None` while it is closed.
 pub fn details<R>(ui: &mut Ui, summary: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    card(ui, |ui| disclosure(ui, summary, add))
+}
+
+/// A title that opens and closes what is under it, inside the place it is in (`<details>`).
+pub fn disclosure<R>(ui: &mut Ui, summary: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    let t = tokens(ui.ctx());
     let id = ui.make_persistent_id(("details", summary));
     let mut open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
-    card(ui, |ui| {
-        let t = tokens(ui.ctx());
-        let galley = ui.painter().layout_no_wrap(
-            summary.to_owned(),
-            font(Weight::Semibold, t.s.rem),
-            t.c.text,
-        );
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
-        response.widget_info(|| WidgetInfo::labeled(Role::DisclosureTriangle, true, summary));
-        // The browser's disclosure triangle.
-        let at = pos2(rect.left() + 5.0, rect.center().y);
-        let points = if open {
-            vec![
-                at + vec2(-4.5, -3.0),
-                at + vec2(4.5, -3.0),
-                at + vec2(0.0, 4.0),
-            ]
-        } else {
-            vec![
-                at + vec2(-3.0, -4.5),
-                at + vec2(4.0, 0.0),
-                at + vec2(-3.0, 4.5),
-            ]
-        };
-        ui.painter()
-            .add(egui::Shape::convex_polygon(points, t.c.text, Stroke::NONE));
-        let at = pos2(rect.left() + 17.0, rect.center().y - galley.size().y / 2.0);
-        ui.painter().galley(at, galley, t.c.text);
-        focus_ring(ui, &response, 4);
-        if response.clicked() {
-            open = !open;
-            ui.data_mut(|data| data.insert_temp(id, open));
-        }
-        open.then(|| {
-            ui.add_space(14.0 - t.s.card_gap);
-            add(ui)
-        })
+    let galley = ui.painter().layout_no_wrap(
+        summary.to_owned(),
+        font(Weight::Semibold, t.s.rem),
+        t.c.text,
+    );
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(Role::DisclosureTriangle, true, summary));
+    // The browser's disclosure triangle.
+    let at = pos2(rect.left() + 5.0, rect.center().y);
+    let points = if open {
+        vec![
+            at + vec2(-4.5, -3.0),
+            at + vec2(4.5, -3.0),
+            at + vec2(0.0, 4.0),
+        ]
+    } else {
+        vec![
+            at + vec2(-3.0, -4.5),
+            at + vec2(4.0, 0.0),
+            at + vec2(-3.0, 4.5),
+        ]
+    };
+    ui.painter()
+        .add(egui::Shape::convex_polygon(points, t.c.text, Stroke::NONE));
+    let at = pos2(rect.left() + 17.0, rect.center().y - galley.size().y / 2.0);
+    ui.painter().galley(at, galley, t.c.text);
+    focus_ring(ui, &response, 4);
+    if response.clicked() {
+        open = !open;
+        ui.data_mut(|data| data.insert_temp(id, open));
+    }
+    open.then(|| {
+        ui.add_space(14.0 - t.s.card_gap);
+        add(ui)
     })
 }
 
@@ -900,6 +904,21 @@ pub fn row<R>(ui: &mut Ui, main: impl FnOnce(&mut Ui), trailing: impl FnOnce(&mu
     .inner
 }
 
+/// The filled box around a chosen file or a set of controls (`.path`).
+pub fn path_box<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let t = tokens(ui.ctx());
+    let fill = if t.classic() { t.c.input_bg } else { t.c.soft };
+    let frame = Frame::new()
+        .fill(fill)
+        .corner_radius(t.s.radius)
+        .inner_margin(egui::Margin::symmetric(14, 10));
+    let (result, rect) = boxed(ui, frame, add);
+    if t.classic() {
+        bevel(ui, rect, Bevel::Sunken);
+    }
+    result
+}
+
 /// A chosen file: its name, where it is and the buttons for it (`.path`). `trailing` is laid out
 /// from the right.
 pub fn path_row<R>(
@@ -908,28 +927,22 @@ pub fn path_row<R>(
     below: &[&str],
     trailing: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    let t = tokens(ui.ctx());
-    let fill = if t.classic() { t.c.input_bg } else { t.c.soft };
-    let frame = Frame::new()
-        .fill(fill)
-        .corner_radius(t.s.radius)
-        .inner_margin(egui::Margin::symmetric(14, 10));
-    let (result, rect) = boxed(ui, frame, |ui| {
+    path_box(ui, |ui| {
         row(
             ui,
             |ui| {
+                // A name alone sits in the middle of the box, beside the taller buttons.
+                let alone = if below.is_empty() { 6.0 } else { 0.0 };
+                ui.add_space(alone);
                 strong(ui, name);
                 for line in below {
                     hint(ui, line);
                 }
+                ui.add_space(alone);
             },
             trailing,
         )
-    });
-    if t.classic() {
-        bevel(ui, rect, Bevel::Sunken);
-    }
-    result
+    })
 }
 
 /// A disk to tick (`.disk`): `selected` is changed by a click anywhere on the row unless the disk
@@ -1036,12 +1049,17 @@ pub fn step_head(ui: &mut Ui, number: u32, done: bool, name: &str, text: &str) {
     });
 }
 
-/// One of a few big buttons that choose a way (`.choice`). Give it the width of its column.
-pub fn choice(ui: &mut Ui, pressed: bool, name: &str, text: &str, width: f32) -> Response {
+const CHOICE_PAD: Vec2 = vec2(14.0, 12.0);
+
+/// The name and the text of a choice as they are laid out in a column of this width.
+fn choice_text(
+    ui: &Ui,
+    name: &str,
+    text: &str,
+    width: f32,
+) -> (Arc<egui::Galley>, Arc<egui::Galley>) {
     let t = tokens(ui.ctx());
-    let enabled = ui.is_enabled();
-    let pad = vec2(14.0, 12.0);
-    let wrap = width - 2.0 * pad.x;
+    let wrap = width - 2.0 * CHOICE_PAD.x;
     let name_galley = ui.painter().layout(
         name.to_owned(),
         font(Weight::Semibold, t.s.rem),
@@ -1054,7 +1072,34 @@ pub fn choice(ui: &mut Ui, pressed: bool, name: &str, text: &str, width: f32) ->
         t.c.muted,
         wrap,
     );
-    let height = name_galley.size().y + 4.0 + text_galley.size().y + 2.0 * pad.y;
+    (name_galley, text_galley)
+}
+
+/// How high a choice has to be for its text.
+pub fn choice_height(ui: &Ui, name: &str, text: &str, width: f32) -> f32 {
+    let (name, text) = choice_text(ui, name, text, width);
+    name.size().y + 4.0 + text.size().y + 2.0 * CHOICE_PAD.y
+}
+
+/// One of a few big buttons that choose a way (`.choice`). Give it the width of its column.
+pub fn choice(ui: &mut Ui, pressed: bool, name: &str, text: &str, width: f32) -> Response {
+    choice_sized(ui, pressed, name, text, width, 0.0)
+}
+
+/// [`choice`] at least `height` high, so the choices of one row match.
+pub fn choice_sized(
+    ui: &mut Ui,
+    pressed: bool,
+    name: &str,
+    text: &str,
+    width: f32,
+    height: f32,
+) -> Response {
+    let t = tokens(ui.ctx());
+    let enabled = ui.is_enabled();
+    let pad = CHOICE_PAD;
+    let (name_galley, text_galley) = choice_text(ui, name, text, width);
+    let height = height.max(name_galley.size().y + 4.0 + text_galley.size().y + 2.0 * pad.y);
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     response.widget_info(|| WidgetInfo::selected(Role::Button, enabled, pressed, name));
     let (fill, edge) = if pressed {

@@ -1,56 +1,123 @@
-//! Write sticks: one image for each stick, written to the chosen disks by `ck-forge stick write`
-//! started with administrator rights (the Windows permission prompt). The window stays unelevated,
-//! shows the helper's progress and can cancel. Elsewhere it shows the command to run in a terminal.
+//! Steps 2 and 3, the sticks and the write: one image for each stick, written to the ticked disks by
+//! `ck-forge stick write` started with administrator rights (the Windows permission prompt). The
+//! window stays unelevated, shows the helper's progress and can cancel. Elsewhere it shows the
+//! command to run in a terminal. The rules are those of `MakePage.svelte` of the earlier window.
 
-use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
+use std::time::Instant;
 
+use ck_admin_core::{
+    HUB_URL, HardwareId, HubStick, list_sticks, requires_signed_settings, supports_enrolment, vault,
+};
 use ck_protocol::WifiPassword;
 use ck_writer::{Disk, list_disks};
+use eframe::egui::{Align, Context, TextFormat, Ui, text::LayoutJob, vec2};
 
-use crate::make::stick_job::{Event, Progress, Request, run};
+use crate::make::format::{self, erase_confirmation, stick_label};
+use crate::make::progress::Bar;
+use crate::make::stick_job::{Event as JobEvent, Request, run};
+use crate::make::sticks::{Choice, confirm_retire};
+use crate::theme::{Weight, font, tokens};
+use crate::widgets::{self, Btn, Input, Tone};
+
+/// What a worker thread reports. The number tells which listing the answer belongs to.
+enum Event {
+    /// The size of the base image and the disks of this computer.
+    Disks(u64, Result<(u64, Vec<Disk>), String>),
+    /// What a base image supports, asked while signed in or not.
+    Support(PathBuf, bool, Support),
+    /// The Hub's sticks, asked as this account.
+    Earlier(u64, String, Result<Vec<HubStick>, String>),
+}
+
+/// What the base image asks of a write.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Support {
+    /// The image only accepts settings the Hub signed.
+    pub(super) signature: bool,
+    /// Whether it can make each stick's key at first boot; unknown until it was asked, which is
+    /// only done while signed in.
+    pub(super) enrolment: Option<bool>,
+}
+
+/// Where a write goes.
+enum Target {
+    /// The disks to erase, each with its identity token as it was listed.
+    Disks(Vec<(u32, String)>),
+    /// A file: a test without a stick.
+    File(PathBuf),
+}
+
+/// A write that waits for the answer about the old keys. What it erases and replaces is taken when
+/// the button is pressed, so the question names exactly what the write then does.
+pub(super) struct Asking {
+    disks: Vec<(u32, String)>,
+    before: Vec<HubStick>,
+}
 
 // The checkboxes and flags of a window are plain state, not a state machine.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Screen {
-    disks: Vec<Disk>,
+    pub(super) disks: Vec<Disk>,
+    /// The size of the base image the disks were listed for.
+    pub(super) size: u64,
     /// Whether the disks are being listed, which can take seconds.
     listing: bool,
+    /// Goes up whenever the disks are forgotten, so a late answer is dropped.
+    generation: u64,
     /// The base image the sticks are made from.
-    base: String,
+    pub(super) base: Option<PathBuf>,
     /// The saved profile the sticks get their settings from.
-    profile: String,
+    pub(super) profile: Option<PathBuf>,
+    /// The signed-in admin.
+    pub(super) email: Option<String>,
+    pub(super) support: Support,
+    pub(super) first_boot_enrolment: bool,
+    allow_virtual: bool,
     /// The Wi-Fi password, typed for this write only. It is never saved, logged or shown.
     wifi_password: String,
-    first_boot_enrolment: bool,
-    allow_virtual: bool,
-    /// A file to write to instead of a disk: a test without a stick.
-    to_file: String,
+    /// A file to write to instead of a disk.
+    to_file: Option<PathBuf>,
     /// The disks the admin ticked.
-    chosen: BTreeSet<u32>,
-    /// Whether the window that asks to confirm the erase is open.
-    confirming: bool,
-    /// The image to write on a system where the window cannot write, as typed.
-    image: String,
+    pub(super) chosen: BTreeSet<u32>,
+    /// What the admin typed to confirm the erase.
+    pub(super) typed: String,
+    /// What the Hub knows about each disk, from the sticks written to it before.
+    pub(super) earlier: BTreeMap<u32, HubStick>,
+    lookup_note: String,
+    asking: Option<Asking>,
+    /// The image to write on a system where the window cannot write.
+    image: Option<PathBuf>,
     /// The chosen disk number on such a system, as typed.
     disk: String,
-    message: String,
+    pub(super) failure: String,
+    /// What the last write that worked reported.
+    pub(super) success: String,
     job: Option<Job>,
     /// A write succeeded in this run.
     pub written: bool,
-    events: Receiver<Result<Vec<Disk>, String>>,
-    sender: Sender<Result<Vec<Disk>, String>>,
+    /// A write that worked, until the page takes it: the sticks it replaced, and whether to retire
+    /// their keys.
+    finished: Option<(Vec<HubStick>, bool)>,
+    events: Receiver<Event>,
+    sender: Sender<Event>,
 }
 
 /// A write that is running on its own thread.
 struct Job {
     cancel: Arc<AtomicBool>,
-    progress: Option<Progress>,
-    events: Receiver<Event>,
+    bar: Bar,
+    events: Receiver<JobEvent>,
+    before: Vec<HubStick>,
+    retire: bool,
+    /// How many sticks it writes.
+    count: usize,
+    started: Instant,
 }
 
 impl Default for Screen {
@@ -58,20 +125,29 @@ impl Default for Screen {
         let (sender, events) = channel();
         Self {
             disks: Vec::new(),
+            size: 0,
             listing: false,
-            base: String::new(),
-            profile: String::new(),
-            wifi_password: String::new(),
+            generation: 0,
+            base: None,
+            profile: None,
+            email: None,
+            support: Support::default(),
             first_boot_enrolment: false,
             allow_virtual: false,
-            to_file: String::new(),
+            wifi_password: String::new(),
+            to_file: None,
             chosen: BTreeSet::new(),
-            confirming: false,
-            image: String::new(),
+            typed: String::new(),
+            earlier: BTreeMap::new(),
+            lookup_note: String::new(),
+            asking: None,
+            image: None,
             disk: String::new(),
-            message: String::new(),
+            failure: String::new(),
+            success: String::new(),
             job: None,
             written: false,
+            finished: None,
             events,
             sender,
         }
@@ -84,21 +160,6 @@ const ADMIN_HINT: &str = if cfg!(target_os = "macos") {
 } else {
     "Writing a stick needs administrator rights: run the command below in an administrator PowerShell."
 };
-
-/// One line for a disk: its number, name, size, and whether it may be written.
-fn describe(disk: &Disk) -> String {
-    let verdict = match disk.check(0, true) {
-        Ok(()) => "can be written".to_owned(),
-        Err(error) => format!("refused: {error}"),
-    };
-    format!(
-        "disk {}  {}  {}  {}  [{verdict}]",
-        disk.number,
-        disk.friendly_name.as_deref().unwrap_or("?"),
-        disk.size_text(),
-        disk.bus_type,
-    )
-}
 
 /// The command that writes `image` to disk `number`, quoted for the shell the hint names: zsh or
 /// bash on macOS, PowerShell on Windows.
@@ -123,7 +184,7 @@ fn command_line(image: &str, number: &str) -> String {
 
 /// The command line tool as a terminal can start it. In the macOS app it sits beside this program
 /// and is not on the PATH, so its full path is given; otherwise `ck-forge` is expected on the PATH.
-fn bundled_tool(here: Option<&std::path::Path>) -> String {
+fn bundled_tool(here: Option<&Path>) -> String {
     here.map(|here| here.with_file_name("ck-forge"))
         .filter(|tool| tool.is_file())
         .map_or_else(
@@ -151,324 +212,973 @@ fn quote_powershell(text: &str) -> String {
     quoted
 }
 
-/// How far the write is, from 0 to 1: the writing, then the checking once the writing is over.
-fn fraction(progress: &Progress) -> f32 {
-    if progress.total == 0 {
-        return 0.0;
+/// The disks that held a stick the Hub still knows as working.
+fn matched(disks: &[Disk], sticks: &[HubStick]) -> BTreeMap<u32, HubStick> {
+    let mut known = BTreeMap::new();
+    for disk in disks {
+        let Some(hardware) = HardwareId::of(disk) else {
+            continue;
+        };
+        // The Hub shows the first 8 digits of the fingerprint.
+        let id: String = hardware.fingerprint.chars().take(8).collect();
+        let stick = sticks.iter().find(|stick| {
+            stick.hardware.as_ref().is_some_and(|on| on.id == id)
+                && stick.retired_at.is_none()
+                && stick.archived_at.is_none()
+        });
+        if let Some(stick) = stick {
+            known.insert(disk.number, stick.clone());
+        }
     }
-    let done = if progress.phase == "checking" {
-        progress.checked
-    } else {
-        progress.done
-    };
-    // Only for showing a bar: a precision loss in the last digits does not matter.
-    #[allow(clippy::cast_precision_loss)]
-    let fraction = done.min(progress.total) as f32 / progress.total as f32;
-    fraction
+    known
 }
 
-/// The words for what the job is doing.
-fn progress_text(progress: &Progress) -> String {
-    let megabytes = |bytes: u64| bytes / (1024 * 1024);
-    match progress.phase {
-        "building" => format!(
-            "making the stick image: {} of {} MB",
-            megabytes(progress.done),
-            megabytes(progress.total)
-        ),
-        "checking" => format!(
-            "checking: {} of {} MB",
-            megabytes(progress.checked),
-            megabytes(progress.total)
-        ),
-        _ => format!(
-            "writing: {} of {} MB (checked {} MB)",
-            megabytes(progress.done),
-            megabytes(progress.total),
-            megabytes(progress.checked)
-        ),
-    }
-}
-
-/// One line of the confirmation for a disk that is about to be erased.
-fn erase_line(disk: &Disk) -> String {
-    format!(
-        "disk {}: {} ({}, serial {})",
-        disk.number,
-        disk.friendly_name.as_deref().unwrap_or("?"),
-        disk.size_text(),
-        disk.serial_number.as_deref().unwrap_or("?").trim(),
-    )
-}
-
-fn typed(text: &str) -> Option<PathBuf> {
-    let text = text.trim();
-    (!text.is_empty()).then(|| PathBuf::from(text))
+fn disk_word(count: usize) -> &'static str {
+    if count == 1 { "disk" } else { "disks" }
 }
 
 impl Screen {
-    fn list(&mut self, ctx: eframe::egui::Context) {
-        self.listing = true;
+    pub fn writing(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// The write that just worked, if one did.
+    pub fn take_finished(&mut self) -> Option<(Vec<HubStick>, bool)> {
+        self.finished.take()
+    }
+
+    /// Drops the listed disks and everything said about them. A new listing may put another disk at
+    /// a number, so no tick and no typed confirmation may outlive the list it was made on.
+    fn forget_disks(&mut self) {
+        self.generation += 1;
+        self.listing = false;
+        self.disks.clear();
+        self.chosen.clear();
+        self.typed.clear();
+        self.earlier.clear();
+        self.lookup_note.clear();
+        self.asking = None;
+    }
+
+    /// The base image was chosen or made again, perhaps at the same place.
+    pub fn base_replaced(&mut self) {
+        self.forget_disks();
+        self.base = None;
+    }
+
+    /// Takes in what the shared state has now.
+    pub fn follow(
+        &mut self,
+        base: Option<&Path>,
+        profile: Option<&Path>,
+        email: Option<&str>,
+        ctx: &Context,
+    ) {
+        self.profile = profile.map(Path::to_owned);
+        let mut ask = false;
+        if self.base.as_deref() != base {
+            // The disks were checked against the size of the old image.
+            self.forget_disks();
+            self.base = base.map(Path::to_owned);
+            ask = true;
+        }
+        if self.email.as_deref() != email {
+            // What one account's Hub said is not for another.
+            self.email = email.map(str::to_owned);
+            self.earlier.clear();
+            self.lookup_note.clear();
+            self.asking = None;
+            ask = true;
+        }
+        if ask {
+            self.ask_support(ctx.clone());
+        }
+    }
+
+    /// Asks the base image what it supports; reading it can take a while.
+    fn ask_support(&mut self, ctx: Context) {
+        self.support = Support::default();
+        self.first_boot_enrolment = false;
+        let Some(base) = self.base.clone() else {
+            return;
+        };
+        let signed_in = self.email.is_some();
         let sender = self.sender.clone();
         thread::spawn(move || {
-            let result = list_disks().map_err(|e| e.to_string());
+            // An image that cannot be checked here is checked again when the sticks are built, and
+            // one that cannot be asked about enrolment uses the credential flow.
+            let support = Support {
+                signature: requires_signed_settings(&base).unwrap_or(false),
+                enrolment: signed_in.then(|| supports_enrolment(&base).unwrap_or(false)),
+            };
             // The window may be gone by now; then nobody needs the answer.
-            let _ = sender.send(result);
+            let _ = sender.send(Event::Support(base, signed_in, support));
+            ctx.request_repaint();
+        });
+    }
+
+    fn list(&mut self, ctx: Context) {
+        self.forget_disks();
+        self.failure.clear();
+        self.listing = true;
+        let generation = self.generation;
+        let base = self.base.clone();
+        let sender = self.sender.clone();
+        thread::spawn(move || {
+            // Without the size of the image a stick that is too small would be offered, so an
+            // image that cannot be read lists nothing.
+            let size = base.map_or(Ok(0), |base| {
+                ck_writer::thin::image_len(&base).map_err(|e| e.to_string())
+            });
+            let result = size.and_then(|size| {
+                let disks = list_disks().map_err(|e| e.to_string())?;
+                Ok((size, disks))
+            });
+            let _ = sender.send(Event::Disks(generation, result));
+            ctx.request_repaint();
+        });
+    }
+
+    fn look_up_earlier(&self, ctx: Context) {
+        let Some(email) = self.email.clone() else {
+            return;
+        };
+        if !self.disks.iter().any(|disk| HardwareId::of(disk).is_some()) {
+            return;
+        }
+        let generation = self.generation;
+        let sender = self.sender.clone();
+        thread::spawn(move || {
+            let result = vault::load()
+                .ok_or_else(|| "sign in to the Hub first".to_owned())
+                .and_then(|session| list_sticks(HUB_URL, &session).map_err(|e| e.to_string()));
+            let _ = sender.send(Event::Earlier(generation, email, result));
             ctx.request_repaint();
         });
     }
 
     /// Takes what the worker threads reported.
-    pub fn receive(&mut self) {
-        while let Ok(result) = self.events.try_recv() {
-            self.listing = false;
-            match result {
-                Ok(disks) => {
-                    self.chosen
-                        .retain(|number| disks.iter().any(|d| d.number == *number));
-                    self.disks = disks;
-                    self.message.clear();
+    pub fn receive(&mut self, ctx: &Context) {
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                Event::Disks(generation, result) if generation == self.generation => {
+                    self.listing = false;
+                    match result {
+                        Ok((size, disks)) => {
+                            self.size = size;
+                            self.disks = disks;
+                            self.look_up_earlier(ctx.clone());
+                        }
+                        Err(why) => self.failure = why,
+                    }
                 }
-                Err(why) => self.message = why,
+                Event::Support(base, signed_in, support)
+                    if self.base.as_ref() == Some(&base) && signed_in == self.email.is_some() =>
+                {
+                    self.support = support;
+                    // The recommended way is the default whenever the image can do it.
+                    self.first_boot_enrolment = support.enrolment == Some(true);
+                }
+                Event::Earlier(generation, email, result)
+                    if generation == self.generation && self.email.as_ref() == Some(&email) =>
+                {
+                    match result {
+                        Ok(sticks) => self.earlier = matched(&self.disks, &sticks),
+                        Err(why) => {
+                            self.lookup_note = format!(
+                                "Forge could not check which sticks these disks held before: {why}"
+                            );
+                        }
+                    }
+                }
+                // An answer about disks, an image or an account that is no longer the one shown.
+                Event::Disks(..) | Event::Support(..) | Event::Earlier(..) => {}
             }
         }
-        let mut ended = None;
-        if let Some(job) = &mut self.job {
-            while let Ok(event) = job.events.try_recv() {
-                match event {
-                    Event::Progress(progress) => job.progress = Some(progress),
-                    Event::Done(result) => ended = Some(result),
-                }
-            }
-        }
-        if let Some(result) = ended {
-            self.job = None;
-            self.written |= result.is_ok();
-            self.message = match result {
-                Ok(hash) => format!("Written and read back, SHA-256 {hash}"),
-                Err(why) => why,
-            };
-        }
+        self.receive_job();
     }
 
-    pub fn busy(&self) -> bool {
-        self.job.is_some()
-    }
-
-    /// The files to write from, as the shared state has them now.
-    pub fn use_files(&mut self, base: Option<&std::path::Path>, profile: Option<&std::path::Path>) {
-        let text = |path: Option<&std::path::Path>| {
-            path.map(|path| path.display().to_string())
-                .unwrap_or_default()
+    fn receive_job(&mut self) {
+        let Some(job) = &mut self.job else {
+            return;
         };
-        self.base = text(base);
-        self.profile = text(profile);
-    }
-
-    pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
-        ui.heading("Write a stick");
-        self.receive();
-        if cfg!(windows) {
-            self.write_ui(ui);
-        } else {
-            self.command_ui(ui);
-        }
-        if !self.message.is_empty() {
-            ui.label(&self.message);
-        }
-    }
-
-    fn list_ui(&mut self, ui: &mut eframe::egui::Ui, pick: bool) {
-        let button = ui.add_enabled(!self.listing, eframe::egui::Button::new("List the disks"));
-        if button.clicked() {
-            self.list(ui.ctx().clone());
-        }
-        let size = typed(&self.base)
-            .and_then(|base| ck_writer::thin::image_len(&base).ok())
-            .unwrap_or(0);
-        for disk in &self.disks {
-            if pick {
-                let allowed = disk.check(size, self.allow_virtual).is_ok();
-                let mut ticked = self.chosen.contains(&disk.number);
-                let changed = ui
-                    .add_enabled(
-                        allowed,
-                        eframe::egui::Checkbox::new(&mut ticked, describe(disk)),
-                    )
-                    .changed();
-                if changed && ticked {
-                    self.chosen.insert(disk.number);
-                } else if changed || !allowed {
-                    self.chosen.remove(&disk.number);
-                }
-            } else {
-                ui.label(describe(disk));
+        let mut ended = None;
+        while let Ok(event) = job.events.try_recv() {
+            match event {
+                JobEvent::Progress(progress) => job.bar.update(progress, Instant::now()),
+                JobEvent::Done(result) => ended = Some(result),
             }
         }
-    }
-
-    /// Where the window cannot write sticks itself, it shows the command to copy.
-    fn command_ui(&mut self, ui: &mut eframe::egui::Ui) {
-        ui.label(ADMIN_HINT);
-        self.list_ui(ui, false);
-        ui.horizontal(|ui| {
-            ui.label("Image");
-            ui.text_edit_singleline(&mut self.image);
-        });
-        ui.horizontal(|ui| {
-            ui.label("Disk number");
-            ui.text_edit_singleline(&mut self.disk);
-        });
-        if !self.image.trim().is_empty() && !self.disk.trim().is_empty() {
-            let command = command_line(&self.image, &self.disk);
-            ui.label("Command:");
-            ui.monospace(&command);
-            if ui.button("Copy the command").clicked() {
-                ui.ctx().copy_text(command);
-            }
-        }
-    }
-
-    fn write_ui(&mut self, ui: &mut eframe::egui::Ui) {
-        if let Some(job) = &self.job {
-            if let Some(progress) = &job.progress {
-                ui.add(
-                    eframe::egui::ProgressBar::new(fraction(progress))
-                        .text(progress_text(progress)),
+        let Some(result) = ended else {
+            return;
+        };
+        let Some(job) = self.job.take() else {
+            return;
+        };
+        self.typed.clear();
+        self.wifi_password.clear();
+        self.first_boot_enrolment = self.support.enrolment == Some(true);
+        match result {
+            Ok(hash) => {
+                let sticks = match job.count {
+                    1 => "the stick".to_owned(),
+                    count => format!("{count} sticks"),
+                };
+                let took = format::duration(job.started.elapsed().as_secs());
+                self.success = format!(
+                    "Written and read back on {sticks} in {took}. The check value (SHA-256) is \
+                     {hash}."
                 );
-            } else {
-                ui.label("Starting…");
+                self.written = true;
+                // The Hub now points at the new sticks.
+                self.generation += 1;
+                self.earlier.clear();
+                // Only here: the old keys are needed until the new sticks are written and read back.
+                self.finished = Some((job.before, job.retire));
             }
-            if ui.button("Cancel").clicked() {
-                job.cancel.store(true, Ordering::Relaxed);
-                "Cancelling: the stick is then only partly written and must be written again"
-                    .clone_into(&mut self.message);
-            }
+            Err(why) => self.failure = why,
+        }
+    }
+
+    /// Unticks every disk that may not be written, such as a virtual one after its box is cleared.
+    fn prune(&mut self) {
+        let (disks, size, allow) = (&self.disks, self.size, self.allow_virtual);
+        self.chosen.retain(|number| {
+            disks
+                .iter()
+                .any(|disk| disk.number == *number && disk.check(size, allow).is_ok())
+        });
+    }
+
+    fn ready(&self) -> bool {
+        self.base.is_some() && self.profile.is_some()
+    }
+
+    fn must_sign_in(&self) -> bool {
+        self.support.signature && self.email.is_none()
+    }
+
+    fn can_write(&self, locked: bool) -> bool {
+        self.ready() && !self.must_sign_in() && self.job.is_none() && !locked
+    }
+
+    /// Whether the admin typed the confirmation for exactly the disks that are ticked.
+    fn confirmed(&self) -> bool {
+        !self.chosen.is_empty() && self.typed.trim() == erase_confirmation(&self.chosen)
+    }
+
+    /// The write button. When it would replace sticks the Hub knows, it asks first.
+    fn press(&mut self, ctx: &Context) {
+        self.prune();
+        // Nothing is erased without the typed confirmation, whatever called this.
+        if !self.can_write(false) || !self.confirmed() {
             return;
         }
-        ui.label(
-            "Every stick gets an image of its own with its own identity. Writing erases the \
-             whole stick and asks for administrator permission.",
-        );
-        ui.horizontal(|ui| {
-            ui.label("Wi-Fi password");
-            // Typed for this write only: it is not saved in the profile and never shown.
-            ui.add(eframe::egui::TextEdit::singleline(&mut self.wifi_password).password(true));
-        });
-        ui.checkbox(
-            &mut self.first_boot_enrolment,
-            "First-boot enrolment (needs the Hub sign-in)",
-        );
-        ui.checkbox(
-            &mut self.allow_virtual,
-            "Also allow a virtual disk (to test the writer)",
-        );
-        self.list_ui(ui, true);
-        ui.horizontal(|ui| {
-            ui.label("Or write to a file");
-            ui.text_edit_singleline(&mut self.to_file);
-        });
-        let ready = !self.chosen.is_empty() || !self.to_file.trim().is_empty();
-        if ui
-            .add_enabled(ready, eframe::egui::Button::new("Write"))
-            .clicked()
-        {
-            if self.to_file.trim().is_empty() {
-                self.confirming = true;
-            } else {
-                self.start(ui.ctx());
-            }
-        }
-        if self.confirming {
-            self.confirm_ui(ui.ctx());
-        }
-    }
-
-    /// The last question before disks are erased, naming each one.
-    fn confirm_ui(&mut self, ctx: &eframe::egui::Context) {
-        let lines: Vec<String> = self
+        // What the admin saw when confirming, as listed: the helper erases only these.
+        let disks = self
             .disks
             .iter()
             .filter(|disk| self.chosen.contains(&disk.number))
-            .map(erase_line)
+            .map(|disk| (disk.number, disk.identity_token()))
             .collect();
-        let mut answer = None;
-        eframe::egui::Window::new("Erase these sticks?")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(eframe::egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label("This ERASES everything on:");
-                for line in &lines {
-                    ui.label(line);
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("Erase and write").clicked() {
-                        answer = Some(true);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        answer = Some(false);
-                    }
-                });
-            });
-        match answer {
-            Some(true) => {
-                self.confirming = false;
-                self.start(ctx);
-            }
-            Some(false) => self.confirming = false,
-            None => {}
+        let before: Vec<HubStick> = self
+            .chosen
+            .iter()
+            .filter_map(|number| self.earlier.get(number).cloned())
+            .collect();
+        if before.is_empty() {
+            self.start(Target::Disks(disks), before, false, ctx);
+        } else {
+            self.asking = Some(Asking { disks, before });
         }
     }
 
-    /// Starts the write on its own thread. The Wi-Fi password is moved into the request and the
-    /// field is emptied.
-    fn start(&mut self, ctx: &eframe::egui::Context) {
-        let (Some(base), Some(profile)) = (typed(&self.base), typed(&self.profile)) else {
-            "Choose the base image and save the profile first".clone_into(&mut self.message);
+    fn decided(&mut self, choice: Choice, ctx: &Context) {
+        let Some(asking) = self.asking.take() else {
             return;
         };
-        let to_file = typed(&self.to_file);
+        if choice != Choice::Cancel {
+            let retire = choice == Choice::Retire;
+            self.start(Target::Disks(asking.disks), asking.before, retire, ctx);
+        }
+    }
+
+    /// What the job is asked to do. The Wi-Fi password is moved into it and the field is emptied.
+    fn request(&mut self, target: Target) -> Option<Request> {
+        let (base, profile) = (self.base.clone()?, self.profile.clone()?);
+        let (confirmed, to_file) = match target {
+            Target::Disks(disks) => (disks, None),
+            Target::File(file) => (Vec::new(), Some(file)),
+        };
         let password = std::mem::take(&mut self.wifi_password);
-        let request = Request {
+        Some(Request {
             base,
             profile,
-            disks: if to_file.is_some() {
-                Vec::new()
-            } else {
-                self.chosen.iter().copied().collect()
-            },
-            // What the admin saw in the confirmation, as listed: the helper erases only these.
-            confirmed: if to_file.is_some() {
-                Vec::new()
-            } else {
-                self.disks
-                    .iter()
-                    .filter(|disk| self.chosen.contains(&disk.number))
-                    .map(|disk| (disk.number, disk.identity_token()))
-                    .collect()
-            },
+            disks: confirmed.iter().map(|(number, _)| *number).collect(),
+            confirmed,
             to_file,
             allow_virtual: self.allow_virtual,
             wifi_password: (!password.is_empty()).then(|| WifiPassword::new(password)),
-            first_boot_enrolment: self.first_boot_enrolment,
+            first_boot_enrolment: self.support.enrolment == Some(true) && self.first_boot_enrolment,
+        })
+    }
+
+    /// Starts the write on its own thread.
+    fn start(&mut self, target: Target, before: Vec<HubStick>, retire: bool, ctx: &Context) {
+        let Some(request) = self.request(target) else {
+            "Choose the base image and save the profile first".clone_into(&mut self.failure);
+            return;
         };
+        let count = request.disks.len().max(1);
         let (sender, events) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancel);
         let ctx = ctx.clone();
         thread::spawn(move || run(&request, &flag, &sender, &|| ctx.request_repaint()));
-        self.message.clear();
+        self.failure.clear();
+        self.success.clear();
         self.job = Some(Job {
             cancel,
-            progress: None,
+            bar: Bar::default(),
             events,
+            before,
+            retire,
+            count,
+            started: Instant::now(),
+        });
+    }
+
+    /// Step 2. `network` is the Wi-Fi the profile joins, if it names one.
+    pub fn sticks_ui(&mut self, ui: &mut Ui, network: Option<&str>, locked: bool) {
+        self.prune();
+        widgets::step_head(
+            ui,
+            2,
+            !self.chosen.is_empty(),
+            "Sticks to write",
+            "Plug in the sticks, then find them. Forge only offers USB sticks that are big enough \
+             for the base image, and never the disk Windows runs from.",
+        );
+        let idle = !locked && self.job.is_none();
+        if let Some(network) = network {
+            self.wifi_ui(ui, network, idle);
+        } else {
+            // A password typed for a network the profile no longer names goes nowhere.
+            self.wifi_password.clear();
+        }
+        self.key_ui(ui, idle);
+        // Where the window cannot write, the list is only for reading the numbers.
+        let may_list = self.ready() || !cfg!(windows);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = tokens(ui.ctx()).s.gap;
+            let find = Btn::new("Find sticks").small();
+            let enabled = idle && may_list && !self.listing;
+            if find.enabled(enabled).show(ui).clicked() {
+                self.list(ui.ctx().clone());
+            }
+            ui.add_enabled_ui(idle, |ui| {
+                widgets::check(
+                    ui,
+                    &mut self.allow_virtual,
+                    "Also show virtual disks (for testing)",
+                );
+            });
+        });
+        if !self.ready() {
+            widgets::hint(
+                ui,
+                "Choose a base image first, so Forge can check that the sticks are big enough.",
+            );
+        }
+        if self.listing {
+            widgets::hint(ui, "Looking for disks\u{2026}");
+        }
+        if !self.lookup_note.is_empty() {
+            widgets::hint(ui, &self.lookup_note);
+        }
+        self.disks_ui(ui, idle && cfg!(windows));
+    }
+
+    fn wifi_ui(&mut self, ui: &mut Ui, network: &str, idle: bool) {
+        ui.scope(|ui| {
+            ui.set_max_width(520.0);
+            widgets::field(
+                ui,
+                &format!("Wi-Fi password for \u{201c}{network}\u{201d}"),
+                Some(
+                    "The sticks join this network by themselves at every boot. The password is \
+                     written on the sticks and nowhere else: not in the profile, the Hub or any \
+                     log. It is cleared after each write.",
+                ),
+                None,
+                |ui, label| {
+                    ui.add_enabled_ui(idle, |ui| {
+                        let input = Input::new(&mut self.wifi_password)
+                            .password()
+                            .placeholder("Leave empty for an open network")
+                            .show(ui);
+                        input.labelled_by(label);
+                    });
+                },
+            );
+        });
+    }
+
+    /// What this write does with the sticks' secret keys, and what the image asks for.
+    fn key_ui(&mut self, ui: &mut Ui, idle: bool) {
+        if self.must_sign_in() {
+            widgets::note(
+                ui,
+                Tone::Error,
+                "This image only accepts settings the Hub signed, so you have to be signed in to \
+                 the Hub to write sticks from it. Sign in at the bottom left.",
+            );
+        } else if self.support.signature {
+            widgets::hint(
+                ui,
+                "This image only accepts settings the Hub signed. Forge gets each stick's settings \
+                 signed when it writes, so edits made to the CKCONFIG drive on another PC are \
+                 refused by the stick.",
+            );
+        }
+        if self.support.enrolment == Some(true) {
+            ui.add_enabled_ui(idle, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    widgets::check_weight(
+                        ui,
+                        &mut self.first_boot_enrolment,
+                        "Create each stick's key at its first boot",
+                        Weight::Semibold,
+                    );
+                    ui.label("(recommended)");
+                });
+            });
+            if self.first_boot_enrolment {
+                widgets::hint(
+                    ui,
+                    "The key is made on the stick and is never written to the CKCONFIG drive, \
+                     which any PC can read. Boot each stick once, online (cable, or the Wi-Fi in \
+                     the profile), within 24 hours of writing it. After that the code on the stick \
+                     is useless.",
+                );
+            } else {
+                widgets::note(
+                    ui,
+                    Tone::Error,
+                    "Without this, the stick's secret key is written in the settings file on the \
+                     CKCONFIG drive. Anyone with the stick can read it on a PC and copy it.",
+                );
+            }
+        } else if self.email.is_none() {
+            widgets::note(
+                ui,
+                Tone::Error,
+                "Not signed in to the Hub, so the sticks cannot create their key at first boot. \
+                 Each stick's secret key is written in the settings file on the CKCONFIG drive, \
+                 where anyone with the stick can read it. Sign in to the Hub to avoid that.",
+            );
+        } else if self.support.enrolment == Some(false) && self.base.is_some() {
+            widgets::note(
+                ui,
+                Tone::Error,
+                "This base image cannot create keys at first boot, so each stick's secret key is \
+                 written in the settings file on the CKCONFIG drive. A newer Keeper OS image can.",
+            );
+        }
+    }
+
+    fn disks_ui(&mut self, ui: &mut Ui, pick: bool) {
+        if self.disks.is_empty() {
+            return;
+        }
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            for disk in &self.disks {
+                let refusal = disk.check(self.size, self.allow_virtual).err();
+                let serial = disk.serial_number.as_deref().unwrap_or("").trim();
+                let mut detail = format!("{} \u{b7} {}", disk.size_text(), disk.bus_type);
+                if !serial.is_empty() {
+                    detail = format!("{detail} \u{b7} serial {serial}");
+                }
+                if let Some(why) = &refusal {
+                    detail = format!("{detail} \u{b7} Not offered: {why}");
+                }
+                let before = self.earlier.get(&disk.number);
+                let written =
+                    before.map(|stick| format!("Written before as {}", stick_label(stick)));
+                let mut below = vec![detail.as_str()];
+                below.extend(written.as_deref());
+                let name = disk.friendly_name.as_deref().filter(|n| !n.is_empty());
+                let name = name.unwrap_or("unnamed");
+                let name = format!("Disk {} \u{b7} {name}", disk.number);
+                let (tone, state) = match &refusal {
+                    Some(ck_writer::Error::TooSmall { .. }) => (Tone::Warn, "Too small"),
+                    Some(_) => (Tone::Off, "Protected"),
+                    None if before.is_some() => (Tone::Warn, "Rewrite"),
+                    None => (Tone::Ok, "Safe to write"),
+                };
+                let mut ticked = self.chosen.contains(&disk.number);
+                let changed = ui
+                    .add_enabled_ui(pick, |ui| {
+                        let refused = refusal.is_some();
+                        widgets::disk_row(ui, &mut ticked, refused, &name, &below, |ui| {
+                            widgets::pill(ui, tone, state);
+                        })
+                        .changed()
+                    })
+                    .inner;
+                if changed && ticked {
+                    self.chosen.insert(disk.number);
+                } else if changed {
+                    self.chosen.remove(&disk.number);
+                }
+            }
+        });
+    }
+
+    /// Step 3. `profile` is the name of the profile.
+    pub fn erase_ui(&mut self, ui: &mut Ui, profile: &str, locked: bool) {
+        self.prune();
+        widgets::step_head(
+            ui,
+            3,
+            !self.success.is_empty(),
+            "Erase and write",
+            "Everything on the chosen sticks is erased. Each stick gets its own identity from the \
+             saved profile. Windows asks for administrator permission when the write starts.",
+        );
+        if !cfg!(windows) {
+            self.command_ui(ui);
+        } else if self.chosen.is_empty() {
+            widgets::hint(ui, "Choose at least one stick above.");
+        } else {
+            self.summary_ui(ui, profile);
+            widgets::danger_zone(ui, |ui| self.danger_ui(ui, locked));
+        }
+        self.job_ui(ui);
+        widgets::note(ui, Tone::Error, &self.failure);
+        widgets::note(ui, Tone::Ok, &self.success);
+    }
+
+    /// The ticked disk numbers, as "1, 2".
+    fn names(&self) -> String {
+        let numbers: Vec<String> = self.chosen.iter().map(ToString::to_string).collect();
+        numbers.join(", ")
+    }
+
+    /// What will be written.
+    fn summary_ui(&self, ui: &mut Ui, profile: &str) {
+        let count = self.chosen.len();
+        let sticks = format!("{count} ({} {})", disk_word(count), self.names());
+        let base = self
+            .base
+            .as_deref()
+            .map_or_else(|| "none chosen".to_owned(), format::file_name);
+        let profile = if profile.is_empty() {
+            "unnamed"
+        } else {
+            profile
+        };
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            let rows = [
+                ("Sticks", sticks.as_str()),
+                ("Base image", base.as_str()),
+                ("Profile", profile),
+            ];
+            widgets::summary(ui, &rows);
+        });
+    }
+
+    /// The warning, the box for the typed confirmation and the button that erases.
+    fn danger_ui(&mut self, ui: &mut Ui, locked: bool) {
+        let t = tokens(ui.ctx());
+        let words = erase_confirmation(&self.chosen);
+        let count = self.chosen.len();
+        let title = format!(
+            "Everything on {} {} will be erased",
+            disk_word(count),
+            self.names()
+        );
+        let text = match (&self.job, count) {
+            (Some(_), _) => "Writing\u{2026}".to_owned(),
+            (None, 1) => "Erase and write".to_owned(),
+            (None, count) => format!("Erase and write {count} sticks"),
+        };
+        let idle = !locked && self.job.is_none();
+        let enabled = self.can_write(locked) && self.confirmed();
+        let bold = font(Weight::Semibold, t.s.rem);
+        let galley = ui.painter().layout_no_wrap(text.clone(), bold, t.c.text);
+        // The button goes under the text when the three do not fit beside each other.
+        let one_line = ui.available_width() >= 220.0 + 150.0 + galley.size().x + 72.0;
+        let button = |ui: &mut Ui| {
+            let button = Btn::new(&text).danger().enabled(enabled);
+            button.show(ui).clicked()
+        };
+        let label = std::cell::Cell::new(None);
+        let mut pressed = false;
+        let typed = &mut self.typed;
+        ui.spacing_mut().item_spacing = vec2(18.0, 14.0);
+        widgets::row(
+            ui,
+            |ui| {
+                widgets::paragraph(ui, &title, Weight::Bold, t.s.rem, t.c.text, 1.35);
+                let part = |weight| TextFormat {
+                    font_id: font(weight, t.s.hint),
+                    color: t.c.danger_text,
+                    valign: Align::Center,
+                    ..TextFormat::default()
+                };
+                let mut job = LayoutJob::default();
+                job.append("This cannot be undone. Type ", 0.0, part(Weight::Regular));
+                job.append(&words, 0.0, part(Weight::Bold));
+                job.append(" to confirm.", 0.0, part(Weight::Regular));
+                job.wrap.max_width = ui.available_width();
+                label.set(Some(ui.label(job).id));
+            },
+            |ui| {
+                if one_line {
+                    pressed = button(ui);
+                }
+                ui.add_enabled_ui(idle, |ui| {
+                    let input = Input::new(typed).mono().width(150.0).show(ui);
+                    if let Some(label) = label.get() {
+                        input.labelled_by(label);
+                    }
+                });
+            },
+        );
+        if !one_line {
+            pressed = button(ui);
+        }
+        if pressed {
+            self.press(ui.ctx());
+        }
+    }
+
+    /// The write that is running: the warning, how far it is and the way to stop it.
+    fn job_ui(&self, ui: &mut Ui) {
+        let Some(job) = &self.job else {
+            return;
+        };
+        widgets::note(
+            ui,
+            Tone::Error,
+            "Do not unplug the sticks or close this window until the write is finished.",
+        );
+        job.bar.show(ui);
+        let cancelling = job.cancel.load(Ordering::Relaxed);
+        if cancelling {
+            widgets::hint(
+                ui,
+                "Cancelling: the stick is then only partly written and must be written again",
+            );
+        }
+        let cancel = Btn::new("Cancel").small().enabled(!cancelling);
+        if cancel.show(ui).clicked() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Where the window cannot write sticks itself, it shows the command to copy.
+    fn command_ui(&mut self, ui: &mut Ui) {
+        widgets::hint(ui, ADMIN_HINT);
+        let name = self
+            .image
+            .as_deref()
+            .map_or_else(|| "No image chosen".to_owned(), format::file_name);
+        let full = self.image.as_ref().map(|path| path.display().to_string());
+        let below: Vec<&str> = full.iter().map(String::as_str).collect();
+        let choose = widgets::path_row(ui, &name, &below, |ui| {
+            Btn::new("Image to write\u{2026}")
+                .small()
+                .show(ui)
+                .clicked()
+        });
+        if choose
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("Disk image", &["img"])
+                .pick_file()
+        {
+            self.image = Some(path);
+        }
+        widgets::field(ui, "Disk number", None, None, |ui, label| {
+            let input = Input::new(&mut self.disk).width(150.0).show(ui);
+            input.labelled_by(label);
+        });
+        if let Some(image) = &full
+            && !self.disk.trim().is_empty()
+        {
+            let command = command_line(image, &self.disk);
+            widgets::mono(ui, &command);
+            if Btn::new("Copy the command").small().show(ui).clicked() {
+                ui.ctx().copy_text(command);
+            }
+        }
+    }
+
+    /// The question about old keys, while a write waits for its answer.
+    pub fn dialog_ui(&mut self, ctx: &Context) {
+        if let Some(asking) = &self.asking
+            && let Some(choice) = confirm_retire(ctx, &asking.before)
+        {
+            self.decided(choice, ctx);
+        }
+    }
+
+    /// The same write and check into a file, with no permission prompt.
+    pub fn file_ui(&mut self, ui: &mut Ui, locked: bool) {
+        widgets::hint(
+            ui,
+            "A dry run: the same write and the same check into a file, with no permission prompt.",
+        );
+        let name = self
+            .to_file
+            .as_deref()
+            .map_or_else(|| "none chosen".to_owned(), format::file_name);
+        let full = self.to_file.as_ref().map(|path| path.display().to_string());
+        let below: Vec<&str> = full.iter().map(String::as_str).collect();
+        let idle = !locked && self.job.is_none();
+        let ready = self.can_write(locked) && self.to_file.is_some();
+        let (write, choose) = widgets::path_row(ui, &name, &below, |ui| {
+            let write = Btn::new("Write the file").small().enabled(ready);
+            let write = write.show(ui).clicked();
+            let choose = Btn::new("Target file\u{2026}").small().enabled(idle);
+            (write, choose.show(ui).clicked())
+        });
+        if choose
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("Disk image", &["img"])
+                .set_file_name("stick.img")
+                .save_file()
+        {
+            self.to_file = Some(path);
+        }
+        if write && let Some(file) = self.to_file.clone() {
+            self.start(Target::File(file), Vec::new(), false, ui.ctx());
+        }
+    }
+}
+
+/// Sample states for the pictures. Nothing runs.
+#[cfg(test)]
+impl Screen {
+    /// A write that has been going for five seconds.
+    pub(super) fn sample_job(&mut self, progress: crate::make::stick_job::Progress) {
+        let (_, events) = channel();
+        let now = Instant::now();
+        let began = now
+            .checked_sub(std::time::Duration::from_secs(5))
+            .unwrap_or(now);
+        let mut bar = Bar::default();
+        let mut start = progress;
+        (start.done, start.checked) = (0, 1);
+        bar.update(start, began);
+        bar.update(progress, now);
+        self.job = Some(Job {
+            cancel: Arc::default(),
+            bar,
+            events,
+            before: Vec::new(),
+            retire: false,
+            count: 1,
+            started: began,
+        });
+    }
+
+    /// The question about the old keys of the disks the Hub knows.
+    pub(super) fn sample_question(&mut self) {
+        self.asking = Some(Asking {
+            disks: Vec::new(),
+            before: self.earlier.values().cloned().collect(),
         });
     }
 }
+
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    pub(crate) fn disk(number: u32, name: &str, serial: &str, size: u64, bus: &str) -> Disk {
+        serde_json::from_value(serde_json::json!({
+            "Number": number,
+            "FriendlyName": name,
+            "SerialNumber": serial,
+            "Path": format!("path-{number}"),
+            "Size": size,
+            "BusType": bus,
+            "IsSystem": false,
+            "IsBoot": false,
+        }))
+        .expect("disk")
+    }
+
+    fn stick_on(disk: &Disk, name: &str) -> HubStick {
+        let id = &HardwareId::of(disk).expect("id").fingerprint[..8];
+        serde_json::from_str(&format!(
+            r#"{{"stick_id":"{name}","team":"{name}","hardware":{{"id":"{id}","write_count":2}}}}"#
+        ))
+        .expect("stick")
+    }
+
+    /// Two good sticks ticked, the first one known to the Hub.
+    fn two_chosen() -> Screen {
+        let first = disk(1, "Stick", "4C5300012", 30_000_000_000, "USB");
+        let second = disk(2, "Stick", "60A44C42", 60_000_000_000, "USB");
+        let earlier = BTreeMap::from([(1, stick_on(&first, "old"))]);
+        Screen {
+            disks: vec![first, second],
+            size: 5_000_000_000,
+            base: Some(PathBuf::from("base.img")),
+            profile: Some(PathBuf::from("profile.json")),
+            email: Some("admin@example.org".to_owned()),
+            chosen: BTreeSet::from([1, 2]),
+            earlier,
+            wifi_password: "correct horse battery".to_owned(),
+            ..Screen::default()
+        }
+    }
+
+    // No test presses the button without a stick the Hub knows: that would start the writer.
+    #[test]
+    fn nothing_is_asked_or_started_without_the_typed_confirmation_of_exactly_these_disks() {
+        let mut screen = two_chosen();
+        for typed in ["", "erase", "erase 1", "erase 2 1", "erase 1 2 3"] {
+            typed.clone_into(&mut screen.typed);
+            screen.press(&Context::default());
+            assert!(screen.job.is_none() && screen.asking.is_none(), "{typed}");
+        }
+        " erase 1 2 ".clone_into(&mut screen.typed);
+        screen.press(&Context::default());
+        let tokens: Vec<(u32, String)> = screen
+            .disks
+            .iter()
+            .map(|disk| (disk.number, disk.identity_token()))
+            .collect();
+        let asking = screen.asking.expect("the question about the old key");
+        assert_eq!(asking.disks, tokens);
+        assert_eq!(asking.before.len(), 1);
+        assert!(screen.job.is_none());
+    }
+
+    #[test]
+    fn an_image_that_needs_a_signature_writes_nothing_while_signed_out() {
+        let mut screen = two_chosen();
+        screen.support.signature = true;
+        screen.email = None;
+        "erase 1 2".clone_into(&mut screen.typed);
+        screen.press(&Context::default());
+        assert!(screen.job.is_none() && screen.asking.is_none());
+    }
+
+    #[test]
+    fn cancelling_the_question_starts_nothing_and_keeps_what_was_typed() {
+        let mut screen = two_chosen();
+        "erase 1 2".clone_into(&mut screen.typed);
+        screen.press(&Context::default());
+        screen.decided(Choice::Cancel, &Context::default());
+        assert!(screen.job.is_none() && screen.asking.is_none());
+        assert_eq!(screen.wifi_password, "correct horse battery");
+    }
+
+    #[test]
+    fn a_disk_that_may_not_be_written_does_not_stay_ticked() {
+        let mut screen = two_chosen();
+        let bus = "File Backed Virtual";
+        let virtual_disk = disk(3, "Virtual", "abcd1234", 60_000_000_000, bus);
+        screen.disks.push(virtual_disk);
+        screen
+            .disks
+            .push(disk(4, "Small", "efgh5678", 1_000, "USB"));
+        screen.allow_virtual = true;
+        screen.chosen.extend([3, 4, 9]);
+        screen.prune();
+        assert_eq!(screen.chosen, BTreeSet::from([1, 2, 3]));
+        screen.allow_virtual = false;
+        screen.prune();
+        assert_eq!(screen.chosen, BTreeSet::from([1, 2]));
+    }
+
+    #[test]
+    fn another_base_image_forgets_the_disks_and_a_late_listing_is_dropped() {
+        let mut screen = two_chosen();
+        "erase 1 2".clone_into(&mut screen.typed);
+        let late = Event::Disks(screen.generation, Ok((1, screen.disks.clone())));
+        screen.base_replaced();
+        assert!(screen.disks.is_empty() && screen.chosen.is_empty());
+        assert!(screen.typed.is_empty() && screen.earlier.is_empty());
+        assert!(screen.sender.send(late).is_ok());
+        screen.receive(&Context::default());
+        assert_eq!(screen.disks.len(), 0);
+    }
+
+    #[test]
+    fn a_test_file_write_names_no_disk_and_takes_the_password_out_of_the_field() {
+        let mut screen = two_chosen();
+        let file = Target::File(PathBuf::from("out.img"));
+        let request = screen.request(file).expect("request");
+        assert!(request.disks.is_empty() && request.confirmed.is_empty());
+        assert_eq!(request.to_file, Some(PathBuf::from("out.img")));
+        assert!(request.wifi_password.is_some());
+        assert_eq!(screen.wifi_password, "");
+        let disks = Target::Disks(vec![(2, "ab".to_owned())]);
+        let request = screen.request(disks).expect("request");
+        assert_eq!((request.disks, request.to_file), (vec![2], None));
+    }
+
+    #[test]
+    fn only_a_write_that_worked_hands_on_the_old_sticks() {
+        let results = [
+            (Err("removed".to_owned()), false),
+            (Ok("abc".to_owned()), true),
+        ];
+        for (result, worked) in results {
+            let mut screen = two_chosen();
+            "erase 1 2".clone_into(&mut screen.typed);
+            screen.sample_job(crate::make::stick_job::Progress {
+                phase: "writing",
+                done: 1,
+                total: 2,
+                checked: 0,
+            });
+            let (sender, events) = channel();
+            let before = screen.earlier.values().cloned().collect();
+            let job = screen.job.as_mut().expect("job");
+            (job.events, job.before, job.retire) = (events, before, true);
+            assert!(sender.send(JobEvent::Done(result)).is_ok());
+            screen.receive(&Context::default());
+            assert!(screen.job.is_none() && screen.typed.is_empty());
+            assert_eq!(screen.wifi_password, "");
+            assert_eq!(screen.written, worked);
+            let finished = screen.take_finished();
+            assert_eq!(finished.is_some(), worked);
+            assert!(finished.is_none_or(|(before, retire)| retire && before.len() == 1));
+        }
+    }
+
+    #[test]
+    fn a_retired_or_archived_stick_is_not_what_a_disk_held() {
+        let first = disk(1, "Stick", "4C5300012", 30_000_000_000, "USB");
+        let working = stick_on(&first, "now");
+        let mut retired = stick_on(&first, "retired");
+        retired.retired_at = Some("2026-11-24".to_owned());
+        let mut archived = stick_on(&first, "archived");
+        archived.archived_at = Some("2026-11-24".to_owned());
+        let disks = [first];
+        assert!(matched(&disks, &[retired.clone(), archived]).is_empty());
+        let known = matched(&disks, &[retired, working]);
+        assert_eq!(known[&1].stick_id, "now");
+    }
+
+    #[test]
+    fn a_write_needs_the_base_image_and_the_profile_and_starts_nothing_without_them() {
+        let mut screen = Screen::default();
+        let file = Target::File(PathBuf::from("out.img"));
+        screen.start(file, Vec::new(), false, &Context::default());
+        assert!(screen.job.is_none());
+        assert!(screen.failure.contains("base image"));
+    }
 
     #[test]
     fn the_command_quotes_the_image_for_the_shell_of_this_system() {
@@ -494,68 +1204,6 @@ mod tests {
             tool.starts_with('\'') && tool.ends_with("ck-forge'"),
             "{tool}"
         );
-    }
-
-    #[test]
-    fn the_bar_shows_the_writing_and_then_the_checking() {
-        let writing = Progress {
-            phase: "writing",
-            done: 50,
-            total: 100,
-            checked: 10,
-        };
-        assert!((fraction(&writing) - 0.5).abs() < f32::EPSILON);
-        let checking = Progress {
-            phase: "checking",
-            done: 100,
-            total: 100,
-            checked: 25,
-        };
-        assert!((fraction(&checking) - 0.25).abs() < f32::EPSILON);
-        assert!(
-            fraction(&Progress {
-                total: 0,
-                ..writing
-            })
-            .abs()
-                < f32::EPSILON
-        );
-        assert!(progress_text(&checking).starts_with("checking"));
-    }
-
-    #[test]
-    fn a_write_needs_the_base_image_and_the_profile_and_starts_nothing_without_them() {
-        let mut screen = Screen {
-            to_file: "out.img".to_owned(),
-            ..Screen::default()
-        };
-        screen.start(&eframe::egui::Context::default());
-        assert!(screen.job.is_none());
-        assert!(screen.message.contains("base image"));
-    }
-
-    #[test]
-    fn starting_a_write_takes_the_password_out_of_the_field() {
-        let mut screen = Screen {
-            base: "no-such-base.img".to_owned(),
-            profile: "no-such-profile.json".to_owned(),
-            to_file: "out.img".to_owned(),
-            wifi_password: "correct horse battery".to_owned(),
-            ..Screen::default()
-        };
-        screen.start(&eframe::egui::Context::default());
-        assert_eq!(screen.wifi_password, "");
-        // The job fails on the missing profile, writing nothing, and says so.
-        for _ in 0..200 {
-            screen.receive();
-            if screen.job.is_none() {
-                break;
-            }
-            thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert!(screen.job.is_none());
-        assert!(!screen.message.contains("correct horse"));
-        assert_ne!(screen.message, "");
     }
 
     #[test]
