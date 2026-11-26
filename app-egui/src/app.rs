@@ -106,11 +106,20 @@ impl Forge {
         }
     }
 
-    /// Moves to the next step. Leaving the profile saves it, in the Forge folder when it has no
-    /// file yet; a profile with problems stays here, and the problems are shown.
+    /// Moves to the next step, by the same rule as the sidebar.
     fn next(&mut self, ctx: &egui::Context) {
+        self.go(self.step + 1, ctx);
+    }
+
+    /// Moves to a step. The profile is saved once, in the Forge folder when it has no file yet, and
+    /// synced to the Hub, when the move goes on from an editing page or reaches Make, which writes
+    /// sticks from the file. A profile with problems stays where it is, and the problems are shown.
+    /// Retiring needs the Hub only, so a broken profile does not stand in its way.
+    fn go(&mut self, target: usize, ctx: &egui::Context) {
         self.leave_failure.clear();
-        if self.step < MAKE {
+        let saves =
+            target != RETIRE && (target > self.step || (target == MAKE && self.step != MAKE));
+        if saves {
             match self.state.save_profile() {
                 Ok(path) => self.contest.sync_hub(ctx, &mut self.state, path),
                 Err(why) => {
@@ -119,22 +128,7 @@ impl Forge {
                 }
             }
         }
-        self.step += 1;
-    }
-
-    /// The sidebar steps go through the same rule as Continue.
-    fn go(&mut self, target: usize, ctx: &egui::Context) {
-        // Retiring needs the Hub only, so a broken profile must not stand in its way.
-        if target > self.step && target != RETIRE {
-            // Each step on the way saves; one that is refused stops the move.
-            self.leave_failure.clear();
-            while self.step < target && self.leave_failure.is_empty() {
-                self.next(ctx);
-            }
-        } else {
-            self.leave_failure.clear();
-            self.step = target;
-        }
+        self.step = target;
     }
 
     /// Refuses to close while something runs: a stick write runs on a thread of this program, and
@@ -398,7 +392,11 @@ impl Forge {
                                     self.contest.show_connectivity(ui, &mut self.state);
                                 }
                                 RECORDING => self.contest.show_recording(ui, &mut self.state),
-                                MAKE => self.make.show(ui, &mut self.state),
+                                MAKE => {
+                                    // A sync that failed after Continue is told on the way.
+                                    widgets::note(ui, Tone::Error, self.contest.failure());
+                                    self.make.show(ui, &mut self.state);
+                                }
                                 _ => self.make.show_retire(ui, &self.state),
                             }
                         });
@@ -629,5 +627,9 @@ mod tests {
             });
         forge.go(RETIRE, &egui::Context::default());
         assert_eq!(forge.step, RETIRE);
+        // Make writes from the saved file, so coming back to it saves first.
+        forge.go(MAKE, &egui::Context::default());
+        assert_eq!(forge.step, RETIRE);
+        assert!(forge.leave_failure.contains("problems"));
     }
 }

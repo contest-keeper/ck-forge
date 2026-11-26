@@ -88,10 +88,14 @@ impl Page {
         widgets::card(ui, |ui| self.write.erase_ui(ui, name, locked));
         widgets::note(ui, Tone::Error, &self.sticks.old_failure);
         self.write.dialog_ui(ui.ctx());
-        if dev {
-            widgets::details(ui, "Development: test the write into a file", |ui| {
-                self.write.file_ui(ui, locked);
-            });
+        // Outside Windows this is the only write that builds from the saved profile in the window.
+        if dev || !cfg!(windows) {
+            let title = if dev {
+                "Development: test the write into a file"
+            } else {
+                "Write into an image file"
+            };
+            widgets::details(ui, title, |ui| self.write.file_ui(ui, locked));
         }
     }
 

@@ -239,6 +239,11 @@ impl Screen {
         }
     }
 
+    /// Why the last save or Hub request failed, for pages that do not show the notes themselves.
+    pub fn failure(&self) -> &str {
+        &self.failure
+    }
+
     fn status_notes(&self, ui: &mut Ui) {
         widgets::note(ui, Tone::Ok, &self.status);
         widgets::note(ui, Tone::Error, &self.failure);
