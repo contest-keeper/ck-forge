@@ -122,7 +122,7 @@ impl Forge {
         }
         self.contest.poll(&ctx, &mut self.state);
         self.make.poll(&ctx, &mut self.state);
-        self.hub.poll(&mut self.state);
+        self.hub.poll(&ctx, &mut self.state);
 
         let t = tokens(&ctx);
         ui.painter().rect_filled(ui.max_rect(), 0.0, t.c.bg);
@@ -243,7 +243,7 @@ impl Forge {
     fn side_foot(&mut self, ui: &mut Ui, t: &Tokens) {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 10.0;
-        self.hub.show(ui);
+        self.hub.show(ui, &self.state);
         let name = self
             .state
             .profile
