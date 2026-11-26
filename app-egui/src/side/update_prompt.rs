@@ -17,8 +17,10 @@ use crate::theme::{Weight, font, tokens};
 use crate::update::{self, Available};
 use crate::widgets::{self, Btn, Tone};
 
-/// A window left open still hears about a new build.
-const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// A window left open still hears about a new build, soon after it is published.
+const CHECK_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How long a build that was put off stays quiet, so the frequent checks do not nag.
+const ASK_AGAIN_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
 const RELEASES: &str = "https://github.com/contest-keeper/ck-forge/releases/tag/v";
 
 /// What a worker thread reports.
@@ -63,6 +65,8 @@ pub struct Banner {
     /// The dialog was on screen in the last frame.
     shown: bool,
     next_check: Option<Instant>,
+    /// The version that was put off, and when it may be offered again.
+    put_off: Option<(String, Instant)>,
     events: Receiver<Event>,
     sender: Sender<Event>,
 }
@@ -77,6 +81,7 @@ impl Default for Banner {
             unsaved: false,
             shown: false,
             next_check: Some(Instant::now()),
+            put_off: None,
             events,
             sender,
         }
@@ -140,7 +145,11 @@ impl Banner {
             // A later check never disturbs an install that is under way.
             Event::Found(Ok(Some(update))) if matches!(self.state, State::Quiet | State::Offer) => {
                 let skipped = data.and_then(update::skipped_version);
-                if update::worth_offering(&update, skipped.as_deref()) {
+                let waiting = !update.mandatory
+                    && self.put_off.as_ref().is_some_and(|(version, until)| {
+                        *version == update.version && Instant::now() < *until
+                    });
+                if !waiting && update::worth_offering(&update, skipped.as_deref()) {
                     self.pending = Some(update);
                     self.state = State::Offer;
                 }
@@ -208,7 +217,10 @@ impl Banner {
             return;
         }
         self.state = State::Quiet;
-        self.pending = None;
+        self.put_off = self
+            .pending
+            .take()
+            .map(|update| (update.version, Instant::now() + ASK_AGAIN_AFTER));
         self.failure.clear();
         self.unsaved = false;
     }
@@ -490,6 +502,28 @@ mod tests {
             });
         harness.run_steps(4);
         assert!(harness.get_by_label("Close").accesskit_node().is_disabled());
+    }
+
+    #[test]
+    fn a_build_that_was_put_off_stays_quiet_until_its_time_or_a_newer_one() {
+        let offer = || Banner::offering(false).pending.expect("sample");
+        let mut banner = Banner::offering(false);
+        let found = |banner: &mut Banner, update: Available| {
+            banner.receive(&Context::default(), None, Event::Found(Ok(Some(update))));
+        };
+        banner.later();
+        found(&mut banner, offer());
+        assert!(matches!(banner.state, State::Quiet));
+
+        let mut newer = offer();
+        newer.version = "0.6.0".to_owned();
+        found(&mut banner, newer);
+        assert!(matches!(banner.state, State::Offer));
+
+        banner.later();
+        banner.put_off = Some(("0.5.0".to_owned(), Instant::now()));
+        found(&mut banner, offer());
+        assert!(matches!(banner.state, State::Offer));
     }
 
     #[test]

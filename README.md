@@ -34,7 +34,8 @@ gh attestation verify .\keeper-forge-setup-x64.exe --repo contest-keeper/ck-forg
 
 The second command proves the file was built by this repository's release workflow.
 
-Installed copies look for a newer build when they start and offer to install it. On Windows the window
+Installed copies look for a newer build when they start, and every five minutes while open, and offer
+to install it. On Windows the window
 downloads the installer, checks its signature and runs it. On macOS it downloads the disk image,
 checks it and opens it, and you drag the app to Applications. Every merge to `develop` publishes a
 preview build to the develop feed; releases publish their own feed.
