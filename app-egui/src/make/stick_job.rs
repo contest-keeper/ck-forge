@@ -118,9 +118,10 @@ fn write_all(
     let mut made = Vec::new();
     let result = make_and_write(request, session.as_ref(), cancel, &work, report, &mut made);
     let _ = std::fs::remove_dir_all(&work);
-    // The registry file is written when an image is built, and every push sends the whole file. A
-    // stick whose write was cancelled or failed does not exist, so it leaves the file first: it
-    // must never reach the Hub later as a live stick.
+    // What is left in `made` was not confirmed as written. The registry file is written when an
+    // image is built, and every push sends the whole file. A stick whose write was cancelled or
+    // failed does not exist, so it leaves the file first: it must never reach the Hub later as a
+    // live stick.
     let Err(error) = &result else {
         return result;
     };
@@ -190,6 +191,7 @@ fn retire_unwritten(
 }
 
 /// `made` gets each stick as soon as its image is built, so the caller can retire them if this fails.
+/// After a write that partly failed, the sticks that were written are no longer in it.
 fn make_and_write(
     request: &Request,
     session: Option<&HubSession>,
@@ -207,13 +209,49 @@ fn make_and_write(
     if let Some(file) = &request.to_file {
         return write_to_file(&images[0], file, cancel, report);
     }
-    let hash = write_elevated(&images, request, cancel, report)?;
-    // Only now that everything was written and checked, so a refused permission prompt or a failed
-    // disk never counts.
-    if let Some(session) = session {
-        record_written(session, made);
+    let (finished, permission_given) = write_elevated(&images, request, cancel, report)?;
+    settle(finished, permission_given, made, |written| {
+        if let Some(session) = session {
+            record_written(session, written);
+        }
+    })
+}
+
+/// What the end of the helper means for the sticks. `record` gets the ones that were written and
+/// checked: all of them after a success, otherwise only those the helper's list of failed sticks
+/// leaves out, so a refused permission prompt or a failed disk never counts. Those also leave
+/// `made`, which keeps the sticks that must not stay.
+fn settle(
+    finished: Option<HelperState>,
+    permission_given: bool,
+    made: &mut Vec<MadeStick>,
+    record: impl FnOnce(&[MadeStick]),
+) -> Result<String, String> {
+    let failed = finished
+        .as_ref()
+        .map_or_else(Vec::new, |state| state.failed.clone());
+    let result = outcome(finished, permission_given);
+    if result.is_ok() {
+        record(made);
+        return result;
     }
-    Ok(hash)
+    // No list means the helper stopped as a whole (refused, cancelled, died), and a position that
+    // no stick has means the list cannot be believed: then none can be trusted.
+    if failed.is_empty() || failed.iter().any(|&index| index >= made.len()) {
+        return result;
+    }
+    let mut written = Vec::new();
+    let mut unwritten = Vec::new();
+    for (index, stick) in made.drain(..).enumerate() {
+        if failed.contains(&index) {
+            unwritten.push(stick);
+        } else {
+            written.push(stick);
+        }
+    }
+    *made = unwritten;
+    record(&written);
+    result
 }
 
 /// Builds one image per stick in `work`.
@@ -230,14 +268,44 @@ fn build_images(
     } else {
         hardware_of(&request.disks)
     };
+    each_image(request, cancel, work, |index, settings, image| {
+        let disk = hardware.get(index).and_then(Option::as_ref);
+        let stick = build_stick(request, session, settings, image, disk, report)?;
+        made.push(stick);
+        Ok(())
+    })
+}
+
+/// What every stick of one write gets from the saved profile.
+struct Snapshot {
+    profile: Profile,
+    wallpaper: Option<Wallpaper>,
+}
+
+/// Calls `build` for each stick image of the write. The profile is read once, so a profile saved
+/// while the write runs cannot give the later sticks other settings than the first.
+fn each_image(
+    request: &Request,
+    cancel: &AtomicBool,
+    work: &Path,
+    mut build: impl FnMut(usize, &Snapshot, &Path) -> Result<(), String>,
+) -> Result<Vec<PathBuf>, String> {
+    let mut snapshot = None;
     let mut images = Vec::new();
-    for n in 1..=request.disks.len().max(1) {
+    for index in 0..request.disks.len().max(1) {
         if cancel.load(Ordering::Relaxed) {
             return Err(CANCELLED_BEFORE_WRITING.to_owned());
         }
-        let image = work.join(format!("stick-{n}.img"));
-        let disk = hardware.get(n - 1).and_then(Option::as_ref);
-        made.push(build_stick(request, session, &image, disk, report)?);
+        if snapshot.is_none() {
+            let profile = Profile::load(&request.profile).map_err(|e| e.to_string())?;
+            let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(&request.profile))
+                .map_err(|e| e.to_string())?;
+            snapshot = Some(Snapshot { profile, wallpaper });
+        }
+        let image = work.join(format!("stick-{}.img", index + 1));
+        if let Some(snapshot) = &snapshot {
+            build(index, snapshot, &image)?;
+        }
         images.push(image);
     }
     Ok(images)
@@ -250,11 +318,12 @@ const CANCELLED_BEFORE_WRITING: &str = "cancelled: nothing was written";
 fn build_stick(
     request: &Request,
     session: Option<&HubSession>,
+    snapshot: &Snapshot,
     out: &Path,
     hardware: Option<&HardwareId>,
     report: &dyn Fn(Progress),
 ) -> Result<MadeStick, String> {
-    let mut profile = Profile::load(&request.profile).map_err(|e| e.to_string())?;
+    let mut profile = snapshot.profile.clone();
     profile.set_wifi_password(request.wifi_password.clone());
     // The address in the profile file is not used: it is the sign-in that decides.
     profile.settings.api.url = if session.is_some() {
@@ -262,8 +331,7 @@ fn build_stick(
     } else {
         String::new()
     };
-    let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(&request.profile))
-        .map_err(|e| e.to_string())?;
+    let wallpaper = snapshot.wallpaper.as_ref();
     let registry = registry_of(&request.profile);
     let now = local_now();
     let mut last = Instant::now();
@@ -291,7 +359,7 @@ fn build_stick(
             base: &request.base,
             out,
             profile: &profile,
-            wallpaper: wallpaper.as_ref(),
+            wallpaper,
             registry: &registry,
             now,
             sign,
@@ -316,7 +384,7 @@ fn build_stick(
         &request.base,
         out,
         &profile,
-        wallpaper.as_ref(),
+        wallpaper,
         &registry,
         now,
         sign,
@@ -395,6 +463,10 @@ pub struct HelperState {
     total: u64,
     sha256: Option<String>,
     message: Option<String>,
+    /// Which sticks (by position) the helper could not write. Empty when it stopped before or
+    /// without saying, so none can be trusted.
+    #[serde(default)]
+    failed: Vec<usize>,
 }
 
 fn read_state(file: &Path) -> Option<HelperState> {
@@ -512,7 +584,7 @@ fn write_elevated(
     request: &Request,
     cancel: &AtomicBool,
     report: &dyn Fn(Progress),
-) -> Result<String, String> {
+) -> Result<(Option<HelperState>, bool), String> {
     let exe = forge_exe()?;
     let pid = std::process::id();
     let progress_file = std::env::temp_dir().join(format!("ck-write-{pid}.json"));
@@ -559,7 +631,7 @@ fn write_elevated(
     let finished = read_state(&progress_file);
     let _ = std::fs::remove_file(&progress_file);
     let _ = std::fs::remove_file(&cancel_file);
-    outcome(finished, status.success())
+    Ok((finished, status.success()))
 }
 
 #[cfg(test)]
@@ -621,6 +693,54 @@ mod tests {
 
     fn state(text: &str) -> Option<HelperState> {
         serde_json::from_str(text).ok()
+    }
+
+    /// The ids that stay to be removed and retired, and the ids recorded as written.
+    fn settled(text: &str) -> (Vec<String>, Vec<String>, bool) {
+        let mut sticks = vec![
+            made("stick-a", true),
+            made("stick-b", true),
+            made("stick-c", false),
+        ];
+        let mut recorded = Vec::new();
+        let ids = |sticks: &[MadeStick]| sticks.iter().map(|s| s.id.to_string()).collect();
+        let result = settle(state(text), true, &mut sticks, |written| {
+            recorded = ids(written);
+        });
+        (ids(&sticks), recorded, result.is_ok())
+    }
+
+    #[test]
+    fn a_partly_failed_write_keeps_only_the_sticks_the_helper_confirmed() {
+        let (gone, kept, ok) = settled(r#"{"state":"error","message":"x","failed":[1]}"#);
+        assert_eq!(gone, ["stick-b"]);
+        assert_eq!(kept, ["stick-a", "stick-c"]);
+        assert!(!ok);
+        let (gone, kept, ok) = settled(r#"{"state":"done","sha256":"abc"}"#);
+        assert!(ok && gone.len() == 3 && kept.len() == 3);
+    }
+
+    #[test]
+    fn nothing_is_confirmed_when_the_list_of_failed_sticks_is_missing_or_cannot_be_believed() {
+        for text in [
+            // The helper died, was cancelled as a whole, or finished without a hash.
+            r#"{"state":"writing","done":1,"total":9}"#,
+            r#"{"state":"cancelled","message":"x","failed":[]}"#,
+            r#"{"state":"error","message":"x"}"#,
+            r#"{"state":"done","failed":[]}"#,
+            // No file, or one that cannot be read.
+            "",
+            r#"{"state":"error","failed":[1"#,
+            r#"{"state":"error","failed":[-1]}"#,
+            r#"{"state":"error","failed":["1"]}"#,
+            r#"{"state":"error","failed":null}"#,
+            r#"{"state":"error","failed":[3]}"#,
+            r#"{"state":"error","failed":[0,18446744073709551615]}"#,
+        ] {
+            let (gone, kept, ok) = settled(text);
+            assert_eq!(gone, ["stick-a", "stick-b", "stick-c"], "{text}");
+            assert!(kept.is_empty() && !ok, "{text}");
+        }
     }
 
     #[test]
@@ -710,6 +830,40 @@ mod tests {
         let development = helper_places(here, true);
         assert_eq!(development.len(), 2);
         assert_eq!(development[0], beside);
+    }
+
+    #[test]
+    fn every_stick_of_a_write_gets_the_profile_as_it_was_when_the_write_began() {
+        let folder = tempfile::tempdir().expect("folder");
+        let path = folder.path().join("profile.json");
+        let mut profile = Profile::template();
+        "before".clone_into(&mut profile.name);
+        profile.save(&path).expect("saved");
+        let request = Request {
+            base: PathBuf::from("no-such-base.img"),
+            profile: path.clone(),
+            // Numbers only: nothing here lists or opens a disk.
+            disks: vec![98, 99],
+            confirmed: Vec::new(),
+            to_file: None,
+            allow_virtual: false,
+            wifi_password: None,
+            first_boot_enrolment: false,
+        };
+        let mut seen = Vec::new();
+        let images = each_image(
+            &request,
+            &AtomicBool::new(false),
+            folder.path(),
+            |_, snapshot, _| {
+                seen.push(snapshot.profile.name.clone());
+                "after".clone_into(&mut profile.name);
+                profile.save(&path).map_err(|e| e.to_string())
+            },
+        )
+        .expect("images");
+        assert_eq!(seen, ["before", "before"]);
+        assert_eq!(images.len(), 2);
     }
 
     #[test]

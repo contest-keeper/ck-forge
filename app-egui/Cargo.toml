@@ -38,8 +38,11 @@ semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 ureq = "3.1.2"
+rfd = "0.18"
+time = { version = "0.3.47", default-features = false, features = ["std", "local-offset", "parsing", "formatting"] }
 
 [dev-dependencies]
+egui_kittest = { version = "0.37.0", features = ["wgpu"] }
 minisign = "0.7"
 tempfile = "3.27.0"
 

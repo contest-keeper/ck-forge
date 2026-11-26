@@ -4,17 +4,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod base_image;
+mod contest;
 mod folder;
-mod hub;
-mod hub_profiles;
-mod images;
-mod profile;
-mod stick_job;
-mod sticks;
+mod make;
+#[cfg(test)]
+mod shots;
+mod side;
+mod state;
+mod theme;
 mod update;
-mod update_banner;
-mod write;
+mod widgets;
 
 const ICON: &[u8] = include_bytes!("../installer/keeper-forge.ico");
 
@@ -41,7 +40,7 @@ fn main() -> eframe::Result {
             viewport,
             ..Default::default()
         },
-        Box::new(|_| Ok(Box::new(app::Forge::default()))),
+        Box::new(|_| Ok(Box::new(app::Forge::new()))),
     )
 }
 
