@@ -73,6 +73,11 @@ fn shots_of_the_shell() {
     capture("contest-invalid", 0.0, |forge| {
         forge.leave_failure = "the profile has problems:\n- bookmark 1 needs a title".to_owned();
     });
+    capture("contest-saved", 0.0, |forge| {
+        let long = r"C:\Users\admin\AppData\Roaming\org.contest-keeper.forge\profiles\my-contest-1a2b3c4d\contest-profile.json";
+        let profile = ck_admin_core::Profile::template();
+        forge.state.use_profile(profile, Some(PathBuf::from(long)));
+    });
     capture("contest-bottom", 4000.0, |_| {});
     capture("make-default", 0.0, |forge| {
         forge.step = MAKE;
