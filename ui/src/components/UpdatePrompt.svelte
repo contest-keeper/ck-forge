@@ -30,7 +30,10 @@
   });
 
   function later() {
-    if (!offer?.mandatory && !installing) offer = null;
+    if (offer?.mandatory || installing) return;
+    offer = null;
+    unsaved = false;
+    failure = '';
   }
 
   async function update() {
