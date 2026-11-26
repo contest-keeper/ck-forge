@@ -1017,7 +1017,13 @@ pub fn disk_row(
         frame = frame.stroke(edge);
     }
     let id = ui.make_persistent_id(("disk", name, below.first()));
-    let shown = ui.scope_builder(UiBuilder::new().scope_id(id).sense(Sense::click()), |ui| {
+    // A disk that cannot be ticked is no stop for the keyboard.
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let shown = ui.scope_builder(UiBuilder::new().scope_id(id).sense(sense), |ui| {
         let (mark_left, rect) = boxed(ui, frame, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
@@ -1207,10 +1213,38 @@ pub fn dialog<R>(
 
 #[cfg(test)]
 mod tests {
+    use egui_kittest::kittest::Queryable;
+
     use super::*;
     use crate::theme::{Look, Mode, Theme};
 
     /// Every shared widget on one sheet, to compare with the style sheets and to show what there is.
+    #[test]
+    fn the_keyboard_passes_over_a_refused_disk() {
+        let mut frame = 0;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_accessibility_check(false)
+            .build_ui(|ui| {
+                crate::theme::apply(
+                    ui.ctx(),
+                    Look {
+                        theme: Theme::Modern,
+                        mode: Mode::Light,
+                    },
+                );
+                // The fonts arrive with the second frame.
+                frame += 1;
+                if frame > 1 {
+                    disk_row(ui, &mut false, true, "Disk 0", &["1.0 TB"], |_| {});
+                    disk_row(ui, &mut false, false, "Disk 1", &["30.8 GB"], |_| {});
+                }
+            });
+        harness.run_steps(4);
+        harness.key_press(egui::Key::Tab);
+        harness.run_steps(3);
+        assert!(harness.get_by_label("Disk 1").is_focused());
+    }
+
     #[test]
     #[ignore = "writes pictures; needs CK_SHOTS_DIR and a graphics adapter"]
     fn shots_widgets() {
