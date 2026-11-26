@@ -5,6 +5,7 @@
   import ProgressBar from '../components/ProgressBar.svelte';
   import RetireOldKeys from '../components/RetireOldKeys.svelte';
   import { describeError, eraseConfirmation, formatDuration, stickLabel } from '../core/format';
+  import { newestOnly } from '../core/latest';
   import * as api from '../lib/api';
   import { app } from '../state.svelte';
 
@@ -127,15 +128,21 @@
     }
   }
 
+  const beginListing = newestOnly();
+
   async function refresh() {
+    const current = beginListing();
     failure = '';
     chosen = [];
     typed = '';
     // The old rows must not stay selectable: the new listing may put another disk at a number.
     disks = [];
     try {
-      disks = await api.listDisks(app.basePath ?? '', allowVirtual);
-      await lookUpEarlier(disks);
+      const found = await api.listDisks(app.basePath ?? '', allowVirtual);
+      // An older listing that comes back late must not replace a newer one the admin may have used.
+      if (!current()) return;
+      disks = found;
+      await lookUpEarlier(found);
     } catch (error) {
       failure = describeError(error);
     }
