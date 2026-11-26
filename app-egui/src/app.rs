@@ -61,6 +61,8 @@ pub struct Forge {
     pub step: usize,
     /// Why Continue stayed on the profile.
     pub leave_failure: String,
+    /// The steps that were opened in this run. The settings steps are only ticked once they were.
+    visited: [bool; STEPS.len()],
     pub contest: contest::Page,
     pub make: make::Page,
     pub hub: hub_sign_in::Screen,
@@ -96,6 +98,7 @@ impl Forge {
             state,
             step: CONTEST,
             leave_failure: String::new(),
+            visited: [false; STEPS.len()],
             contest: contest::Page::default(),
             make: make::Page::default(),
             hub,
@@ -170,6 +173,7 @@ impl Forge {
             return;
         }
 
+        self.visited[self.step] = true;
         let t = tokens(&ctx);
         ui.painter().rect_filled(ui.max_rect(), 0.0, t.c.bg);
         let window = ui.available_rect_before_wrap();
@@ -230,7 +234,15 @@ impl Forge {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     let saved = self.state.profile_path.is_some();
-                    let done = [saved, saved, saved, self.state.written, false];
+                    // A settings step is done once it was looked at and the profile is saved.
+                    let seen = |at: usize| saved && self.visited[at];
+                    let done = [
+                        saved,
+                        seen(CONNECTIVITY),
+                        seen(RECORDING),
+                        self.state.written,
+                        false,
+                    ];
                     for (at, step) in STEPS.iter().enumerate() {
                         if step_button(ui, at, step, at == self.step, done[at]).clicked() {
                             self.go(at, ui.ctx());
