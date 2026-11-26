@@ -1,7 +1,7 @@
 //! Steps 2 and 3, the sticks and the write: one image for each stick, written to the ticked disks by
-//! `ck-forge stick write` started with administrator rights (the Windows permission prompt). The
-//! window stays unelevated, shows the helper's progress and can cancel. Elsewhere it shows the
-//! command to run in a terminal. The rules are those of `MakePage.svelte` of the earlier window.
+//! `ck-forge stick write` started with administrator rights (the permission prompt of Windows or
+//! macOS). The window stays unelevated, shows the helper's progress and can cancel. On other
+//! systems it shows the command to run in a terminal. The rules are those of `MakePage.svelte` of the earlier window.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ use eframe::egui::{Align, Context, TextFormat, Ui, text::LayoutJob, vec2};
 
 use crate::make::format::{self, erase_confirmation, stick_label};
 use crate::make::progress::Bar;
-use crate::make::stick_job::{Event as JobEvent, Request, run};
+use crate::make::stick_job::{Event as JobEvent, Request, quote_posix, run};
 use crate::make::sticks::{Choice, confirm_retire};
 use crate::theme::{Weight, font, tokens};
 use crate::widgets::{self, Btn, Input, Tone};
@@ -180,62 +180,16 @@ impl Default for Screen {
     }
 }
 
-/// How to start the command line tool with the rights a write needs.
-const ADMIN_HINT: &str = if cfg!(target_os = "macos") {
-    "Writing a stick needs administrator rights: run the command below in Terminal. It asks for your password (sudo)."
-} else {
-    "Writing a stick needs administrator rights: run the command below in an administrator PowerShell."
-};
+/// Whether the window writes the sticks itself, through the permission prompt of the system.
+pub(super) const CAN_WRITE: bool = cfg!(any(windows, target_os = "macos"));
 
-/// The command that writes `image` to disk `number`, quoted for the shell the hint names: zsh or
-/// bash on macOS, PowerShell on Windows.
+/// The command that writes `image` to disk `number` in a terminal, where the window cannot do it.
 fn command_line(image: &str, number: &str) -> String {
-    let sudo = if cfg!(target_os = "macos") {
-        "sudo "
-    } else {
-        ""
-    };
-    let image = if cfg!(windows) {
-        quote_powershell(image.trim())
-    } else {
-        quote_posix(image.trim())
-    };
-    let tool = if cfg!(target_os = "macos") {
-        bundled_tool(std::env::current_exe().ok().as_deref())
-    } else {
-        "ck-forge".to_owned()
-    };
-    format!("{sudo}{tool} stick write {image} --disk {}", number.trim())
-}
-
-/// The command line tool as a terminal can start it. In the macOS app it sits beside this program
-/// and is not on the PATH, so its full path is given; otherwise `ck-forge` is expected on the PATH.
-fn bundled_tool(here: Option<&Path>) -> String {
-    here.map(|here| here.with_file_name("ck-forge"))
-        .filter(|tool| tool.is_file())
-        .map_or_else(
-            || "ck-forge".to_owned(),
-            |tool| quote_posix(&tool.display().to_string()),
-        )
-}
-
-/// `text` as one single-quoted word of a POSIX shell: only the quote itself is special inside.
-fn quote_posix(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
-}
-
-/// `text` as one single-quoted string of PowerShell, which ends the string at any of its four
-/// kinds of single quote, so each is doubled.
-fn quote_powershell(text: &str) -> String {
-    let mut quoted = String::from("'");
-    for c in text.chars() {
-        quoted.push(c);
-        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
-            quoted.push(c);
-        }
-    }
-    quoted.push('\'');
-    quoted
+    format!(
+        "sudo ck-forge stick write {} --disk {}",
+        quote_posix(image.trim()),
+        number.trim()
+    )
 }
 
 /// The disks that held a stick the Hub still knows as working.
@@ -605,7 +559,7 @@ impl Screen {
         }
         self.key_ui(ui, idle);
         // Where the window cannot write, the list is only for reading the numbers.
-        let may_list = self.ready() || !cfg!(windows);
+        let may_list = self.ready() || !CAN_WRITE;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = tokens(ui.ctx()).s.gap;
             let find = Btn::new("Find sticks").small();
@@ -633,7 +587,7 @@ impl Screen {
         if self.listing {
             widgets::hint(ui, "Looking for disks\u{2026}");
         }
-        self.disks_ui(ui, idle && cfg!(windows));
+        self.disks_ui(ui, idle && CAN_WRITE);
     }
 
     /// Empties the password when the profile or its network is not the one it was typed for, so one
@@ -770,6 +724,11 @@ impl Screen {
             ui.spacing_mut().item_spacing.y = 8.0;
             for disk in &self.disks {
                 let refusal = disk.check(self.size, self.allow_virtual).err();
+                // A protected disk (the system disk, a disk that is not a USB stick) is never
+                // shown: only sticks that can be written, or are too small, are of use here.
+                if matches!(&refusal, Some(why) if !matches!(why, ck_writer::Error::TooSmall { .. })) {
+                    continue;
+                }
                 let serial = disk.serial_number.as_deref().unwrap_or("").trim();
                 let mut detail = format!("{} \u{b7} {}", disk.size_text(), disk.bus_type);
                 if !serial.is_empty() {
@@ -787,8 +746,7 @@ impl Screen {
                 let name = name.unwrap_or("unnamed");
                 let name = format!("Disk {} \u{b7} {name}", disk.number);
                 let (tone, state) = match &refusal {
-                    Some(ck_writer::Error::TooSmall { .. }) => (Tone::Warn, "Too small"),
-                    Some(_) => (Tone::Off, "Protected"),
+                    Some(_) => (Tone::Warn, "Too small"),
                     None if before.is_some() => (Tone::Warn, "Rewrite"),
                     None => (Tone::Ok, "Safe to write"),
                 };
@@ -820,9 +778,9 @@ impl Screen {
             self.written && !self.success.is_empty(),
             "Erase and write",
             "Everything on the chosen sticks is erased. Each stick gets its own identity from the \
-             saved profile. Windows asks for administrator permission when the write starts.",
+             saved profile. Your computer asks for administrator permission when the write starts.",
         );
-        if !cfg!(windows) {
+        if !CAN_WRITE {
             self.command_ui(ui);
         } else if self.chosen.is_empty() {
             widgets::hint(ui, "Choose at least one stick above.");
@@ -958,7 +916,10 @@ impl Screen {
 
     /// Where the window cannot write sticks itself, it shows the command to copy.
     fn command_ui(&mut self, ui: &mut Ui) {
-        widgets::hint(ui, ADMIN_HINT);
+        widgets::hint(
+            ui,
+            "Writing a stick needs administrator rights: run the command below in a terminal. It asks for your password (sudo).",
+        );
         let name = self
             .image
             .as_deref()
@@ -1319,38 +1280,16 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn the_command_quotes_the_image_for_the_shell_of_this_system() {
+    fn the_command_quotes_the_image_for_the_shell() {
         let command = command_line(" /tmp/it's a.img ", " 4 ");
-        let quoted = if cfg!(windows) {
-            "'/tmp/it''s a.img'"
-        } else {
-            r"'/tmp/it'\''s a.img'"
-        };
-        assert!(command.ends_with(&format!("ck-forge stick write {quoted} --disk 4")));
-        assert_eq!(command.starts_with("sudo "), cfg!(target_os = "macos"));
-    }
-
-    #[test]
-    fn the_command_names_the_tool_inside_the_app_when_it_is_there() {
-        let app = tempfile::tempdir().expect("folder");
-        let window = app.path().join("keeper-forge");
-        assert_eq!(bundled_tool(Some(&window)), "ck-forge");
-        assert_eq!(bundled_tool(None), "ck-forge");
-        std::fs::write(app.path().join("ck-forge"), b"x").expect("tool");
-        let tool = bundled_tool(Some(&window));
-        assert!(
-            tool.starts_with('\'') && tool.ends_with("ck-forge'"),
-            "{tool}"
-        );
-    }
-
-    #[test]
-    fn powershell_quotes_every_kind_of_single_quote() {
-        // PowerShell ends a string at the typographic quotes too.
         assert_eq!(
-            quote_powershell("x\u{2019}; calc; #\u{2018}'"),
-            "'x\u{2019}\u{2019}; calc; #\u{2018}\u{2018}'''"
+            command,
+            r"sudo ck-forge stick write '/tmp/it'\''s a.img' --disk 4"
         );
+    }
+
+    #[test]
+    fn a_quote_in_a_name_cannot_end_a_shell_word() {
         assert_eq!(quote_posix("a'b"), r"'a'\''b'");
     }
 }

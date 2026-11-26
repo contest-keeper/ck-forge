@@ -40,7 +40,7 @@ const STEPS: [Step; 5] = [
     Step {
         title: "Make sticks",
         hint: "Base image, erase and write USB",
-        blurb: "Choose the base image once, tick the sticks and write. Each stick gets its own identity from the saved profile. Windows asks for administrator permission when the write starts.",
+        blurb: "Choose the base image once, tick the sticks and write. Each stick gets its own identity from the saved profile. Your computer asks for administrator permission when the write starts.",
     },
     Step {
         title: "Retire sticks",
@@ -243,10 +243,19 @@ impl Forge {
                         self.state.written,
                         false,
                     ];
-                    for (at, step) in STEPS.iter().enumerate() {
+                    // Retiring is not a step of making sticks: it has its own button below.
+                    for (at, step) in STEPS.iter().enumerate().take(RETIRE) {
                         if step_button(ui, at, step, at == self.step, done[at]).clicked() {
                             self.go(at, ui.ctx());
                         }
+                    }
+                    ui.add_space(10.0);
+                    if Btn::new("Retire old sticks\u{2026}")
+                        .small()
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.go(RETIRE, ui.ctx());
                     }
                 });
                 foot.response.rect
@@ -326,7 +335,7 @@ impl Forge {
                     }
                     // The button takes its place first; the message gets what is left.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if self.step < RETIRE {
+                        if self.step < MAKE {
                             let ready = self.state.profile.is_some();
                             if Btn::new("Save and continue")
                                 .primary()
