@@ -18,11 +18,23 @@ for target in aarch64-apple-darwin x86_64-apple-darwin; do
 done
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# Kept apart from $work, which becomes the disk image.
+icons=$(mktemp -d)
+trap 'rm -rf "$work" "$icons"' EXIT
 app="$work/Keeper Forge.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 tools/make-egui-licences.sh "$app/Contents/Resources/THIRD-PARTY-LICENSES.txt"
 cp LICENSE "$app/Contents/Resources/LICENSE.txt"
+
+# The app icon: a rounded square with the Keeper Forge monitor, drawn like the system icons (the
+# 824 point shape on a 1024 canvas), at every size the icon file holds.
+master=app-egui/installer/keeper-forge-macos.png
+mkdir "$icons/keeper-forge.iconset"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$master" --out "$icons/keeper-forge.iconset/icon_${size}x${size}.png"
+  sips -z "$((size * 2))" "$((size * 2))" "$master" --out "$icons/keeper-forge.iconset/icon_${size}x${size}@2x.png"
+done
+iconutil -c icns "$icons/keeper-forge.iconset" -o "$app/Contents/Resources/keeper-forge.icns"
 
 lipo -create -output "$app/Contents/MacOS/keeper-forge" \
   app-egui/target/aarch64-apple-darwin/release/ck-forge-egui \
@@ -40,6 +52,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>Keeper Forge</string>
   <key>CFBundleIdentifier</key><string>org.contest-keeper.forge</string>
   <key>CFBundleExecutable</key><string>keeper-forge</string>
+  <key>CFBundleIconFile</key><string>keeper-forge</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
   <key>CFBundleVersion</key><string>${version}</string>
