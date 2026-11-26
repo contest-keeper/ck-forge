@@ -50,6 +50,10 @@ fn megabytes(done: u64, total: u64) -> String {
 }
 
 impl Screen {
+    pub fn busy(&self) -> bool {
+        self.progress.is_some()
+    }
+
     pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
         self.receive();
         ui.heading("Base images");
@@ -97,7 +101,8 @@ impl Screen {
         }
     }
 
-    fn receive(&mut self) {
+    /// Takes what the worker threads reported.
+    pub fn receive(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::Images(Ok(images)) => self.images = images,

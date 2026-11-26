@@ -60,14 +60,14 @@ fn as_admin<T>(
 }
 
 impl Panel {
-    /// Shows the Hub's profiles and the buttons. `current` is the profile being edited and the
-    /// file it is saved in, when there is one.
     /// Whether a request is running. The editor is locked meanwhile: a save that finishes writes the
     /// profile it was started with to its file, which must not undo a newer edit or a new profile.
     pub fn busy(&self) -> bool {
         self.busy
     }
 
+    /// Shows the Hub's profiles and the buttons. `current` is the profile being edited and the
+    /// file it is saved in, when there is one.
     /// `save_blocked` says why the profile cannot be saved on the Hub now, when it cannot.
     pub fn show(
         &mut self,
@@ -75,7 +75,6 @@ impl Panel {
         current: Option<(&Profile, &str)>,
         save_blocked: Option<&str>,
     ) -> Option<Outcome> {
-        let mut outcome = self.receive();
         let mut assigned = None;
         ui.horizontal(|ui| {
             if ui
@@ -126,13 +125,11 @@ impl Panel {
         if !self.message.is_empty() {
             ui.label(&self.message);
         }
-        if outcome.is_none() {
-            outcome = assigned;
-        }
-        outcome
+        assigned
     }
 
-    fn receive(&mut self) -> Option<Outcome> {
+    /// Takes what the worker threads reported. Called every frame.
+    pub fn receive(&mut self) -> Option<Outcome> {
         let mut outcome = None;
         while let Ok(event) = self.events.try_recv() {
             self.busy = false;

@@ -86,7 +86,8 @@ impl Screen {
         }
     }
 
-    fn receive(&mut self) {
+    /// Takes what the worker threads reported.
+    pub fn receive(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::Sticks(Ok(sticks)) => self.sticks = sticks,

@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use crate::contest::hub_profiles::Outcome;
+use crate::state::AppState;
 use base64::Engine;
 use ck_admin_core::{Profile, add_wallpaper, wallpaper_data_url};
 use ck_protocol::{Bookmark, LocalDateTime, RecordingMode, UploadMode, Wifi};
@@ -12,7 +13,11 @@ use ck_protocol::{Bookmark, LocalDateTime, RecordingMode, UploadMode, Wifi};
 pub struct Screen {
     /// The file the profile is read from and saved to, as typed.
     path: String,
-    profile: Option<Profile>,
+    /// The profile and the file that the typed texts were last read from.
+    revision: Option<u64>,
+    file: Option<PathBuf>,
+    /// The profile file, picture name and picture revision the preview was made from.
+    pictured: Option<(PathBuf, String, u64)>,
     /// One site name per line, kept as typed until it is applied to the profile.
     domains: String,
     /// The contest end as typed, `2026-11-15T09:00`, until it is applied to the profile.
@@ -230,45 +235,111 @@ fn end_is_valid(text: &str) -> bool {
     text.trim().is_empty() || text.parse::<LocalDateTime>().is_ok()
 }
 
+const BAD_END: &str = "Fix the contest end first: use a date and time like 2026-11-15T09:00";
+
 impl Screen {
-    pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
+    /// Called every frame, whatever page is shown: takes what the Hub answered, follows the shared
+    /// state and says whether the profile may be saved now.
+    pub fn poll(&mut self, ctx: &eframe::egui::Context, state: &mut AppState) {
+        match self.hub.receive() {
+            Some(Outcome::Loaded(loaded)) => {
+                state.use_profile(loaded.profile, Some(loaded.path));
+                "Loaded from the Hub".clone_into(&mut self.message);
+            }
+            Some(Outcome::Saved(id)) => {
+                if let Some(profile) = &mut state.profile {
+                    profile.hub_id = id;
+                }
+            }
+            Some(Outcome::Assigned(_)) | None => {}
+        }
+        self.follow(ctx, state);
+        // A save now would write the file a Hub request is writing, or leave typed text out.
+        state.blocked = if self.hub.busy() {
+            Some("Wait until the Hub request has ended.".to_owned())
+        } else {
+            (!end_is_valid(&self.contest_end)).then(|| BAD_END.to_owned())
+        };
+    }
+
+    /// Reads the typed texts again when another profile or file is being edited.
+    fn follow(&mut self, ctx: &eframe::egui::Context, state: &AppState) {
+        if self.revision != Some(state.profile_revision) {
+            self.revision = Some(state.profile_revision);
+            if let Some(profile) = &state.profile {
+                self.read(profile);
+            }
+            self.file = None;
+            self.path.clear();
+        }
+        if self.file != state.profile_path {
+            self.file.clone_from(&state.profile_path);
+            if let Some(file) = &self.file {
+                self.path = file.display().to_string();
+            }
+        }
+        let wanted = state.profile_path.as_ref().and_then(|file| {
+            let name = state
+                .profile
+                .as_ref()?
+                .settings
+                .branding
+                .wallpaper
+                .clone()?;
+            Some((file.clone(), name, state.wallpaper_revision))
+        });
+        if self.pictured != wanted {
+            self.pictured = wanted;
+            self.refresh_preview(ctx);
+        }
+    }
+
+    fn read(&mut self, profile: &Profile) {
+        self.domains = profile.settings.network.allowed_domains.join("\n");
+        self.contest_end = profile
+            .settings
+            .contest
+            .end
+            .map(|end| end.to_string())
+            .unwrap_or_default();
+        self.ssid = profile
+            .settings
+            .wifi
+            .as_ref()
+            .map(|wifi| wifi.ssid.clone())
+            .unwrap_or_default();
+    }
+
+    pub fn show(&mut self, ui: &mut eframe::egui::Ui, state: &mut AppState) {
         // A request to the Hub is running: nothing here can change until it has ended.
         if self.hub.busy() {
             ui.disable();
         }
-        ui.heading("Profile");
         ui.horizontal(|ui| {
             ui.label("File");
             ui.text_edit_singleline(&mut self.path);
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("New").clicked() {
-                self.set(Profile::template(), "A new profile");
+                state.use_profile(Profile::template(), None);
+                "A new profile".clone_into(&mut self.message);
             }
             if ui.button("Open").clicked() {
-                self.open(ui.ctx());
+                self.open(state);
             }
-            if ui
-                .add_enabled(self.profile.is_some(), eframe::egui::Button::new("Save"))
-                .clicked()
-            {
-                self.save();
+            if ui.button("Save").clicked() {
+                self.save(state);
             }
-            if ui
-                .add_enabled(
-                    self.profile.is_some(),
-                    eframe::egui::Button::new("Save in the Forge folder"),
-                )
-                .clicked()
-            {
-                self.save_in_forge_folder();
+            if ui.button("Save in the Forge folder").clicked() {
+                self.save_in_forge_folder(state);
             }
         });
         if !self.message.is_empty() {
             ui.label(&self.message);
         }
-        self.hub_ui(ui);
-        let Some(profile) = &mut self.profile else {
+        self.hub_ui(ui, state);
+        self.follow(ui.ctx(), state);
+        let Some(profile) = &mut state.profile else {
             return;
         };
         ui.separator();
@@ -331,18 +402,18 @@ impl Screen {
             ui.colored_label(ui.visuals().warn_fg_color, warning);
         }
         ui.separator();
-        self.wallpaper_ui(ui);
+        self.wallpaper_ui(ui, state);
     }
 
-    fn wallpaper_ui(&mut self, ui: &mut eframe::egui::Ui) {
+    fn wallpaper_ui(&mut self, ui: &mut eframe::egui::Ui, state: &mut AppState) {
         ui.horizontal(|ui| {
             ui.label("Wallpaper picture");
             ui.text_edit_singleline(&mut self.wallpaper_source);
             if ui.button("Use").clicked() {
-                self.use_wallpaper(ui.ctx());
+                self.use_wallpaper(state);
             }
         });
-        if let Some(name) = self
+        if let Some(name) = state
             .profile
             .as_ref()
             .and_then(|profile| profile.settings.branding.wallpaper.as_ref())
@@ -354,140 +425,116 @@ impl Screen {
         }
     }
 
-    /// The Hub's profiles: what a finished request changes here is applied at once.
-    fn hub_ui(&mut self, ui: &mut eframe::egui::Ui) {
-        let current = self
+    /// The Hub's profiles. A started save keeps the id it runs under, even if it fails, so that a
+    /// retry updates the same Hub profile and does not make another one.
+    fn hub_ui(&mut self, ui: &mut eframe::egui::Ui, state: &mut AppState) {
+        let file = state
+            .profile_path
+            .as_ref()
+            .map(|file| file.display().to_string())
+            .unwrap_or_default();
+        let current = state
             .profile
             .as_ref()
-            .map(|profile| (profile, self.path.as_str()));
+            .map(|profile| (profile, file.as_str()));
         // The same refusal as a local save: the typed end is not applied to the profile.
-        let blocked = (!end_is_valid(&self.contest_end))
-            .then_some("Fix the contest end first: use a date and time like 2026-11-15T09:00");
-        match self.hub.show(ui, current, blocked) {
-            Some(Outcome::Loaded(loaded)) => {
-                self.path = loaded.path.display().to_string();
-                self.set(loaded.profile, "Loaded from the Hub");
-                self.refresh_preview(ui.ctx());
-            }
-            Some(Outcome::Saved(id)) => {
-                if let Some(profile) = &mut self.profile {
-                    profile.hub_id = id;
-                }
-            }
-            Some(Outcome::Assigned(id)) => {
-                if let Some(profile) = &mut self.profile {
-                    profile.hub_id.get_or_insert(id);
-                }
-            }
-            None => {}
+        let blocked = (!end_is_valid(&self.contest_end)).then_some(BAD_END);
+        if let Some(Outcome::Assigned(id)) = self.hub.show(ui, current, blocked)
+            && let Some(profile) = &mut state.profile
+        {
+            profile.hub_id.get_or_insert(id);
         }
     }
 
-    fn set(&mut self, profile: Profile, message: &str) {
-        self.domains = profile.settings.network.allowed_domains.join("\n");
-        self.contest_end = profile
-            .settings
-            .contest
-            .end
-            .map(|end| end.to_string())
-            .unwrap_or_default();
-        self.ssid = profile
-            .settings
-            .wifi
-            .as_ref()
-            .map(|wifi| wifi.ssid.clone())
-            .unwrap_or_default();
-        self.profile = Some(profile);
-        // The picture of the profile that was open before is not this profile's.
-        self.preview = None;
-        message.clone_into(&mut self.message);
-    }
-
-    fn open(&mut self, ctx: &eframe::egui::Context) {
-        match Profile::load(&PathBuf::from(self.path.trim())) {
+    fn open(&mut self, state: &mut AppState) {
+        let path = PathBuf::from(self.path.trim());
+        match Profile::load(&path) {
             Ok(profile) => {
-                self.set(profile, "Opened");
-                self.refresh_preview(ctx);
+                state.use_profile(profile, Some(path));
+                "Opened".clone_into(&mut self.message);
             }
             Err(error) => self.message = error.to_string(),
         }
     }
 
-    /// Saves a profile that has no file yet in the Forge folder, which is also where the Svelte
-    /// window keeps profiles, and makes that file the one being edited.
-    fn save_in_forge_folder(&mut self) {
-        let Some(profile) = &self.profile else {
+    /// Saves a copy of the profile in the Forge folder and makes that file the one being edited.
+    fn save_in_forge_folder(&mut self, state: &mut AppState) {
+        let Some(profile) = &state.profile else {
             return;
         };
         if !end_is_valid(&self.contest_end) {
-            "Fix the contest end first: use a date and time like 2026-11-15T09:00"
-                .clone_into(&mut self.message);
+            BAD_END.clone_into(&mut self.message);
             return;
         }
-        let Some(data) = crate::folder::data_dir() else {
+        let Some(data) = state.data() else {
             "Could not find the Forge folder".clone_into(&mut self.message);
             return;
         };
         // The wallpaper lies beside the file the profile was opened from: it goes along.
         let wallpaper = profile.settings.branding.wallpaper.as_ref().map(|name| {
-            PathBuf::from(self.path.trim())
-                .parent()
+            state
+                .profile_path
+                .as_ref()
+                .and_then(|file| file.parent())
                 .map_or_else(|| PathBuf::from(name), |folder| folder.join(name))
         });
-        match crate::folder::save_in(&data, profile, wallpaper.as_deref()) {
+        match crate::folder::save_in(data, profile, wallpaper.as_deref()) {
             Ok((path, saved)) => {
-                self.path = path.display().to_string();
                 self.message = format!("Saved in {}", path.display());
                 // The wallpaper of the copy may have another name than the one the editor had.
-                self.profile = Some(saved);
+                state.use_profile(saved, Some(path));
             }
             Err(why) => self.message = why,
         }
     }
 
-    fn save(&mut self) {
-        let Some(profile) = &self.profile else {
-            return;
-        };
+    /// Saves to the typed file, or in the Forge folder when none is typed.
+    fn save(&mut self, state: &mut AppState) {
         // Otherwise the end that was typed would be left out and an older one saved.
         if !end_is_valid(&self.contest_end) {
-            "Fix the contest end first: use a date and time like 2026-11-15T09:00"
-                .clone_into(&mut self.message);
+            BAD_END.clone_into(&mut self.message);
             return;
         }
-        self.message = match profile.save(&PathBuf::from(self.path.trim())) {
+        let typed = self.path.trim();
+        let result = if typed.is_empty() {
+            state.save_profile().map(|_| ())
+        } else {
+            state.save_profile_to(PathBuf::from(typed))
+        };
+        self.message = match result {
             Ok(()) => "Saved".to_owned(),
-            Err(error) => error.to_string(),
+            Err(why) => why,
         };
     }
 
     /// Makes the picture of the profile's wallpaper, or none when there is no picture or it is too
     /// large or not readable. The texture is replaced, so a new picture is never shown stale.
     fn refresh_preview(&mut self, ctx: &eframe::egui::Context) {
-        self.preview = None;
-        let Some(name) = self
-            .profile
+        self.preview = self
+            .pictured
             .as_ref()
-            .and_then(|profile| profile.settings.branding.wallpaper.clone())
-        else {
-            return;
-        };
-        let url = wallpaper_data_url(&PathBuf::from(self.path.trim()), &name);
-        self.preview = url.as_deref().and_then(picture_of).map(|picture| {
-            ctx.load_texture("wallpaper", picture, eframe::egui::TextureOptions::LINEAR)
-        });
+            .and_then(|(file, name, _)| wallpaper_data_url(file, name))
+            .as_deref()
+            .and_then(picture_of)
+            .map(|picture| {
+                ctx.load_texture("wallpaper", picture, eframe::egui::TextureOptions::LINEAR)
+            });
     }
 
-    fn use_wallpaper(&mut self, ctx: &eframe::egui::Context) {
-        let Some(profile) = &mut self.profile else {
+    fn use_wallpaper(&mut self, state: &mut AppState) {
+        let Some(file) = state.profile_path.clone() else {
+            "Save the profile first: the picture is copied next to it"
+                .clone_into(&mut self.message);
             return;
         };
-        let file = PathBuf::from(self.path.trim());
+        let Some(profile) = &mut state.profile else {
+            return;
+        };
         match add_wallpaper(&file, &PathBuf::from(self.wallpaper_source.trim())) {
             Ok(name) => {
                 profile.settings.branding.wallpaper = Some(name);
+                state.wallpaper_revision += 1;
                 "The picture was copied next to the profile".clone_into(&mut self.message);
-                self.refresh_preview(ctx);
             }
             Err(error) => self.message = error.to_string(),
         }
@@ -564,42 +611,42 @@ mod tests {
 
     #[test]
     fn a_profile_is_not_saved_with_a_contest_end_that_does_not_parse() {
-        let dir = std::env::temp_dir().join(format!("ck-egui-end-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("folder");
-        let mut screen = Screen {
-            path: dir.join("p.json").display().to_string(),
-            ..Screen::default()
-        };
-        screen.set(Profile::template(), "");
+        let dir = tempfile::tempdir().expect("folder");
+        let ctx = eframe::egui::Context::default();
+        let mut state = AppState::load(None);
+        let mut screen = Screen::default();
+        screen.poll(&ctx, &mut state);
+        screen.path = dir.path().join("p.json").display().to_string();
         screen.contest_end = "tomorrow".to_owned();
-        screen.save();
+        screen.save(&mut state);
         assert_ne!(screen.message, "Saved");
-        assert!(!dir.join("p.json").exists());
-        std::fs::remove_dir_all(&dir).expect("cleanup");
+        // The footer's Continue is refused for the same reason.
+        screen.poll(&ctx, &mut state);
+        assert!(state.save_profile().is_err());
+        assert!(!dir.path().join("p.json").exists());
     }
 
     #[test]
     fn a_saved_profile_opens_again_with_its_sites() {
-        let dir = std::env::temp_dir().join(format!("ck-egui-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("folder");
-        let mut screen = Screen {
-            path: dir.join("p.json").display().to_string(),
-            ..Screen::default()
-        };
-        screen.set(Profile::template(), "");
-        screen.domains = "a.example.org\nb.example.org".to_owned();
-        if let Some(profile) = &mut screen.profile {
-            profile.settings.network.allowed_domains = parse_domains(&screen.domains);
-        }
-        screen.save();
+        let dir = tempfile::tempdir().expect("folder");
+        let ctx = eframe::egui::Context::default();
+        let mut state = AppState::load(None);
+        let mut screen = Screen::default();
+        screen.poll(&ctx, &mut state);
+        screen.path = dir.path().join("p.json").display().to_string();
+        let profile = state.profile.as_mut().expect("profile");
+        profile.settings.network.allowed_domains = parse_domains("a.example.org\nb.example.org");
+        screen.save(&mut state);
         assert_eq!(screen.message, "Saved");
 
+        let mut state = AppState::load(None);
         let mut again = Screen {
             path: screen.path.clone(),
             ..Screen::default()
         };
-        again.open(&eframe::egui::Context::default());
+        again.open(&mut state);
+        again.poll(&ctx, &mut state);
         assert_eq!(again.domains, "a.example.org\nb.example.org");
-        std::fs::remove_dir_all(&dir).expect("cleanup");
+        assert_eq!(again.path, screen.path);
     }
 }

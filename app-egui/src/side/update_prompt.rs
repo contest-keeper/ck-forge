@@ -50,6 +50,15 @@ impl Default for Banner {
 }
 
 impl Banner {
+    /// A banner that never asks the feed, for the tests and screenshots.
+    #[cfg(test)]
+    pub fn quiet() -> Self {
+        Self {
+            started: true,
+            ..Self::default()
+        }
+    }
+
     /// Whether this build is too old to be used until it has updated.
     pub fn blocks(&self) -> bool {
         !matches!(self.state, State::Quiet) && self.pending.as_ref().is_some_and(|u| u.mandatory)
@@ -70,12 +79,13 @@ impl Banner {
         !matches!(self.state, State::Quiet)
     }
 
-    pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
+    /// `busy`: something is running that a restart would cut off, so nothing is installed now.
+    pub fn show(&mut self, ui: &mut eframe::egui::Ui, busy: bool) {
         match &self.state {
             State::Quiet => {}
             State::Offer(update) => {
                 let update = update.clone();
-                self.offer_ui(ui, &update);
+                self.offer_ui(ui, &update, busy);
             }
             State::Downloading(done, total) => {
                 let (done, total) = (done / (1024 * 1024), total / (1024 * 1024));
@@ -100,7 +110,9 @@ impl Banner {
             State::Failed(why) => {
                 ui.colored_label(ui.visuals().error_fg_color, format!("Update: {why}"));
                 if let Some(update) = self.pending.clone()
-                    && ui.button("Try again").clicked()
+                    && ui
+                        .add_enabled(!busy, eframe::egui::Button::new("Try again"))
+                        .clicked()
                 {
                     self.download(update, ui.ctx().clone());
                 }
@@ -108,7 +120,7 @@ impl Banner {
         }
     }
 
-    fn offer_ui(&mut self, ui: &mut eframe::egui::Ui, update: &Available) {
+    fn offer_ui(&mut self, ui: &mut eframe::egui::Ui, update: &Available, busy: bool) {
         let text = if update.mandatory {
             format!(
                 "This version of Keeper Forge is no longer supported. Version {} must be installed to continue.",
@@ -124,7 +136,10 @@ impl Banner {
             "The window closes and reopens when it is installed."
         });
         ui.horizontal(|ui| {
-            if ui.button("Install").clicked() {
+            if ui
+                .add_enabled(!busy, eframe::egui::Button::new("Install"))
+                .clicked()
+            {
                 self.download(update.clone(), ui.ctx().clone());
             }
             if update.mandatory {

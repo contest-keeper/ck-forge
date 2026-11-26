@@ -20,9 +20,9 @@ pub struct Screen {
     disks: Vec<Disk>,
     /// Whether the disks are being listed, which can take seconds.
     listing: bool,
-    /// The base image the sticks are made from, as typed.
+    /// The base image the sticks are made from.
     base: String,
-    /// The profile the sticks get their settings from, as typed.
+    /// The saved profile the sticks get their settings from.
     profile: String,
     /// The Wi-Fi password, typed for this write only. It is never saved, logged or shown.
     wifi_password: String,
@@ -40,6 +40,8 @@ pub struct Screen {
     disk: String,
     message: String,
     job: Option<Job>,
+    /// A write succeeded in this run.
+    pub written: bool,
     events: Receiver<Result<Vec<Disk>, String>>,
     sender: Sender<Result<Vec<Disk>, String>>,
 }
@@ -69,6 +71,7 @@ impl Default for Screen {
             disk: String::new(),
             message: String::new(),
             job: None,
+            written: false,
             events,
             sender,
         }
@@ -215,7 +218,8 @@ impl Screen {
         });
     }
 
-    fn receive(&mut self) {
+    /// Takes what the worker threads reported.
+    pub fn receive(&mut self) {
         while let Ok(result) = self.events.try_recv() {
             self.listing = false;
             match result {
@@ -239,11 +243,26 @@ impl Screen {
         }
         if let Some(result) = ended {
             self.job = None;
+            self.written |= result.is_ok();
             self.message = match result {
                 Ok(hash) => format!("Written and read back, SHA-256 {hash}"),
                 Err(why) => why,
             };
         }
+    }
+
+    pub fn busy(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// The files to write from, as the shared state has them now.
+    pub fn use_files(&mut self, base: Option<&std::path::Path>, profile: Option<&std::path::Path>) {
+        let text = |path: Option<&std::path::Path>| {
+            path.map(|path| path.display().to_string())
+                .unwrap_or_default()
+        };
+        self.base = text(base);
+        self.profile = text(profile);
     }
 
     pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
@@ -331,15 +350,6 @@ impl Screen {
             "Every stick gets an image of its own with its own identity. Writing erases the \
              whole stick and asks for administrator permission.",
         );
-        for (label, text) in [
-            ("Base image", &mut self.base),
-            ("Profile file", &mut self.profile),
-        ] {
-            ui.horizontal(|ui| {
-                ui.label(label);
-                ui.text_edit_singleline(text);
-            });
-        }
         ui.horizontal(|ui| {
             ui.label("Wi-Fi password");
             // Typed for this write only: it is not saved in the profile and never shown.
@@ -415,7 +425,7 @@ impl Screen {
     /// field is emptied.
     fn start(&mut self, ctx: &eframe::egui::Context) {
         let (Some(base), Some(profile)) = (typed(&self.base), typed(&self.profile)) else {
-            "Type the base image and the profile file".clone_into(&mut self.message);
+            "Choose the base image and save the profile first".clone_into(&mut self.message);
             return;
         };
         let to_file = typed(&self.to_file);

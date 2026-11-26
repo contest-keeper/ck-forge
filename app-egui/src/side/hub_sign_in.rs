@@ -6,6 +6,9 @@ use std::time::Duration;
 
 use ck_admin_core::{HUB_URL, HubSession, vault};
 
+use crate::state::AppState;
+use crate::widgets::{self, Btn, Tone};
+
 const SIGN_IN_WAIT: Duration = Duration::from_secs(600);
 const POLL_EVERY: Duration = Duration::from_secs(2);
 
@@ -50,11 +53,9 @@ pub struct Screen {
     sender: Sender<Event>,
 }
 
-impl Default for Screen {
-    fn default() -> Self {
+impl Screen {
+    pub fn new(state: State) -> Self {
         let (sender, events) = channel();
-        let state =
-            vault::load().map_or(State::SignedOut, |session| State::SignedIn(session.email));
         Self {
             state,
             code: None,
@@ -62,41 +63,56 @@ impl Default for Screen {
             sender,
         }
     }
-}
 
-impl Screen {
-    pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
+    /// Signed in when the credential vault of the system holds a session.
+    pub fn from_vault() -> Self {
+        Self::new(vault::load().map_or(State::SignedOut, |session| State::SignedIn(session.email)))
+    }
+
+    /// Called every frame: takes what the sign-in reported and tells the other pages.
+    pub fn poll(&mut self, app: &mut AppState) {
         while let Ok(event) = self.events.try_recv() {
             if let Event::Code(code) = &event {
                 self.code = Some(code.clone());
             }
             self.state = self.state.after(event);
         }
-        ui.heading("Keeper Hub");
+        app.hub_email = match &self.state {
+            State::SignedIn(email) => Some(email.clone()),
+            _ => None,
+        };
+    }
+
+    /// The part at the foot of the sidebar.
+    pub fn show(&mut self, ui: &mut eframe::egui::Ui) {
         match self.state.clone() {
             State::SignedOut => {
-                if ui.button("Sign in").clicked() {
+                widgets::hint(
+                    ui,
+                    "Hub: not signed in. Sticks made now keep their events on the stick.",
+                );
+                if Btn::new("Sign in with browser").small().show(ui).clicked() {
                     self.start_sign_in(ui.ctx().clone());
                 }
             }
             State::SigningIn => {
-                ui.label("Waiting for you to agree in the browser…");
+                widgets::hint(ui, "Waiting for you to agree in the browser\u{2026}");
                 if let Some(code) = &self.code {
-                    ui.label("Check that the Hub page shows this code:");
-                    ui.heading(code);
+                    widgets::hint(ui, "Check that the Hub page shows this code:");
+                    widgets::mono(ui, code);
                 }
                 ui.spinner();
             }
             State::SignedIn(email) => {
-                ui.label(format!("Signed in as {email}"));
-                if ui.button("Sign out").clicked() {
+                widgets::hint(ui, &format!("Hub: signed in as {email}"));
+                if Btn::new("Sign out").small().show(ui).clicked() {
                     sign_out();
                     self.state = State::SignedOut;
                 }
             }
             State::Failed(why) => {
-                ui.colored_label(ui.visuals().error_fg_color, why);
-                if ui.button("Try again").clicked() {
+                widgets::note(ui, Tone::Error, &why);
+                if Btn::new("Try again").small().show(ui).clicked() {
                     self.start_sign_in(ui.ctx().clone());
                 }
             }

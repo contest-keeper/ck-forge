@@ -8,7 +8,10 @@ mod contest;
 mod folder;
 mod make;
 mod side;
+mod state;
+mod theme;
 mod update;
+mod widgets;
 
 const ICON: &[u8] = include_bytes!("../installer/keeper-forge.ico");
 
@@ -35,7 +38,7 @@ fn main() -> eframe::Result {
             viewport,
             ..Default::default()
         },
-        Box::new(|_| Ok(Box::new(app::Forge::default()))),
+        Box::new(|_| Ok(Box::new(app::Forge::new()))),
     )
 }
 
