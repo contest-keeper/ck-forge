@@ -24,7 +24,8 @@ pub struct Screen {
     picture: Picture,
     hub: Panel,
     /// The profiles on the Hub, listed when the admin signs in and after every save.
-    pub(super) hub_profiles: Vec<ProfileSummary>,
+    /// None until the Hub has answered, so a failed request is not read as an empty list.
+    pub(super) hub_profiles: Option<Vec<ProfileSummary>>,
     /// The profiles in the Forge folder, read again when the open profile or its file changes.
     local: Vec<Local>,
     local_key: Option<(u64, Option<PathBuf>, bool)>,
@@ -92,7 +93,8 @@ struct Entry {
 
 /// One entry for each profile: the ones saved here and on the Hub are the same profile when the Hub
 /// id matches, and the rest are kept in one place only. By name.
-fn merged(local: &[Local], hub: &[ProfileSummary]) -> Vec<Entry> {
+fn merged(local: &[Local], hub: Option<&[ProfileSummary]>) -> Vec<Entry> {
+    let known = hub.unwrap_or_default();
     let mut entries: Vec<Entry> = local
         .iter()
         .map(|item| Entry {
@@ -101,10 +103,11 @@ fn merged(local: &[Local], hub: &[ProfileSummary]) -> Vec<Entry> {
             hub_id: item
                 .hub_id
                 .clone()
-                .filter(|id| hub.iter().any(|known| &known.id == id)),
+                // Without the Hub's answer an id cannot be told wrong, so it stays.
+                .filter(|id| hub.is_none() || known.iter().any(|on_hub| &on_hub.id == id)),
         })
         .collect();
-    for summary in hub {
+    for summary in known {
         if !entries
             .iter()
             .any(|entry| entry.hub_id.as_ref() == Some(&summary.id))
@@ -121,8 +124,8 @@ fn merged(local: &[Local], hub: &[ProfileSummary]) -> Vec<Entry> {
 }
 
 /// A saved profile as one row: its name, where it is kept and the button to open it.
-/// `signed_in` says whether the Hub's copies were asked for.
-fn profile_row(ui: &mut Ui, entry: &Entry, open: bool, signed_in: bool) -> bool {
+/// `hub_known` says whether the Hub has answered with its list.
+fn profile_row(ui: &mut Ui, entry: &Entry, open: bool, hub_known: bool) -> bool {
     let kept = match (&entry.file, &entry.hub_id) {
         (Some(_), Some(_)) => "On this computer and on the Hub",
         (Some(_), None) => "On this computer only",
@@ -132,15 +135,16 @@ fn profile_row(ui: &mut Ui, entry: &Entry, open: bool, signed_in: bool) -> bool 
     widgets::path_row(ui, &entry.name, &[kept], |ui| {
         if open {
             widgets::pill(ui, Tone::Ok, "Open now");
-            return;
-        }
-        let label = if entry.file.is_some() {
-            "Open"
         } else {
-            "Download"
-        };
-        clicked = Btn::new(label).small().show(ui).clicked();
-        if signed_in && entry.hub_id.is_none() {
+            let label = if entry.file.is_some() {
+                "Open"
+            } else {
+                "Download"
+            };
+            clicked = Btn::new(label).small().show(ui).clicked();
+        }
+        // Whether it is open or not, a profile the Hub lacks says so.
+        if hub_known && entry.hub_id.is_none() {
             widgets::pill(ui, Tone::Warn, "Not on the Hub");
         }
     });
@@ -161,7 +165,7 @@ impl Screen {
         self.follow(ctx, state);
         if self.listed_for != state.hub_email && !self.hub.busy() {
             self.listed_for.clone_from(&state.hub_email);
-            self.hub_profiles.clear();
+            self.hub_profiles = None;
             if state.hub_email.is_some() {
                 self.hub.list(ctx);
             }
@@ -175,7 +179,7 @@ impl Screen {
 
     fn take(&mut self, ctx: &egui::Context, outcome: Outcome, state: &mut AppState) {
         match outcome {
-            Outcome::Listed(profiles) => self.hub_profiles = profiles,
+            Outcome::Listed(profiles) => self.hub_profiles = Some(profiles),
             Outcome::Loaded(loaded) => {
                 self.status = format!("Loaded {} from the Hub", loaded.profile.name);
                 state.use_profile(loaded.profile, Some(loaded.path));
@@ -308,8 +312,8 @@ impl Screen {
 
     /// The saved profiles, from this computer and, when signed in, from the Hub, one row each.
     fn profiles_card(&mut self, ui: &mut Ui, state: &mut AppState) {
-        let signed_in = state.hub_email.is_some();
-        let entries = merged(&self.local, &self.hub_profiles);
+        let hub_known = self.hub_profiles.is_some();
+        let entries = merged(&self.local, self.hub_profiles.as_deref());
         if entries.is_empty() {
             return;
         }
@@ -325,7 +329,7 @@ impl Screen {
                     }
                 };
                 let clicked = ui
-                    .push_id(("saved", at), |ui| profile_row(ui, entry, here, signed_in))
+                    .push_id(("saved", at), |ui| profile_row(ui, entry, here, hub_known))
                     .inner;
                 if clicked {
                     chosen = Some(at);
@@ -590,7 +594,7 @@ mod tests {
                 local("Alpha", Some("gone")),
                 local("solo", None),
             ],
-            &[hub("b1", "beta"), hub("h2", "Hub only")],
+            Some(&[hub("b1", "beta"), hub("h2", "Hub only")]),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["Alpha", "beta", "Hub only", "solo"]);
@@ -598,6 +602,10 @@ mod tests {
         assert_eq!(entries[0].hub_id, None);
         assert!(entries[1].file.is_some() && entries[1].hub_id.is_some());
         assert!(entries[2].file.is_none());
+        // Before the Hub has answered, a local profile keeps its id and nothing is added.
+        let before = merged(&[local("beta", Some("b1"))], None);
+        assert_eq!(before.len(), 1);
+        assert!(before[0].hub_id.is_some());
     }
 
     #[test]
