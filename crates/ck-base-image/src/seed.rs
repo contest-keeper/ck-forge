@@ -8,7 +8,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::Error;
 
@@ -56,13 +56,32 @@ impl Drop for Seed {
     }
 }
 
+fn has_end_of_headers(bytes: &[u8]) -> bool {
+    bytes.windows(4).any(|window| window == b"\r\n\r\n")
+}
+
 fn answer(mut stream: TcpStream, user_data: &str) {
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    // One deadline for the whole header read, not per read: a peer that drips a byte at a time must not hold the
+    // seed thread (it serves one connection at a time and Drop joins it).
+    let deadline = Instant::now() + Duration::from_secs(2);
+    // A request can arrive in several pieces. Answering and closing before the rest is read resets the
+    // connection, so read up to the end of the headers.
     let mut request = [0u8; 2048];
-    let Ok(count) = stream.read(&mut request) else {
-        return;
-    };
+    let mut count = 0;
+    while count < request.len() && !has_end_of_headers(&request[..count]) {
+        let Some(left) = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+        else {
+            break;
+        };
+        let _ = stream.set_read_timeout(Some(left));
+        match stream.read(&mut request[count..]) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => count += read,
+        }
+    }
     let request = String::from_utf8_lossy(&request[..count]);
     let path = request.split_whitespace().nth(1).unwrap_or("");
     let (status, body) = match path {
@@ -99,5 +118,45 @@ mod tests {
         assert!(get(seed.port, "/user-data").ends_with("echo hi\n"));
         assert!(get(seed.port, "/meta-data").contains("instance-id"));
         assert!(get(seed.port, "/etc/passwd").starts_with("HTTP/1.1 404"));
+    }
+
+    #[test]
+    fn waits_for_the_rest_of_a_request_that_arrives_in_pieces() {
+        let seed = Seed::start("#!/bin/bash\necho hi\n".to_owned()).expect("start");
+        let mut stream = TcpStream::connect(("127.0.0.1", seed.port)).expect("connect");
+        stream.write_all(b"GET ").expect("send");
+        stream.flush().expect("flush");
+        thread::sleep(Duration::from_millis(200));
+        stream
+            .write_all(b"/user-data HTTP/1.1\r\nHost: x\r\n\r\n")
+            .expect("send");
+        let mut text = String::new();
+        stream.read_to_string(&mut text).expect("read");
+        assert!(text.ends_with("echo hi\n"));
+    }
+
+    #[test]
+    fn gives_up_on_a_peer_that_drips_the_request_slowly() {
+        let seed = Seed::start("x".to_owned()).expect("start");
+        let mut stream = TcpStream::connect(("127.0.0.1", seed.port)).expect("connect");
+        let mut writer = stream.try_clone().expect("clone");
+        let dripper = thread::spawn(move || {
+            for _ in 0..20 {
+                if writer.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(400));
+            }
+        });
+        let started = Instant::now();
+        let mut text = String::new();
+        let _ = stream.read_to_string(&mut text);
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "took {:?}",
+            started.elapsed()
+        );
+        drop(stream);
+        dripper.join().expect("dripper");
     }
 }
