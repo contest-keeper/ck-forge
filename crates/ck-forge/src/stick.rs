@@ -490,11 +490,18 @@ mod confirmed_tests {
 mod hint_tests {
     use super::*;
 
+    fn open_error(number: i32) -> ck_writer::Error {
+        ck_writer::Error::Io {
+            context: "open".to_owned(),
+            source: io::Error::from_raw_os_error(number),
+        }
+    }
+
     #[test]
     fn a_missing_right_gets_the_sudo_hint_and_a_refusal_by_the_system_is_kept() {
-        let denied = ck_writer::Error::io("open", io::Error::from_raw_os_error(13));
+        let denied = open_error(13);
         assert!(admin_hint(denied).to_string().contains("access denied"));
-        let refused = ck_writer::Error::io("open", io::Error::from_raw_os_error(1));
+        let refused = open_error(1);
         assert!(admin_hint(refused).to_string().contains("os error 1"));
     }
 }
