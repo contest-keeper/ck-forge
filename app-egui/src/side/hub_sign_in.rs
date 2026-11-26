@@ -210,7 +210,9 @@ impl Screen {
                     "Forge opened the Hub in your browser. Check that it shows this code, then choose \"Yes, connect Forge\".",
                 );
                 code_box(ui, code);
-                let left = SIGN_IN_WAIT.saturating_sub(since.elapsed()).as_secs();
+                // Rounded up, so the countdown starts at 10:00.
+                let left = SIGN_IN_WAIT.saturating_sub(since.elapsed());
+                let left = left.as_millis().div_ceil(1000);
                 small(ui, &format!("Time left: {}:{:02}", left / 60, left % 60));
                 ui.ctx().request_repaint_after(Duration::from_secs(1));
             }

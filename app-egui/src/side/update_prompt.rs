@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    Align, Button, Context, Id, Key, LayerId, Layout, Order, Response, RichText, Stroke,
+    Align, Button, Context, Id, Key, LayerId, Layout, Order, Response, RichText, Shape, Stroke,
     StrokeKind, Ui, ViewportCommand,
 };
 
@@ -229,7 +229,7 @@ impl Banner {
         widgets::paragraph(
             ui,
             &format!("Keeper Forge {} is available", update.version),
-            Weight::Semibold,
+            Weight::Bold,
             t.rem(1.05),
             t.c.text,
             1.35,
@@ -370,10 +370,22 @@ fn link(ui: &mut Ui, text: &str) -> Response {
         .color(t.c.accent)
         .underline();
     let response = ui.add(Button::new(text).frame(false));
-    if response.has_focus() {
+    if response.has_focus() && t.classic() {
+        // The dotted ring of the classic look.
+        let r = response.rect;
+        let corners = [
+            r.left_top(),
+            r.right_top(),
+            r.right_bottom(),
+            r.left_bottom(),
+            r.left_top(),
+        ];
+        ui.painter()
+            .extend(Shape::dotted_line(&corners, t.c.text, 3.0, 0.7));
+    } else if response.has_focus() {
         ui.painter().rect_stroke(
             response.rect.expand(2.0),
-            t.s.radius.min(4),
+            4,
             Stroke::new(2.0, t.c.accent),
             StrokeKind::Outside,
         );

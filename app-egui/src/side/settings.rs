@@ -110,14 +110,7 @@ fn contents(ui: &mut Ui, t: &Tokens, state: &mut AppState) -> (bool, [Response; 
         .allocate_ui_with_layout(size, Layout::right_to_left(Align::Center), |ui| {
             let done = Btn::new("Done").small().show(ui);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                widgets::paragraph(
-                    ui,
-                    "Appearance",
-                    Weight::Semibold,
-                    t.rem(1.0),
-                    t.c.text,
-                    1.35,
-                );
+                widgets::paragraph(ui, "Appearance", Weight::Bold, t.rem(1.0), t.c.text, 1.35);
             });
             done
         })
@@ -191,7 +184,7 @@ const PREVIEW: f32 = 34.0;
 fn group(ui: &mut Ui, t: &Tokens, heading: &str, options: [Opt; 2]) -> [Response; 2] {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
-        widgets::paragraph(ui, heading, Weight::Semibold, t.rem(0.85), t.c.text, 1.35);
+        widgets::paragraph(ui, heading, Weight::Bold, t.rem(0.85), t.c.text, 1.35);
         let width = (ui.available_width() - 10.0) / 2.0;
         let texts = options.map(|option| {
             let underline = t.classic() && option.on;
@@ -376,11 +369,5 @@ mod tests {
         harness.key_press(Key::Escape);
         harness.run_steps(2);
         assert!(!harness.state().open);
-    }
-
-    #[test]
-    #[ignore = "writes pictures; needs CK_SHOTS_DIR and a graphics adapter"]
-    fn shots_of_the_settings() {
-        crate::shots::capture("sidebar-settings", 0.0, |forge| forge.settings.open = true);
     }
 }
