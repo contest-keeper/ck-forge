@@ -489,6 +489,20 @@ fn progress_of(state: &HelperState) -> Option<Progress> {
 
 /// What the end of the helper means: the hash when everything was written and checked. Anything
 /// else is a failure, and a stick whose write did not finish must never be used.
+/// What the helper said, and on macOS what to do when the system refused it. The administrator
+/// password does not give access to a disk there: the program that asked also needs the permission
+/// "Full Disk Access", so the helper stops with "Operation not permitted" (os error 1).
+fn explain(why: String, macos: bool) -> String {
+    if macos && (why.contains("Operation not permitted") || why.contains("os error 1")) {
+        return format!(
+            "{why}
+
+macOS blocked the write to the stick, although the password was accepted.              Open System Settings > Privacy & Security > Full Disk Access, switch on Keeper Forge              (add it with + when it is not listed), quit Keeper Forge, open it again and write again."
+        );
+    }
+    why
+}
+
 fn outcome(finished: Option<HelperState>, permission_given: bool) -> Result<String, String> {
     match finished {
         Some(HelperState {
@@ -501,7 +515,7 @@ fn outcome(finished: Option<HelperState>, permission_given: bool) -> Result<Stri
         }
         Some(HelperState {
             message: Some(why), ..
-        }) => Err(why),
+        }) => Err(explain(why, cfg!(target_os = "macos"))),
         _ if !permission_given => {
             Err("the administrator permission was refused, so nothing was written".to_owned())
         }
@@ -897,6 +911,19 @@ mod tests {
         );
         // The password type hides itself even when something prints the request's parts.
         assert!(!format!("{:?}", request.wifi_password).contains(secret));
+    }
+
+    #[test]
+    fn a_refusal_by_macos_says_where_to_allow_the_write() {
+        let refused = "Operation not permitted (os error 1)".to_owned();
+        let told = explain(refused.clone(), true);
+        assert!(told.starts_with(&refused) && told.contains("Full Disk Access"));
+        // Other errors, and other systems, are told as they are.
+        assert_eq!(explain(refused.clone(), false), refused);
+        assert_eq!(
+            explain("disk 3 is too small".to_owned(), true),
+            "disk 3 is too small"
+        );
     }
 
     #[test]
