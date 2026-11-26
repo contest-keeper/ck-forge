@@ -1,4 +1,6 @@
-use crate::{base_image, hub, images, profile, sticks, update_banner, write};
+use crate::contest::profile;
+use crate::make::{base_image, images, sticks, write};
+use crate::side::{hub_sign_in as hub, update_prompt as update_banner};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Page {

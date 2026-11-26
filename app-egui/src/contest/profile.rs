@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use crate::hub_profiles::Outcome;
+use crate::contest::hub_profiles::Outcome;
 use base64::Engine;
 use ck_admin_core::{Profile, add_wallpaper, wallpaper_data_url};
 use ck_protocol::{Bookmark, LocalDateTime, RecordingMode, UploadMode, Wifi};
@@ -23,7 +23,7 @@ pub struct Screen {
     wallpaper_source: String,
     /// The wallpaper as a picture, made once when it changes and not on every frame.
     preview: Option<eframe::egui::TextureHandle>,
-    hub: crate::hub_profiles::Panel,
+    hub: crate::contest::hub_profiles::Panel,
     /// What the last open, save or picture said.
     message: String,
 }

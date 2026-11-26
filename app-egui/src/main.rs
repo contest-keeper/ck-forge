@@ -4,17 +4,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod base_image;
+mod contest;
 mod folder;
-mod hub;
-mod hub_profiles;
-mod images;
-mod profile;
-mod stick_job;
-mod sticks;
+mod make;
+mod side;
 mod update;
-mod update_banner;
-mod write;
 
 const ICON: &[u8] = include_bytes!("../installer/keeper-forge.ico");
 

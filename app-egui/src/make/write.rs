@@ -12,7 +12,7 @@ use std::thread;
 use ck_protocol::WifiPassword;
 use ck_writer::{Disk, list_disks};
 
-use crate::stick_job::{Event, Progress, Request, run};
+use crate::make::stick_job::{Event, Progress, Request, run};
 
 // The checkboxes and flags of a window are plain state, not a state machine.
 #[allow(clippy::struct_excessive_bools)]
