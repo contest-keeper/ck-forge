@@ -142,6 +142,17 @@ export function onProgress(handler: (progress: Progress) => void): Promise<() =>
   return listen<Progress>('progress', (event) => handler(event.payload));
 }
 
+export type UpdateOffer = { version: string; mandatory: boolean };
+
+export const pendingUpdate = () => invoke<UpdateOffer | null>('pending_update');
+export const openReleaseNotes = () => invoke<null>('open_release_notes');
+/** Downloads and installs; the program restarts when it is done, so this only returns on failure. */
+export const installUpdate = () => invoke<null>('install_update');
+
+export function onUpdateAvailable(handler: (offer: UpdateOffer) => void): Promise<() => void> {
+  return listen<UpdateOffer>('update-available', (event) => handler(event.payload));
+}
+
 const JSON_FILES = [{ name: 'Contest profile', extensions: ['json'] }];
 const IMAGE_FILES = [{ name: 'Disk image', extensions: ['img'] }];
 const PICTURE_FILES = [{ name: 'Picture', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }];
