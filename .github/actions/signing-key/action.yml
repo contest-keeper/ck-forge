@@ -64,4 +64,7 @@ runs:
         private=$(az keyvault secret show --vault-name "$vault" --name forge-update-key --query value -o tsv)
         echo "::add-mask::$private"
         echo "CK_UPDATE_SIGNING_KEY=$private" >> "$GITHUB_ENV"
-        echo "pubkey=$(az keyvault secret show --vault-name "$vault" --name forge-update-pubkey --query value -o tsv)" >> "$GITHUB_OUTPUT"
+        pubkey=$(az keyvault secret show --vault-name "$vault" --name forge-update-pubkey --query value -o tsv)
+        echo "pubkey=$pubkey" >> "$GITHUB_OUTPUT"
+        # update-signer checks every signature against this.
+        echo "CK_UPDATE_PUBKEY=$pubkey" >> "$GITHUB_ENV"

@@ -9,9 +9,10 @@ use std::process::ExitCode;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use minisign::{KeyPair, SecretKeyBox};
+use minisign::{KeyPair, PublicKeyBox, SecretKeyBox, SignatureBox};
 
 const KEY_VARIABLE: &str = "CK_UPDATE_SIGNING_KEY";
+const PUBKEY_VARIABLE: &str = "CK_UPDATE_PUBKEY";
 const USAGE: &str = "usage: update-signer generate <private-out> <public-out> | sign <file>";
 
 fn main() -> ExitCode {
@@ -21,7 +22,11 @@ fn main() -> ExitCode {
             generate(Path::new(private), Path::new(public))
         }
         [command, file] if command == "sign" => match std::env::var(KEY_VARIABLE) {
-            Ok(key) => sign(&key, Path::new(file)),
+            Ok(key) => sign(
+                &key,
+                std::env::var(PUBKEY_VARIABLE).ok().as_deref(),
+                Path::new(file),
+            ),
             Err(_) => Err(format!("{KEY_VARIABLE} is not set or is not text")),
         },
         _ => Err(USAGE.to_owned()),
@@ -69,8 +74,24 @@ fn write_new(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
-/// Writes `<file>.sig`. No error here may quote the key.
-fn sign(key: &str, file: &Path) -> Result<(), String> {
+/// Checks the signature with the public key the app is built with: if the stored pair did not match,
+/// every installed copy would refuse the update.
+fn check(pubkey: &str, signature: &SignatureBox, file: &Path) -> Result<(), String> {
+    let public = STANDARD
+        .decode(pubkey.trim())
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|text| PublicKeyBox::from_string(&text).ok())
+        .and_then(|boxed| boxed.into_public_key().ok())
+        .ok_or_else(|| format!("{PUBKEY_VARIABLE} is not a minisign public key in base64"))?;
+    let data = File::open(file).map_err(|e| format!("could not read {}: {e}", file.display()))?;
+    minisign::verify(&public, signature, data, true, false, false)
+        .map_err(|_| format!("the signature does not match {PUBKEY_VARIABLE}"))
+}
+
+/// Writes `<file>.sig`, after checking it against `pubkey` when one is given. No error here may quote
+/// the key.
+fn sign(key: &str, pubkey: Option<&str>, file: &Path) -> Result<(), String> {
     let text = STANDARD
         .decode(key.trim())
         .ok()
@@ -85,6 +106,9 @@ fn sign(key: &str, file: &Path) -> Result<(), String> {
     let data = File::open(file).map_err(|e| format!("could not read {}: {e}", file.display()))?;
     let signature = minisign::sign(None, &secret, data, None, None)
         .map_err(|e| format!("could not sign {}: {e}", file.display()))?;
+    if let Some(pubkey) = pubkey {
+        check(pubkey, &signature, file)?;
+    }
     let mut out = file.as_os_str().to_owned();
     out.push(".sig");
     std::fs::write(&out, STANDARD.encode(signature.into_string()))
@@ -128,7 +152,17 @@ mod tests {
         let setup = folder.join("setup.exe");
         std::fs::write(&setup, b"installer bytes").expect("setup");
         // A trailing newline is what a secret store or a shell may add.
-        sign(&format!("{key}\n"), &setup).expect("signed");
+        let shared = std::fs::read_to_string(&public).expect("public key");
+        sign(&format!("{key}\n"), Some(&shared), &setup).expect("signed");
+
+        // A public key of another pair is refused and nothing is written.
+        let (other_private, other_public) = (folder.join("p2"), folder.join("pub2"));
+        generate(&other_private, &other_public).expect("second pair");
+        let wrong = std::fs::read_to_string(&other_public).expect("public key");
+        let unsigned = folder.join("unsigned.exe");
+        std::fs::write(&unsigned, b"x").expect("file");
+        assert!(sign(&key, Some(&wrong), &unsigned).is_err());
+        assert!(!folder.join("unsigned.exe.sig").exists());
 
         // The same checks as `verify` in app-egui/src/update.rs.
         let pubkey = PublicKey::decode(&decoded(&public)).expect("public key");
@@ -145,7 +179,7 @@ mod tests {
         let file = Path::new("Cargo.toml");
         let not_a_key = STANDARD.encode("untrusted comment: x\nSECRET");
         for bad in ["", "SECRET!!", "/w==", &not_a_key] {
-            let error = sign(bad, file).expect_err("refused");
+            let error = sign(bad, None, file).expect_err("refused");
             assert!(error.starts_with(KEY_VARIABLE), "{error}");
             assert!(!error.contains("SECRET"), "{error}");
         }
