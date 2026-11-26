@@ -179,7 +179,10 @@
     }
   }
 
-  async function write(target: { disks: number[]; confirmed: string[] } | { file: string }, retireAfter = false) {
+  async function write(
+    target: { disks: number[]; confirmed: string[] } | { file: string },
+    retireAfter = false,
+  ) {
     if (!app.profilePath || !app.basePath) return;
     app.busy = true;
     failure = '';
