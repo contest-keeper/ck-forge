@@ -73,7 +73,7 @@ fn shots_of_the_shell() {
     capture("contest-invalid", 0.0, |forge| {
         forge.leave_failure = "the profile has problems:\n- bookmark 1 needs a title".to_owned();
     });
-    capture("contest-saved", 0.0, |forge| {
+    capture("contest-saved-back", 0.0, |forge| {
         let long = r"C:\Users\admin\AppData\Roaming\org.contest-keeper.forge\profiles\my-contest-1a2b3c4d\contest-profile.json";
         let profile = ck_admin_core::Profile::template();
         forge.state.use_profile(profile, Some(PathBuf::from(long)));
@@ -87,7 +87,7 @@ fn shots_of_the_shell() {
             .set_base_path(Some(PathBuf::from(r"D:\images\keeper-os-0.4.0.img")));
     });
     capture("sidebar-settings", 0.0, |forge| forge.settings.open = true);
-    capture("sidebar-signed-in", 0.0, |forge| {
+    capture("contest-signed-in", 0.0, |forge| {
         forge.hub.state = crate::side::hub_sign_in::State::SignedIn("admin@example.org".to_owned());
     });
 }

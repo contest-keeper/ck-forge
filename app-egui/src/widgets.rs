@@ -1121,3 +1121,145 @@ pub fn dialog<R>(
     let dismissed = shown.should_close();
     (shown.inner, dismissed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{Look, Mode, Theme};
+
+    /// Every shared widget on one sheet, to compare with the style sheets and to show what there is.
+    #[test]
+    #[ignore = "writes pictures; needs CK_SHOTS_DIR and a graphics adapter"]
+    fn shots_widgets() {
+        let Some(folder) = std::env::var_os("CK_SHOTS_DIR").map(std::path::PathBuf::from) else {
+            #[allow(clippy::print_stdout)]
+            {
+                println!("skipped widgets: set CK_SHOTS_DIR to the folder for the pictures");
+            }
+            return;
+        };
+        std::fs::create_dir_all(&folder).expect("folder for the pictures");
+        for (theme, name) in [(Theme::Modern, "modern"), (Theme::Classic, "classic")] {
+            for (mode, mode_name) in [(Mode::Light, "light"), (Mode::Dark, "dark")] {
+                let mut ticked = true;
+                let mut clear = false;
+                let mut typed = "erase 1".to_owned();
+                let mut chosen = 1;
+                let mut frame = 0;
+                let mut harness = egui_kittest::Harness::builder()
+                    .with_size([720.0, 1350.0])
+                    .wgpu()
+                    // The picker and the amount field of the sheet have no label of their own.
+                    .with_accessibility_check(false)
+                    .build_ui(|ui| {
+                        crate::theme::apply(ui.ctx(), Look { theme, mode });
+                        // The fonts arrive with the second frame.
+                        frame += 1;
+                        if frame > 1 {
+                            sheet(ui, &mut ticked, &mut clear, &mut typed, &mut chosen);
+                        }
+                    });
+                harness.run_steps(8);
+                harness
+                    .render()
+                    .expect("render")
+                    .save(folder.join(format!("widgets-{name}-{mode_name}.png")))
+                    .expect("save");
+            }
+        }
+    }
+
+    fn sheet(
+        ui: &mut Ui,
+        ticked: &mut bool,
+        clear: &mut bool,
+        typed: &mut String,
+        chosen: &mut u8,
+    ) {
+        card(ui, |ui| {
+            step_head(
+                ui,
+                1,
+                true,
+                "Base image",
+                "The system every stick is copied from.",
+            );
+            path_row(ui, "keeper-os.img", &["Keep this file in place."], |ui| {
+                let _ = Btn::new("Use another image").small().show(ui);
+                pill(ui, Tone::Ok, "Ready");
+            });
+            ui.horizontal_top(|ui| {
+                let width = (ui.available_width() - 16.0) / 3.0;
+                choice(ui, true, "Download", "The usual way.", width);
+                choice(ui, false, "Use a file", "An image you have.", width);
+                ui.add_enabled_ui(false, |ui| {
+                    choice(ui, false, "Build one", "Advanced.", width)
+                });
+            });
+        });
+        card(ui, |ui| {
+            step_head(ui, 2, false, "Sticks to write", "Plug in the sticks.");
+            disk_row(
+                ui,
+                ticked,
+                false,
+                "Disk 1",
+                &["30.8 GB", "Written before"],
+                |ui| {
+                    pill(ui, Tone::Warn, "Rewrite");
+                },
+            );
+            disk_row(ui, clear, false, "Disk 2", &["61.9 GB"], |ui| {
+                pill(ui, Tone::Ok, "Safe to write");
+            });
+            disk_row(ui, clear, true, "Disk 0", &["1.0 TB"], |ui| {
+                pill(ui, Tone::Off, "Protected");
+            });
+            check(ui, ticked, "A ticked box");
+            summary(
+                ui,
+                &[
+                    ("Sticks", "2 (disks 1, 2)"),
+                    ("Base image", "keeper-os.img"),
+                ],
+            );
+            danger_zone(ui, |ui| {
+                row(
+                    ui,
+                    |ui| {
+                        strong(ui, "Everything on disk 1 will be erased");
+                        hint(ui, "This cannot be undone.");
+                    },
+                    |ui| {
+                        let _ = Btn::new("Erase and write").danger().show(ui);
+                        Input::new(typed).mono().width(150.0).show(ui);
+                    },
+                );
+            });
+            split_line(ui, "Writing: 1.9 GB of 4.8 GB", "about 0:08 left");
+            progress_bar(ui, 0.4);
+            note(ui, Tone::Ok, "Written and read back.");
+            lock(ui, "A locked fact.");
+            messages(ui, &["a problem".to_owned()], &["a warning".to_owned()]);
+            inner(ui, |ui| {
+                field(ui, "Profile name", Some("Only for you."), None, |ui, id| {
+                    Input::new(typed).show(ui).labelled_by(id);
+                });
+                field(ui, "Welcome", None, Some("Too long"), |ui, id| {
+                    Input::new(typed)
+                        .multiline(3)
+                        .invalid(true)
+                        .show(ui)
+                        .labelled_by(id);
+                });
+                select(ui, "sheet", chosen, &[(1, "One"), (2, "Two")]);
+                ui.horizontal(|ui| {
+                    let _ = Btn::new("Normal").show(ui);
+                    let _ = Btn::new("Primary").primary().show(ui);
+                    let _ = Btn::new("Disabled").enabled(false).show(ui);
+                });
+            });
+        });
+        details(ui, "A closed card", |_| {});
+    }
+}
