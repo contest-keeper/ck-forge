@@ -17,7 +17,9 @@ change, so these links always give the newest release:
   and that program must sit where only administrators can change it)
 - `.../releases/latest/download/ck-forge-windows-x64.exe`: the command line tool alone
 - `.../releases/latest/download/keeper-forge-macos-universal.dmg`: the window for macOS (Intel and
-  Apple silicon), when the macOS build is on; open it and drag the app to Applications
+  Apple silicon), when the macOS build is on; open it and drag the app to Applications. It is signed
+  ad hoc and not notarized, so macOS blocks the first start: then allow Keeper Forge in System
+  Settings > Privacy & Security. Check the download against the checksums first
 - `.../releases/latest/download/SHA256SUMS.txt`: the checksum of every file
 
 Preview builds of `develop` have the same file names under `.../releases/download/dev/`.
