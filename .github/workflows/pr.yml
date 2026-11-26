@@ -90,8 +90,8 @@ jobs:
       # (app-egui/about.toml) stops the pull request and not the build after the merge.
       - name: Build the installer
         run: |
-          cargo build --release --locked -p ck-forge
-          cargo build --release --locked --manifest-path app-egui/Cargo.toml
+          cargo build --release --locked -p ck-forge --target-dir target
+          cargo build --release --locked --manifest-path app-egui/Cargo.toml --target-dir app-egui/target
           mkdir -p egui-out
           tools/make-egui-licences.sh egui-out/THIRD-PARTY-LICENSES.txt
           tools/make-egui-installer.sh 0.0.0 egui-out/THIRD-PARTY-LICENSES.txt egui-out/keeper-forge-setup-x64.exe

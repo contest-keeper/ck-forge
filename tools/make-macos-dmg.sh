@@ -13,8 +13,8 @@ output=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
 
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
-  cargo build --release --locked --target "$target" -p ck-forge
-  CK_FORGE_VERSION=$version cargo build --release --locked --target "$target" --manifest-path app-egui/Cargo.toml
+  cargo build --release --locked --target "$target" -p ck-forge --target-dir target
+  CK_FORGE_VERSION=$version cargo build --release --locked --target "$target" --manifest-path app-egui/Cargo.toml --target-dir app-egui/target
 done
 
 work=$(mktemp -d)

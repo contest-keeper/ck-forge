@@ -74,8 +74,8 @@ jobs:
         # result. The file goes into the installer and is published with the release.
         run: |
           export CK_FORGE_VERSION="${TAG#v}"
-          cargo build --release --locked -p ck-forge
-          cargo build --release --locked --manifest-path app-egui/Cargo.toml
+          cargo build --release --locked -p ck-forge --target-dir target
+          cargo build --release --locked --manifest-path app-egui/Cargo.toml --target-dir app-egui/target
           mkdir -p out
           tools/make-egui-licences.sh out/THIRD-PARTY-LICENSES.txt
           tools/make-egui-installer.sh "$CK_FORGE_VERSION" out/THIRD-PARTY-LICENSES.txt out/keeper-forge-setup-x64.exe

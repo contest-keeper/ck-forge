@@ -1,7 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: cargo
-    directories: ["/", "/tools/update-signer"]
+    directories: ["/", "/app-egui", "/tools/update-signer"]
     target-branch: develop
     schedule:
       interval: monthly

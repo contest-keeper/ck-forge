@@ -86,8 +86,8 @@ jobs:
       # The window looks for updates in the develop feed and carries the preview version.
       - name: Build the window and the command line tool
         run: |
-          cargo build --release --locked -p ck-forge
-          cargo build --release --locked --manifest-path app-egui/Cargo.toml
+          cargo build --release --locked -p ck-forge --target-dir target
+          cargo build --release --locked --manifest-path app-egui/Cargo.toml --target-dir app-egui/target
           mkdir -p egui-out
           tools/make-egui-licences.sh egui-out/THIRD-PARTY-LICENSES.txt
         shell: bash

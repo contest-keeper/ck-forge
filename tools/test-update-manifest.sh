@@ -9,6 +9,7 @@ echo "d2luZG93cw==" > "$work/exe.sig"
 echo "bWFj" > "$work/dmg.sig"
 echo "0.1.0" > "$work/min"
 : > "$work/empty.sig"
+printf ' \r\n\t\n' > "$work/blank.sig"
 
 fail() { echo "test-update-manifest: $1" >&2; exit 1; }
 
@@ -26,8 +27,16 @@ fi
 if tools/add-macos-update.sh 1.2.3 https://example.org/a.dmg "$work/empty.sig" "$feed"; then
   fail "an empty macOS signature was accepted"
 fi
+for bad in blank none; do
+  if tools/add-macos-update.sh 1.2.3 https://example.org/a.dmg "$work/$bad.sig" "$feed"; then
+    fail "the $bad macOS signature was accepted"
+  fi
+done
 cmp -s "$feed" "$work/before" || fail "a refused call changed the feed"
-if tools/make-update-manifest.sh 1.2.3 https://example.org/a.exe "$work/none.sig" "$work/min" "$work/other.json"; then
-  fail "a missing Windows signature was accepted"
-fi
+for bad in empty blank none; do
+  if tools/make-update-manifest.sh 1.2.3 https://example.org/a.exe "$work/$bad.sig" "$work/min" "$work/other.json"; then
+    fail "the $bad Windows signature was accepted"
+  fi
+done
+[[ ! -e "$work/other.json" ]] || fail "a refused call wrote a feed"
 echo "update manifest: ok"
