@@ -27,7 +27,7 @@ pub struct Screen {
     pub(super) hub_profiles: Vec<ProfileSummary>,
     /// The profiles in the Forge folder, read again when the open profile or its file changes.
     local: Vec<Local>,
-    local_key: Option<(u64, Option<PathBuf>)>,
+    local_key: Option<(u64, Option<PathBuf>, bool)>,
     /// The account the Hub's list was asked for.
     listed_for: Option<String>,
     /// What the last action did, and why one failed.
@@ -163,7 +163,12 @@ impl Screen {
             self.typed = state.profile.as_ref().map(Typed::read).unwrap_or_default();
             self.wallpaper_failure.clear();
         }
-        let key = (state.profile_revision, state.profile_path.clone());
+        // A save changes `is_unsaved` even when the file and the profile stay the same ones.
+        let key = (
+            state.profile_revision,
+            state.profile_path.clone(),
+            state.is_unsaved(),
+        );
         if self.local_key.as_ref() != Some(&key) {
             self.local_key = Some(key);
             self.refresh_local(state);
@@ -245,6 +250,10 @@ impl Screen {
             let ready = state.profile.is_some();
             if Btn::new("Save").primary().enabled(ready).show(ui).clicked() {
                 self.save(ui.ctx(), state);
+            }
+            if state.hub_email.is_some() && Btn::new("Refresh Hub list").show(ui).clicked() {
+                self.clear_messages();
+                self.hub.list(ui.ctx());
             }
             if Btn::new("New profile").show(ui).clicked() {
                 self.create(state);
@@ -525,6 +534,20 @@ mod tests {
         let data = tempfile::tempdir().expect("folder");
         let state = AppState::load(Some(data.path().to_owned()));
         (data, state, Screen::default())
+    }
+
+    #[test]
+    fn a_renamed_profile_shows_its_new_name_in_the_saved_list_after_a_save() {
+        let (_data, mut state, mut screen) = sample();
+        let ctx = egui::Context::default();
+        screen.save(&ctx, &mut state);
+        screen.poll(&ctx, &mut state);
+        "Beta".clone_into(&mut state.profile.as_mut().expect("profile").name);
+        screen.poll(&ctx, &mut state);
+        screen.save(&ctx, &mut state);
+        screen.poll(&ctx, &mut state);
+        assert_eq!(screen.local.len(), 1);
+        assert_eq!(screen.local[0].name, "Beta");
     }
 
     #[test]

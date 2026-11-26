@@ -124,7 +124,8 @@ impl Forge {
 
     /// The sidebar steps go through the same rule as Continue.
     fn go(&mut self, target: usize, ctx: &egui::Context) {
-        if target > self.step {
+        // Retiring needs the Hub only, so a broken profile must not stand in its way.
+        if target > self.step && target != RETIRE {
             // Each step on the way saves; one that is refused stops the move.
             self.leave_failure.clear();
             while self.step < target && self.leave_failure.is_empty() {
@@ -613,5 +614,20 @@ mod tests {
         assert!(forge.state.profile_path.is_some());
         forge.go(CONTEST, &egui::Context::default());
         assert_eq!(forge.step, CONTEST);
+        // A broken profile does not keep the admin from retiring sticks.
+        forge
+            .state
+            .profile
+            .as_mut()
+            .expect("profile")
+            .settings
+            .branding
+            .bookmarks
+            .push(ck_protocol::Bookmark {
+                title: String::new(),
+                url: String::new(),
+            });
+        forge.go(RETIRE, &egui::Context::default());
+        assert_eq!(forge.step, RETIRE);
     }
 }
