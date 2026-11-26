@@ -20,8 +20,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  # The version, and the update key, which both builds need before they start.
+  prepare:
+    runs-on: ubuntu-latest
     environment: develop
     permissions:
       contents: read
@@ -49,6 +50,24 @@ jobs:
           fi
           echo "version=${base}-preview.${count}" >> "$GITHUB_OUTPUT"
         shell: bash
+      # The key is made here when it is missing, so the two builds can run at once and never both make one.
+      - id: key
+        uses: ./.github/actions/signing-key
+        with:
+          environment: develop
+          client-id: ${{ vars.AZURE_CLIENT_ID_DEVELOP }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    environment: develop
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
       - name: Install the pinned GNU toolchain
         run: |
           rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
@@ -92,7 +111,7 @@ jobs:
           tools/make-egui-licences.sh egui-out/THIRD-PARTY-LICENSES.txt
         shell: bash
         env:
-          CK_FORGE_VERSION: ${{ steps.version.outputs.version }}
+          CK_FORGE_VERSION: ${{ needs.prepare.outputs.version }}
           CK_UPDATE_PUBKEY: ${{ steps.key.outputs.pubkey }}
           CK_UPDATE_FEED: https://github.com/contest-keeper/ck-forge/releases/download/dev/update.json
       # Code signing needs the organization's certificate, which is not in this repository's secrets
@@ -117,7 +136,7 @@ jobs:
         run: tools/make-egui-installer.sh "$VERSION" egui-out/THIRD-PARTY-LICENSES.txt egui-out/keeper-forge-setup-x64.exe
         shell: bash
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
       - name: Sign the installer
         if: steps.codesign.outputs.enabled == 'true'
         run: tools/codesign.ps1 egui-out/keeper-forge-setup-x64.exe
@@ -137,7 +156,7 @@ jobs:
             egui-out/keeper-forge-setup-x64.exe.sig min-version.txt out/update.json
         shell: bash
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
       - uses: actions/upload-artifact@v4
         with:
           name: forge-windows
@@ -147,7 +166,7 @@ jobs:
   # Off until the repository variable CK_MACOS_CI is `true`: GitHub refused to start macOS runners for
   # this organization on 2026-11-24.
   macos:
-    needs: windows
+    needs: prepare
     if: vars.CK_MACOS_CI == 'true'
     runs-on: macos-latest
     environment: develop
@@ -168,7 +187,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about
-      # The same key as the Windows installer: the Windows job has made it if it was missing.
+      # The same key as the Windows installer: the prepare job has made it if it was missing.
       - id: key
         uses: ./.github/actions/signing-key
         with:
@@ -187,7 +206,7 @@ jobs:
           mkdir -p mac
           tools/make-macos-dmg.sh "$VERSION" mac/keeper-forge-macos-universal.dmg
         env:
-          VERSION: ${{ needs.windows.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
           CK_UPDATE_PUBKEY: ${{ steps.key.outputs.pubkey }}
           CK_UPDATE_FEED: https://github.com/contest-keeper/ck-forge/releases/download/dev/update.json
       - name: Sign the disk image for the updater
@@ -203,7 +222,7 @@ jobs:
   # Everything that is published, in one artifact, so the feed is complete before it is checksummed,
   # attested and uploaded: nothing is edited afterwards.
   bundle:
-    needs: [windows, macos]
+    needs: [prepare, windows, macos]
     # A failed macOS build does not hold back Windows: the feed then has no macOS entry.
     if: ${{ !cancelled() && needs.windows.result == 'success' }}
     runs-on: ubuntu-latest
@@ -228,7 +247,7 @@ jobs:
             mac/keeper-forge-macos-universal.dmg.sig out/update.json
           cp mac/keeper-forge-macos-universal.dmg out/
         env:
-          VERSION: ${{ needs.windows.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
       # The feed that earlier previews of this window still read.
       - run: cp out/update.json out/update-egui.json
       - uses: actions/upload-artifact@v4
@@ -239,7 +258,7 @@ jobs:
           overwrite: true
 
   release:
-    needs: [windows, bundle]
+    needs: [prepare, bundle]
     # A status check is needed here and below: a skipped macOS job would otherwise skip these too.
     if: ${{ !cancelled() && needs.bundle.result == 'success' }}
     runs-on: ubuntu-latest
@@ -253,7 +272,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
-          VERSION: ${{ needs.windows.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           title="Preview build ${VERSION}"
           notes="Built from develop at ${SHA}. Not a release: it is replaced on every merge to develop."
@@ -279,7 +298,7 @@ jobs:
 
   # The develop site serves the download from Azure, so the installer there is replaced too.
   azure:
-    needs: [windows, release]
+    needs: [prepare, release]
     if: ${{ !cancelled() && needs.release.result == 'success' }}
     permissions:
       contents: read
@@ -289,4 +308,4 @@ jobs:
       environment: develop
       artifact: forge-release
       folder: forge
-      version: ${{ needs.windows.outputs.version }}
+      version: ${{ needs.prepare.outputs.version }}
