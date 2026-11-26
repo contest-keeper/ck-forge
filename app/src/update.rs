@@ -14,6 +14,9 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 const EVENT: &str = "update-available";
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// A stalled feed or download ends in an error instead of hanging the checks or the dialog.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const RELEASES: &str = "https://github.com/contest-keeper/ck-forge/releases/tag/v";
 
 /// The update that was found, kept for the page to ask for when it opens and for the install.
@@ -41,7 +44,13 @@ pub fn check_on_start(app: AppHandle) {
 }
 
 async fn look(app: &AppHandle) -> tauri_plugin_updater::Result<()> {
-    let Some(update) = app.updater()?.check().await? else {
+    let Some(update) = app
+        .updater_builder()
+        .timeout(CHECK_TIMEOUT)
+        .build()?
+        .check()
+        .await?
+    else {
         return Ok(());
     };
     let offer = offer_of(&update);
@@ -110,12 +119,13 @@ pub fn open_release_notes(found: State<Found>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn install_update(app: AppHandle, found: State<'_, Found>) -> Result<(), String> {
-    let update = found
+    let mut update = found
         .0
         .lock()
         .expect("update lock")
         .clone()
         .ok_or("there is no update")?;
+    update.timeout = Some(DOWNLOAD_TIMEOUT);
     update
         .download_and_install(|_, _| {}, || {})
         .await

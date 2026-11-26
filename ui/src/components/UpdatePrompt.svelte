@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { describeError } from '../core/format';
   import * as api from '../lib/api';
+  import { app, saveProfile } from '../state.svelte';
 
   let offer = $state<api.UpdateOffer | null>(null);
   let installing = $state(false);
@@ -11,10 +12,11 @@
   // The check can finish before this page opens or while it is open: ask once, then listen.
   onMount(() => {
     const stop = api.onUpdateAvailable((found) => (offer = found));
-    api.pendingUpdate().then(
-      (found) => (offer ??= found),
-      () => {},
-    );
+    // Listening first, then asking: an offer found in between is seen by one of the two.
+    stop
+      .then(() => api.pendingUpdate())
+      .then((found) => (offer ??= found))
+      .catch(() => {});
     return () => void stop.then((off) => off());
   });
 
@@ -30,9 +32,12 @@
   }
 
   async function update() {
+    if (app.busy) return;
     installing = true;
     failure = '';
     try {
+      // The restart would drop what was typed; a profile that cannot be saved stops the update.
+      if (app.profile) await saveProfile();
       await api.installUpdate();
     } catch (error) {
       failure = describeError(error);
@@ -68,7 +73,7 @@
       {#if !offer.mandatory}
         <button type="button" class="btn" disabled={installing} onclick={later}>Later</button>
       {/if}
-      <button type="button" class="btn pri" disabled={installing} onclick={update}>
+      <button type="button" class="btn pri" disabled={installing || app.busy} onclick={update}>
         {installing ? 'Updating…' : 'Update and restart'}
       </button>
     </div>
