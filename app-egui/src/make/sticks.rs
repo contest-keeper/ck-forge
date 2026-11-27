@@ -204,10 +204,15 @@ impl Screen {
                         self.retiring_old = false;
                     }
                     if !failed.is_empty() {
-                        self.old_failure = format!(
-                            "The new sticks are written, but these old keys are still active:\n{}",
-                            failed.join("\n")
-                        );
+                        let keys = failed.join("\n");
+                        if self.old_failure.is_empty() {
+                            self.old_failure = format!(
+                                "The new sticks are written, but these old keys are still active:\n{keys}"
+                            );
+                        } else {
+                            self.old_failure.push('\n');
+                            self.old_failure.push_str(&keys);
+                        }
                     }
                 }
             }
@@ -647,6 +652,19 @@ mod tests {
         assert!(screen.retired.is_empty());
         assert!(screen.retiring_old);
         assert!(screen.old_failure.contains("a: down"));
+        assert!(
+            screen
+                .sender
+                .send(Event::OldDone(
+                    screen.account,
+                    vec!["b: timeout".to_owned()]
+                ))
+                .is_ok()
+        );
+        screen.receive();
+        assert!(!screen.retiring_old);
+        assert!(screen.old_failure.contains("a: down"));
+        assert!(screen.old_failure.contains("b: timeout"));
     }
 
     #[test]
