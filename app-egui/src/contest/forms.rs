@@ -13,7 +13,7 @@ use crate::widgets::{self, Btn, Input, field};
 pub struct Typed {
     /// One site name per line.
     domains: String,
-    /// The password is not here: it is typed for each write and never saved in the profile.
+    /// The password is not here: it is typed at the write and kept encrypted in the Hub.
     ssid: String,
 }
 
