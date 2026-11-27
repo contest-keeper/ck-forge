@@ -143,7 +143,8 @@ impl Screen {
                 Event::Images(_, result) => {
                     self.loading = false;
                     match result {
-                        Ok(images) => {
+                        Ok(mut images) => {
+                            images.retain(|image| image.latest);
                             self.chosen = if images.len() == 1 { 0 } else { usize::MAX };
                             self.hub = Some(images);
                         }
@@ -534,6 +535,32 @@ mod tests {
         assert!(screen.sender.send(late).is_ok());
         screen.receive();
         assert!(screen.hub.is_none());
+    }
+
+    #[test]
+    fn only_the_latest_hub_images_are_offered() {
+        let entry = |id: &str, latest: Option<bool>| {
+            let mut entry = serde_json::json!({
+                "id": id, "name": "Keeper OS", "version": "1.0", "profile": "generic",
+                "size": 1, "filename": null, "url": "", "sha256": ""
+            });
+            if let Some(latest) = latest {
+                entry["latest"] = latest.into();
+            }
+            serde_json::from_value::<HubImage>(entry).expect("image")
+        };
+        let list = vec![
+            entry("old", Some(false)),
+            entry("new", Some(true)),
+            entry("unmarked", None),
+        ];
+        let mut screen = Screen::default();
+        let event = Event::Images(screen.account, Ok(list));
+        assert!(screen.sender.send(event).is_ok());
+        screen.receive();
+        let offered = screen.hub.expect("list");
+        let ids: Vec<&str> = offered.iter().map(|image| image.id.as_str()).collect();
+        assert_eq!(ids, ["new", "unmarked"]);
     }
 
     #[test]
