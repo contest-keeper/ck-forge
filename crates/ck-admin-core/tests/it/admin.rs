@@ -232,26 +232,40 @@ fn machines_of_a_contest_are_numbered_one_after_another() {
 }
 
 #[test]
-fn a_new_profile_is_for_codeforces_and_the_contest_is_the_first_bookmark() {
+fn a_new_profile_prefills_nothing_and_a_stick_always_allows_the_anti_bot_check() {
     let mut profile = Profile::template();
     assert_eq!(profile.problems(), []);
+    let settings = &profile.settings;
+    assert!(settings.team.is_empty() && settings.site.is_empty());
+    assert_eq!(settings.recording.mode, ck_protocol::RecordingMode::Off);
     assert!(
-        profile
-            .settings
+        !settings
             .network
             .allowed_domains
-            .contains(&".codeforces.com".to_owned())
+            .iter()
+            .any(|d| d.contains("codeforces"))
     );
-    assert_eq!(profile.stick_settings().branding.bookmarks.len(), 2);
+    let built = profile.stick_settings();
+    assert_eq!(
+        (built.team.as_str(), built.site.as_str()),
+        ("default team", "default site")
+    );
+    assert!(
+        built
+            .network
+            .allowed_domains
+            .contains(&"challenges.cloudflare.com".to_owned())
+    );
+    assert_eq!(built.branding.bookmarks.len(), 1);
 
-    profile.settings.contest.contest_id = "2042".to_owned();
+    choose(&mut profile, Platform::Codeforces, "2042");
     let bookmarks = profile.stick_settings().branding.bookmarks;
+    assert_eq!(bookmarks[0].title, "Codeforces");
     assert_eq!(bookmarks[0].url, "https://codeforces.com/contest/2042");
     let warnings = profile.warnings().len();
     assert_eq!(profile.problems(), []);
 
     profile.settings.contest.contest_id = "x y".to_owned();
-    assert_eq!(profile.stick_settings().branding.bookmarks.len(), 2);
     assert_eq!(profile.warnings().len(), warnings + 1);
 }
 
@@ -287,7 +301,7 @@ fn choosing_a_platform_and_contest_adds_its_page_as_the_first_bookmark_and_the_h
         branding.bookmarks[0].url,
         "https://vjudge.net/contest/871412"
     );
-    assert_eq!(branding.bookmarks.len(), 3, "moved, not added");
+    assert_eq!(branding.bookmarks.len(), 2, "moved, not added");
     assert_eq!(
         branding.home_page.as_deref(),
         Some("https://vjudge.net/contest/871412")
@@ -306,7 +320,7 @@ fn choosing_a_platform_and_contest_adds_its_page_as_the_first_bookmark_and_the_h
         "https://vjudge.net/contest/8714123"
     );
     choose(&mut profile, Platform::Vjudge, "");
-    assert_eq!(profile.settings.branding.bookmarks.len(), 2);
+    assert_eq!(profile.settings.branding.bookmarks.len(), 1);
     assert_eq!(profile.settings.branding.home_page, None);
 }
 
@@ -337,7 +351,7 @@ fn what_the_admin_changed_is_not_touched_again() {
     choose(&mut other, Platform::Codeforces, "1");
     other.settings.branding.bookmarks.remove(0);
     choose(&mut other, Platform::Codeforces, "12");
-    assert_eq!(other.settings.branding.bookmarks.len(), 2);
+    assert_eq!(other.settings.branding.bookmarks.len(), 1);
 }
 
 #[test]
@@ -351,7 +365,7 @@ fn a_removed_or_changed_bookmark_stays_theirs_across_an_empty_id_a_new_one_and_a
     choose(&mut removed, Platform::Vjudge, "999");
     assert_eq!(
         removed.settings.branding.bookmarks.len(),
-        2,
+        1,
         "not brought back"
     );
     assert!(
@@ -390,7 +404,7 @@ fn a_removed_or_changed_bookmark_stays_theirs_across_an_empty_id_a_new_one_and_a
     let mut loaded = Profile::load(&path).expect("load");
     choose(&mut loaded, Platform::Vjudge, "");
     choose(&mut loaded, Platform::Vjudge, "42");
-    assert_eq!(loaded.settings.branding.bookmarks.len(), 2);
+    assert_eq!(loaded.settings.branding.bookmarks.len(), 1);
 }
 
 #[test]
