@@ -126,7 +126,7 @@ pub enum Weight {
     Mono,
 }
 
-/// The font of a weight. Classic has the regular weight only, whatever is asked for.
+/// The font of a weight.
 pub fn font(weight: Weight, size: f32) -> FontId {
     let family = match weight {
         Weight::Regular => FontFamily::Proportional,
@@ -174,11 +174,11 @@ fn modern(mode: Mode) -> Colors {
         disabled: pick(0x005b_6b78, 0x00a9_b7c1),
         line: pick(0x00e1_ecec, 0x0022_303a),
         line_strong: pick(0x00b9_cccc, 0x003a_4c58),
-        accent: pick(0x000b_7c7a, 0x006f_d6d2),
+        accent: pick(0x0008_6a68, 0x006f_d6d2),
         accent_soft: if dark {
             rgba(0x006f_d6d2, 0.16)
         } else {
-            rgba(0x000b_7c7a, 0.14)
+            rgba(0x0008_6a68, 0.14)
         },
         accent_text: pick(0x00ff_ffff, 0x0006_222a),
         ok: pick(0x001a_6b36, 0x007f_dca1),
@@ -292,7 +292,7 @@ pub fn tokens_for(look: Look) -> Tokens {
                 step_height: 46.0,
                 dot: 24.0,
                 h1: 18.0,
-                h2: 13.0,
+                h2: 15.0,
                 pill: 11.0,
                 head_pad: margin(18, 18, 14, 10),
                 body_pad: margin(18, 18, 0, 14),
@@ -402,21 +402,31 @@ fn font_files(theme: Theme) -> [PathBuf; 4] {
             .join("Fonts");
         let names = match theme {
             Theme::Modern => ["segoeui.ttf", "seguisb.ttf", "segoeuib.ttf", "consola.ttf"],
-            Theme::Classic => ["tahoma.ttf", "tahoma.ttf", "tahoma.ttf", "cour.ttf"],
+            Theme::Classic => ["tahoma.ttf", "tahomabd.ttf", "tahomabd.ttf", "cour.ttf"],
         };
         names.map(|name| folder.join(name))
-    } else {
-        // macOS. The system font is one variable file, so every weight shows as regular.
+    } else if cfg!(target_os = "macos") {
+        // macOS. The modern system font is one variable file, so every weight shows as regular.
         let names = match theme {
             Theme::Modern => ["SFNS.ttf", "SFNS.ttf", "SFNS.ttf", "SFNSMono.ttf"],
             Theme::Classic => [
                 "Supplemental/Tahoma.ttf",
-                "Supplemental/Tahoma.ttf",
-                "Supplemental/Tahoma.ttf",
+                "Supplemental/Tahoma Bold.ttf",
+                "Supplemental/Tahoma Bold.ttf",
                 "Supplemental/Courier New.ttf",
             ],
         };
         names.map(|name| PathBuf::from("/System/Library/Fonts").join(name))
+    } else {
+        let names = match theme {
+            Theme::Modern | Theme::Classic => [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            ],
+        };
+        names.map(PathBuf::from)
     }
 }
 
@@ -437,12 +447,15 @@ fn fonts(theme: Theme) -> FontDefinitions {
     ];
     for ((family, behind), file) in families.into_iter().zip(font_files(theme)) {
         let mut chain = behind.clone();
-        if let Ok(bytes) = std::fs::read(&file) {
-            let name = file.display().to_string();
+        let name = file.display().to_string();
+        if !fonts.font_data.contains_key(&name)
+            && let Ok(bytes) = std::fs::read(&file)
+        {
             fonts
                 .font_data
-                .entry(name.clone())
-                .or_insert_with(|| Arc::new(FontData::from_owned(bytes)));
+                .insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
+        }
+        if fonts.font_data.contains_key(&name) {
             chain.insert(0, name);
         }
         fonts.families.insert(family, chain);

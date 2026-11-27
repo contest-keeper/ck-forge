@@ -52,7 +52,7 @@ pub(crate) fn image_create(options: &CreateOptions) -> Result<String, Error> {
         let (label, unit) = match step {
             CreateStep::Download => ("downloading", 1_000_000),
             CreateStep::Convert => ("converting to a raw disk", 1),
-            CreateStep::Provision => ("installing the desktop and tools (seconds)", 1),
+            CreateStep::Provision => ("installing the desktop and tools (15 to 40 minutes)", 1),
             CreateStep::Patch => ("applying the Keeper OS patch", 1),
             CreateStep::Hash => ("checking the finished image", 1),
         };
