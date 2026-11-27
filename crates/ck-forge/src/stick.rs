@@ -148,17 +148,7 @@ fn stick_write(
         }
     }
     if !failures.is_empty() {
-        let message = format!(
-            "{} of {} sticks failed ({}{})",
-            failures.len(),
-            targets.len(),
-            failures.join("; "),
-            if text.is_empty() {
-                String::new()
-            } else {
-                format!("). The others are written and checked, {}", text.trim_end())
-            }
-        );
+        let message = format_write_failures(&failures, targets.len(), &text);
         return Err(Error::io("writing the sticks", io::Error::other(message)));
     }
     report_progress(
@@ -174,6 +164,23 @@ fn stick_write(
         );
     }
     Ok(text)
+}
+
+fn format_write_failures(failures: &[String], total: usize, succeeded: &str) -> String {
+    let mut message = format!(
+        "{} of {} sticks failed ({})",
+        failures.len(),
+        total,
+        failures.join("; "),
+    );
+    if !succeeded.is_empty() {
+        let _ = write!(
+            message,
+            ". The others are written and checked: {}",
+            succeeded.trim_end().replace('\n', "; "),
+        );
+    }
+    message
 }
 
 /// One progress bar for each target.
@@ -483,6 +490,19 @@ mod confirmed_tests {
         for bad in ["3", "x=ab", "3=", "3=zz", "3=ab;calc", "-1=ab"] {
             assert!(parse_confirmed(&[bad.to_owned()]).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn write_failure_message_closes_parentheses_with_and_without_successes() {
+        let failures = vec!["disk 1: removed".to_owned()];
+        assert_eq!(
+            format_write_failures(&failures, 1, ""),
+            "1 of 1 sticks failed (disk 1: removed)"
+        );
+        assert_eq!(
+            format_write_failures(&failures, 2, "Wrote a.img to disk 2\n"),
+            "1 of 2 sticks failed (disk 1: removed). The others are written and checked: Wrote a.img to disk 2"
+        );
     }
 }
 
