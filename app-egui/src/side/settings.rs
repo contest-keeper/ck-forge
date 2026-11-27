@@ -101,9 +101,9 @@ impl Panel {
     }
 }
 
-/// The title, the two groups and the hint. Returns whether Done was pressed and the controls in the
-/// order Tab visits them.
-fn contents(ui: &mut Ui, t: &Tokens, state: &mut AppState) -> (bool, [Response; 5]) {
+/// The title and the two groups. Returns whether Done was pressed and the controls in the order
+/// Tab visits them.
+fn contents(ui: &mut Ui, t: &Tokens, state: &mut AppState) -> (bool, [Response; 6]) {
     // As high as the button, so the title is centred beside it.
     let size = vec2(ui.available_width(), t.s.button_small);
     let done = ui
@@ -116,6 +116,7 @@ fn contents(ui: &mut Ui, t: &Tokens, state: &mut AppState) -> (bool, [Response; 
         })
         .inner;
     let look = state.look();
+    let follow_system = state.follows_system();
     let [modern, classic] = group(
         ui,
         t,
@@ -124,42 +125,53 @@ fn contents(ui: &mut Ui, t: &Tokens, state: &mut AppState) -> (bool, [Response; 
             Opt {
                 on: look.theme == Theme::Modern,
                 preview: Some(Theme::Modern),
-                name: "New",
-                sub: "Clean and modern",
+                name: "Modern",
+                sub: "",
             },
             Opt {
                 on: look.theme == Theme::Classic,
                 preview: Some(Theme::Classic),
                 name: "Classic",
-                sub: "Like the browser extension",
+                sub: "",
             },
         ],
     );
-    let [light, dark] = group(
+    let [system, light, dark] = group(
         ui,
         t,
         "Theme",
         [
             Opt {
-                on: look.mode == Mode::Light,
+                on: follow_system,
                 preview: None,
-                name: "Light",
-                sub: "Bright background",
+                name: "System",
+                sub: "",
             },
             Opt {
-                on: look.mode == Mode::Dark,
+                on: !follow_system && look.mode == Mode::Light,
+                preview: None,
+                name: "Light",
+                sub: "",
+            },
+            Opt {
+                on: !follow_system && look.mode == Mode::Dark,
                 preview: None,
                 name: "Dark",
-                sub: "Easy on the eyes",
+                sub: "",
             },
         ],
     );
-    widgets::hint(ui, "Saved on this computer.");
     if modern.clicked() {
         state.set_theme(Theme::Modern);
     }
     if classic.clicked() {
         state.set_theme(Theme::Classic);
+    }
+    if system.clicked() {
+        state.clear_mode();
+        if let Some(sys) = ui.ctx().system_theme() {
+            state.follow_system(sys == eframe::egui::Theme::Dark);
+        }
     }
     if light.clicked() {
         state.set_mode(Mode::Light);
@@ -167,7 +179,7 @@ fn contents(ui: &mut Ui, t: &Tokens, state: &mut AppState) -> (bool, [Response; 
     if dark.clicked() {
         state.set_mode(Mode::Dark);
     }
-    (done.clicked(), [done, modern, classic, light, dark])
+    (done.clicked(), [done, modern, classic, system, light, dark])
 }
 
 #[derive(Clone, Copy)]
@@ -180,12 +192,20 @@ struct Opt {
 
 const PREVIEW: f32 = 34.0;
 
-/// A heading and two options side by side, both as high as the higher one.
-fn group(ui: &mut Ui, t: &Tokens, heading: &str, options: [Opt; 2]) -> [Response; 2] {
+/// A heading and options side by side, all as high as the highest one.
+fn group<const N: usize>(
+    ui: &mut Ui,
+    t: &Tokens,
+    heading: &str,
+    options: [Opt; N],
+) -> [Response; N] {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
         widgets::paragraph(ui, heading, Weight::Bold, t.rem(0.85), t.c.text, 1.35);
-        let width = (ui.available_width() - 10.0) / 2.0;
+        let gap = 10.0;
+        let count = u8::try_from(N).unwrap_or(u8::MAX);
+        let width =
+            (ui.available_width() - gap * f32::from(count.saturating_sub(1))) / f32::from(count);
         let texts = options.map(|option| {
             let underline = t.classic() && option.on;
             let galley = |text: &str, weight, size, color| {
@@ -206,7 +226,8 @@ fn group(ui: &mut Ui, t: &Tokens, heading: &str, options: [Opt; 2]) -> [Response
             };
             (
                 galley(option.name, Weight::Bold, t.rem(0.82), t.c.text),
-                galley(option.sub, Weight::Regular, t.rem(0.75), t.c.muted),
+                (!option.sub.is_empty())
+                    .then(|| galley(option.sub, Weight::Regular, t.rem(0.75), t.c.muted)),
             )
         });
         let height = options
@@ -214,9 +235,10 @@ fn group(ui: &mut Ui, t: &Tokens, heading: &str, options: [Opt; 2]) -> [Response
             .zip(&texts)
             .map(|(option, (name, sub))| {
                 let preview = option.preview.map_or(0.0, |_| PREVIEW + 6.0);
-                20.0 + preview + name.size().y + 6.0 + sub.size().y
+                let sub_h = sub.as_ref().map_or(0.0, |s| 6.0 + s.size().y);
+                20.0 + preview + name.size().y + sub_h
             })
-            .fold(44.0, f32::max);
+            .fold(38.0, f32::max);
         ui.horizontal_top(|ui| {
             let mut at = 0;
             options.map(|option| {
@@ -238,7 +260,9 @@ fn group(ui: &mut Ui, t: &Tokens, heading: &str, options: [Opt; 2]) -> [Response
                 }
                 let below = at + vec2(0.0, name.size().y + 6.0);
                 ui.painter().galley(at, name, t.c.text);
-                ui.painter().galley(below, sub, t.c.muted);
+                if let Some(sub) = sub {
+                    ui.painter().galley(below, sub, t.c.muted);
+                }
                 if response.has_focus() {
                     ui.painter().rect_stroke(
                         rect.expand(2.0),

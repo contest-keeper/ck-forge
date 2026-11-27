@@ -176,20 +176,27 @@ fn number_field(ui: &mut Ui, label: &str, hint: &str, held: String, apply: impl 
 
 /// The card "Contest".
 pub fn contest(ui: &mut Ui, profile: &mut Profile) {
-    let settings = &mut profile.settings;
     let was = (
-        settings.contest.platform,
-        settings.contest.contest_id.clone(),
+        profile.settings.contest.platform,
+        profile.settings.contest.contest_id.clone(),
     );
     widgets::card(ui, |ui| {
         widgets::title(ui, "Contest");
-        grid(ui, &[0, 1, 2], |ui, at| match at {
+        grid(ui, &[0, 1, 2, 3], |ui, at| match at {
             0 => {
-                let hint = "Shown on the stick. Empty uses the profile name.";
-                text_field(ui, "Contest name", Some(hint), &mut settings.contest.name);
+                text_field(ui, "Profile name", Some("Only for you."), &mut profile.name);
             }
-            1 => platform_field(ui, &mut settings.contest),
-            _ => contest_id(ui, &mut settings.contest),
+            1 => {
+                let hint = "Shown on the stick. Empty uses profile name.";
+                text_field(
+                    ui,
+                    "Contest name",
+                    Some(hint),
+                    &mut profile.settings.contest.name,
+                );
+            }
+            2 => platform_field(ui, &mut profile.settings.contest),
+            _ => contest_id(ui, &mut profile.settings.contest),
         });
     });
     // The contest's page joins the bookmarks and becomes the home page, for the admin to change.
@@ -207,7 +214,7 @@ fn platform_field(ui: &mut Ui, contest: &mut Contest) {
             options.push((platform, name));
         }
     }
-    let hint = "Adds the contest page to the bookmarks as the home page. You can change both.";
+    let hint = "Adds bookmark as home page.";
     field(ui, "Platform", Some(hint), None, |ui, id| {
         widgets::select(ui, "contest-platform", &mut contest.platform, &options).labelled_by(id);
     });
@@ -223,14 +230,21 @@ fn contest_id(ui: &mut Ui, contest: &mut Contest) {
         Platform::Vjudge => ("vjudge.net/contest/", "VJudge contest ID"),
         _ => ("codeforces.com/contest/", "Codeforces contest ID"),
     };
-    let error = wrong.then(|| format!("Use digits only, like 1985. It is the number in {site}1985."));
+    let error =
+        wrong.then(|| format!("Use digits only, like 1985. It is the number in {site}1985."));
     let hint = format!("The number in {site}\u{2026}");
-    field(ui, name, Some(hint.as_str()), error.as_deref(), |ui, label| {
-        Input::new(&mut contest.contest_id)
-            .invalid(wrong)
-            .show(ui)
-            .labelled_by(label);
-    });
+    field(
+        ui,
+        name,
+        Some(hint.as_str()),
+        error.as_deref(),
+        |ui, label| {
+            Input::new(&mut contest.contest_id)
+                .invalid(wrong)
+                .show(ui)
+                .labelled_by(label);
+        },
+    );
 }
 
 /// The closed card at the end of the page: what makes the name of each computer.
@@ -238,15 +252,13 @@ pub fn team_and_site(ui: &mut Ui, settings: &mut Settings) {
     widgets::details(ui, "Team and site (optional)", |ui| {
         grid(ui, &[0, 1, 2], |ui, at| match at {
             0 => {
-                let hint = "Becomes {team} in the computer name.";
-                text_field(ui, "Team", Some(hint), &mut settings.team);
+                text_field(ui, "Team", Some("{team} placeholder."), &mut settings.team);
             }
             1 => {
-                let hint = "Becomes {site} in the computer name.";
-                text_field(ui, "Site", Some(hint), &mut settings.site);
+                text_field(ui, "Site", Some("{site} placeholder."), &mut settings.site);
             }
             _ => {
-                let hint = "How the stick names itself: {team} {site} {n}.";
+                let hint = "Pattern: {team} {site} {n}";
                 let name = &mut settings.branding.computer_name_pattern;
                 text_field(ui, "Computer name", Some(hint), name);
             }
@@ -257,16 +269,21 @@ pub fn team_and_site(ui: &mut Ui, settings: &mut Settings) {
 /// The welcome text and the bookmarks. The house beside a bookmark makes it the home page.
 pub fn welcome_and_bookmarks(ui: &mut Ui, settings: &mut Settings) {
     let branding = &mut settings.branding;
-    let hint = "Shown at login.";
-    field(ui, "Welcome text", Some(hint), None, |ui, id| {
-        Input::new(&mut branding.welcome_text)
-            .multiline(3)
-            .show(ui)
-            .labelled_by(id);
-    });
+    field(
+        ui,
+        "Welcome text",
+        Some("Shown at login."),
+        None,
+        |ui, id| {
+            Input::new(&mut branding.welcome_text)
+                .multiline(3)
+                .show(ui)
+                .labelled_by(id);
+        },
+    );
     ui.add_space(4.0);
     widgets::subtitle(ui, "Bookmarks");
-    widgets::hint(ui, "The house marks the page the browser opens first.");
+    widgets::hint(ui, "Click the home button to set the start page.");
     let mut remove = None;
     for at in 0..branding.bookmarks.len() {
         let was_home = is_home(branding.home_page.as_deref(), &branding.bookmarks[at].url);
@@ -316,16 +333,32 @@ fn house(ui: &mut Ui, on: bool) -> egui::Response {
     let t = tokens(ui.ctx());
     let size = t.s.button_small;
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
+    let radius = if t.classic() { 0 } else { t.s.radius };
+    let fill = if on {
+        t.c.accent_soft
+    } else if response.hovered() {
+        t.c.soft
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let edge = if on { t.c.accent } else { t.c.line };
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, fill);
+    painter.rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.0, edge),
+        egui::StrokeKind::Inside,
+    );
     let color = if on { t.c.accent } else { t.c.muted };
     let c = rect.center();
-    let stroke = egui::Stroke::new(1.6, color);
-    let painter = ui.painter();
+    let stroke = egui::Stroke::new(1.5, color);
     let roof = vec![
-        c + vec2(-8.0, -1.0),
-        c + vec2(0.0, -8.0),
-        c + vec2(8.0, -1.0),
+        c + vec2(-6.5, -0.5),
+        c + vec2(0.0, -6.5),
+        c + vec2(6.5, -0.5),
     ];
-    let body = egui::Rect::from_min_max(c + vec2(-5.5, -1.0), c + vec2(5.5, 7.0));
+    let body = egui::Rect::from_min_max(c + vec2(-4.5, -0.5), c + vec2(4.5, 6.0));
     if on {
         painter.rect_filled(body, 1.0, color);
     } else {
@@ -334,7 +367,9 @@ fn house(ui: &mut Ui, on: bool) -> egui::Response {
     painter.line(roof, stroke);
     response
         .widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, "Home page"));
-    response.on_hover_text("Home page")
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Home page")
 }
 
 /// House, title and address in the proportion 1 to 2, then the button.
@@ -380,7 +415,7 @@ fn name_for_readers(ui: &Ui, response: &egui::Response, name: &str) {
 pub fn connectivity(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
     widgets::card(ui, |ui| {
         widgets::title(ui, "Allowed sites");
-        let hint = "One per line, such as kilonova.ro. Empty allows no extra site.";
+        let hint = "One domain per line, e.g. kilonova.ro.";
         field(ui, "Sites", Some(hint), None, |ui, id| {
             let sites = Input::new(&mut typed.domains)
                 .multiline(4)
@@ -393,7 +428,7 @@ pub fn connectivity(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
     });
     widgets::card(ui, |ui| {
         widgets::title(ui, "Wi-Fi");
-        let hint = "WPA2 or open networks only. Empty means none. The password is asked when you write sticks and is never saved.";
+        let hint = "WPA2 or open only. Password asked when writing.";
         if text_field(ui, "Network name (SSID)", Some(hint), &mut typed.ssid).changed() {
             limit(&mut typed.ssid, 32);
             settings.wifi = wifi_for(&typed.ssid);
@@ -401,10 +436,12 @@ pub fn connectivity(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
     });
     widgets::card(ui, |ui| {
         widgets::title(ui, "Devices");
-        let label = "Block Bluetooth on the sticks";
-        widgets::check(ui, &mut settings.block_bluetooth, label);
-        let label = "Block the contestant's own USB drives and disks";
-        widgets::check(ui, &mut settings.block_usb_storage, label);
+        widgets::check(ui, &mut settings.block_bluetooth, "Block Bluetooth");
+        widgets::check(
+            ui,
+            &mut settings.block_usb_storage,
+            "Block contestant USB storage",
+        );
     });
 }
 
@@ -457,15 +494,12 @@ fn recording(ui: &mut Ui, settings: &mut Settings) {
         RecordingField::Retention => {
             let held = recording.retention_days.map(|n| n.to_string());
             let held = held.unwrap_or_default();
-            let hint = "Leave empty to keep recordings until you collect them.";
+            let hint = "Empty keeps recordings on the stick.";
             number_field(ui, "Keep on the stick (days)", hint, held, |text| {
                 recording.retention_days = optional_count(text);
             });
         }
     });
-    if recording.mode == RecordingMode::Off {
-        widgets::hint(ui, "Nothing is recorded, so there is nothing else to set.");
-    }
 }
 
 #[cfg(test)]

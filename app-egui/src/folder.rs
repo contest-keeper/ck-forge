@@ -133,6 +133,27 @@ pub fn list_local(data: &Path) -> Vec<Local> {
     found
 }
 
+/// Removes a locally saved profile. Profiles stored inside `data/profiles/<folder>` have their
+/// dedicated folder removed too; files opened from elsewhere only remove the profile JSON.
+pub fn delete_local(data: Option<&Path>, path: &Path) -> Result<(), String> {
+    if let Some(root) = data.map(|d| d.join("profiles"))
+        && path.starts_with(&root)
+        && let Some(folder) = path.parent()
+        && folder != root
+    {
+        return match std::fs::remove_dir_all(folder) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("could not delete profile: {e}")),
+        };
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("could not delete profile: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +247,39 @@ mod tests {
         assert!(path.with_file_name(&name).is_file());
         // What the editor keeps names the copy too, so a later save finds its picture.
         assert_eq!(kept.settings.branding.wallpaper, Some(name));
+    }
+
+    #[test]
+    fn delete_local_removes_dedicated_folder_for_managed_profiles_and_only_file_for_external() {
+        let data = tempfile::tempdir().expect("folder");
+        let (managed_path, _) = save_in(data.path(), &Profile::template(), None).expect("saved");
+        let managed_folder = managed_path.parent().expect("folder").to_path_buf();
+        std::fs::write(managed_folder.join("wallpaper.png"), b"pic").expect("extra");
+        let (other_path, _) = save_in(data.path(), &Profile::template(), None).expect("saved");
+
+        delete_local(Some(data.path()), &managed_path).expect("deleted managed");
+        assert!(!managed_folder.exists());
+        assert!(other_path.is_file());
+
+        // A file directly under `profiles/` is not treated as a dedicated profile folder.
+        let direct = data.path().join("profiles").join("direct.json");
+        std::fs::write(&direct, "{}").expect("direct");
+        delete_local(Some(data.path()), &direct).expect("deleted direct");
+        assert!(!direct.exists());
+        assert!(other_path.is_file());
+
+        // An external file leaves its directory and sibling files intact.
+        let external_dir = tempfile::tempdir().expect("external");
+        let external_file = external_dir.path().join("contest.json");
+        let sibling = external_dir.path().join("keep.txt");
+        std::fs::write(&external_file, "{}").expect("external");
+        std::fs::write(&sibling, "keep").expect("sibling");
+        delete_local(Some(data.path()), &external_file).expect("deleted external");
+        assert!(!external_file.exists());
+        assert!(sibling.is_file());
+
+        // Deleting an already-missing path succeeds cleanly.
+        delete_local(Some(data.path()), &managed_path).expect("missing managed");
+        delete_local(None, &external_file).expect("missing external");
     }
 }

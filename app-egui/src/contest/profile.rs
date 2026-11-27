@@ -12,9 +12,17 @@ use crate::contest::preview::{self, Asked, Picture};
 use crate::folder::Local;
 use crate::state::AppState;
 use crate::theme::tokens;
-use crate::widgets::{self, Btn, Input, Tone, field};
+use crate::widgets::{self, Btn, Tone};
 
 const PICTURES: [&str; 5] = ["png", "jpg", "jpeg", "webp", "bmp"];
+
+#[derive(Clone, PartialEq, Eq)]
+enum PendingDiscard {
+    New,
+    Open(PathBuf),
+}
+
+type DeleteTarget = (Option<PathBuf>, Option<String>);
 
 #[derive(Default)]
 pub struct Screen {
@@ -31,6 +39,10 @@ pub struct Screen {
     local_key: Option<(u64, Option<PathBuf>, bool)>,
     /// The account the Hub's list was asked for.
     listed_for: Option<String>,
+    /// Confirmation state before replacing unsaved edits or deleting a saved profile.
+    pending_discard: Option<PendingDiscard>,
+    confirm_delete: Option<DeleteTarget>,
+    deleting_active: bool,
     /// What the last action did, and why one failed.
     status: String,
     failure: String,
@@ -123,16 +135,32 @@ fn merged(local: &[Local], hub: Option<&[ProfileSummary]>) -> Vec<Entry> {
     entries
 }
 
-/// A saved profile as one row: its name, where it is kept and the button to open it.
-/// `hub_known` says whether the Hub has answered with its list.
-fn profile_row(ui: &mut Ui, entry: &Entry, open: bool, hub_known: bool) -> bool {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowAction {
+    Open,
+    AskDelete,
+    ConfirmDelete,
+    CancelDelete,
+}
+
+/// A saved profile as one row: its name, where it is kept and the actions for it.
+fn profile_row(ui: &mut Ui, entry: &Entry, open: bool, confirming: bool) -> Option<RowAction> {
     let kept = match (&entry.file, &entry.hub_id) {
-        (Some(_), Some(_)) => "On this computer and on the Hub",
+        (Some(_), Some(_)) => "On this computer & Hub",
         (Some(_), None) => "On this computer only",
         (None, _) => "On the Hub only",
     };
-    let mut clicked = false;
+    let mut action = None;
     widgets::path_row(ui, &entry.name, &[kept], |ui| {
+        if confirming {
+            if Btn::new("Delete").danger().small().show(ui).clicked() {
+                action = Some(RowAction::ConfirmDelete);
+            }
+            if Btn::new("Cancel").small().show(ui).clicked() {
+                action = Some(RowAction::CancelDelete);
+            }
+            return;
+        }
         if open {
             widgets::pill(ui, Tone::Ok, "Open now");
         } else {
@@ -141,14 +169,15 @@ fn profile_row(ui: &mut Ui, entry: &Entry, open: bool, hub_known: bool) -> bool 
             } else {
                 "Download"
             };
-            clicked = Btn::new(label).small().show(ui).clicked();
+            if Btn::new(label).small().show(ui).clicked() {
+                action = Some(RowAction::Open);
+            }
         }
-        // Whether it is open or not, a profile the Hub lacks says so.
-        if hub_known && entry.hub_id.is_none() {
-            widgets::pill(ui, Tone::Warn, "Not on the Hub");
+        if Btn::new("Delete\u{2026}").small().show(ui).clicked() {
+            action = Some(RowAction::AskDelete);
         }
     });
-    clicked
+    action
 }
 
 fn profile_files() -> rfd::FileDialog {
@@ -190,7 +219,21 @@ impl Screen {
                 // The Hub's list now has this profile.
                 self.hub.list(ctx);
             }
-            Outcome::Failed(why) => self.failure = why,
+            Outcome::Deleted => {
+                "Deleted profile.".clone_into(&mut self.status);
+                if self.deleting_active {
+                    self.deleting_active = false;
+                    state.use_profile(Profile::template(), None);
+                }
+                self.refresh_local(state);
+                if state.hub_email.is_some() {
+                    self.hub.list(ctx);
+                }
+            }
+            Outcome::Failed(why) => {
+                self.deleting_active = false;
+                self.failure = why;
+            }
         }
     }
 
@@ -241,12 +284,6 @@ impl Screen {
         };
         let (problems, warnings) = checked(profile);
         widgets::messages(ui, &problems, &warnings);
-        widgets::card(ui, |ui| {
-            let hint = "Only for you. Contestants never see it.";
-            field(ui, "Profile name", Some(hint), None, |ui, id| {
-                Input::new(&mut profile.name).show(ui).labelled_by(id);
-            });
-        });
         forms::contest(ui, profile);
         widgets::card(ui, |ui| self.desktop(ui, state));
         if let Some(profile) = &mut state.profile {
@@ -293,6 +330,7 @@ impl Screen {
             ui.spacing_mut().item_spacing.x = tokens(ui.ctx()).s.gap;
             let ready = state.profile.is_some();
             if Btn::new("Save").primary().enabled(ready).show(ui).clicked() {
+                self.pending_discard = None;
                 self.save(ui.ctx(), state);
             }
             if state.hub_email.is_some() && Btn::new("Refresh Hub list").show(ui).clicked() {
@@ -300,24 +338,48 @@ impl Screen {
                 self.hub.list(ui.ctx());
             }
             if Btn::new("New profile").show(ui).clicked() {
-                self.create(state);
+                if state.is_unsaved() {
+                    self.pending_discard = Some(PendingDiscard::New);
+                } else {
+                    self.create(state);
+                }
             }
             if Btn::new("Open a file\u{2026}").show(ui).clicked()
                 && let Some(path) = profile_files().pick_file()
             {
-                self.open(state, path);
+                if state.is_unsaved() {
+                    self.pending_discard = Some(PendingDiscard::Open(path));
+                } else {
+                    self.open(state, path);
+                }
             }
         });
+        if let Some(pending) = self.pending_discard.clone() {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = tokens(ui.ctx()).s.gap;
+                widgets::hint(ui, "Unsaved changes will be lost.");
+                if Btn::new("Discard").danger().small().show(ui).clicked() {
+                    self.pending_discard = None;
+                    match pending {
+                        PendingDiscard::New => self.create(state),
+                        PendingDiscard::Open(path) => self.open(state, path),
+                    }
+                }
+                if Btn::new("Cancel").small().show(ui).clicked() {
+                    self.pending_discard = None;
+                }
+            });
+        }
     }
 
     /// The saved profiles, from this computer and, when signed in, from the Hub, one row each.
     fn profiles_card(&mut self, ui: &mut Ui, state: &mut AppState) {
-        let hub_known = self.hub_profiles.is_some();
         let entries = merged(&self.local, self.hub_profiles.as_deref());
         if entries.is_empty() {
+            self.confirm_delete = None;
             return;
         }
-        let mut chosen = None;
+        let mut picked = None;
         widgets::card(ui, |ui| {
             widgets::title(ui, "Saved profiles");
             for (at, entry) in entries.iter().enumerate() {
@@ -328,27 +390,64 @@ impl Screen {
                             == entry.hub_id.as_ref()
                     }
                 };
-                let clicked = ui
-                    .push_id(("saved", at), |ui| profile_row(ui, entry, here, hub_known))
+                let key = (entry.file.clone(), entry.hub_id.clone());
+                let confirming = self.confirm_delete.as_ref() == Some(&key);
+                let action = ui
+                    .push_id(("saved", at), |ui| profile_row(ui, entry, here, confirming))
                     .inner;
-                if clicked {
-                    chosen = Some(at);
+                if let Some(action) = action {
+                    picked = Some((at, here, action));
                 }
             }
         });
-        let Some(entry) = chosen.and_then(|at| entries.into_iter().nth(at)) else {
+        let Some((at, here, action)) = picked else {
             return;
         };
-        match (entry.file, entry.hub_id) {
-            (Some(path), _) => self.open(state, path),
-            (None, Some(id)) => {
+        let Some(entry) = entries.into_iter().nth(at) else {
+            return;
+        };
+        let key = (entry.file.clone(), entry.hub_id.clone());
+        match action {
+            RowAction::AskDelete => self.confirm_delete = Some(key),
+            RowAction::CancelDelete => self.confirm_delete = None,
+            RowAction::ConfirmDelete => {
+                self.confirm_delete = None;
                 self.clear_messages();
-                match state.data() {
-                    Some(data) => self.hub.load(ui.ctx(), id, data.join("profiles")),
-                    None => "Could not find the Forge folder".clone_into(&mut self.failure),
+                if let Some(id) = entry.hub_id {
+                    self.deleting_active = here;
+                    self.hub.delete(
+                        ui.ctx(),
+                        id,
+                        entry.file,
+                        state.data().map(Path::to_path_buf),
+                    );
+                } else if let Some(path) = entry.file {
+                    match crate::folder::delete_local(state.data(), &path) {
+                        Ok(()) => {
+                            "Deleted profile.".clone_into(&mut self.status);
+                            if here {
+                                state.use_profile(Profile::template(), None);
+                            }
+                            self.refresh_local(state);
+                        }
+                        Err(why) => self.failure = why,
+                    }
                 }
             }
-            (None, None) => {}
+            RowAction::Open => {
+                self.confirm_delete = None;
+                match (entry.file, entry.hub_id) {
+                    (Some(path), _) => self.open(state, path),
+                    (None, Some(id)) => {
+                        self.clear_messages();
+                        match state.data() {
+                            Some(data) => self.hub.load(ui.ctx(), id, data.join("profiles")),
+                            None => "Could not find the Forge folder".clone_into(&mut self.failure),
+                        }
+                    }
+                    (None, None) => {}
+                }
+            }
         }
     }
 
@@ -540,6 +639,9 @@ impl Screen {
                     profile.settings.branding.wallpaper = Some(name);
                     state.wallpaper_revision += 1;
                 }
+                if let Err(why) = state.save_profile() {
+                    self.wallpaper_failure = why;
+                }
             }
             Err(why) => self.wallpaper_failure = why,
         }
@@ -634,7 +736,15 @@ mod tests {
         assert_eq!(screen.wallpaper_failure, "");
         let path = state.profile_path.clone().expect("saved");
         assert!(folder_of(&path).join("wallpaper.png").is_file());
-        assert!(state.is_unsaved(), "the new name is not in the file yet");
+        assert!(
+            !state.is_unsaved(),
+            "the chosen wallpaper is saved to the profile file"
+        );
+        let reloaded = Profile::load(&path).expect("reloaded");
+        assert_eq!(
+            reloaded.settings.branding.wallpaper.as_deref(),
+            Some("wallpaper.png")
+        );
     }
 
     #[test]

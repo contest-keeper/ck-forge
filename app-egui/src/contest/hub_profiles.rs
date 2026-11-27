@@ -6,8 +6,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
 use ck_admin_core::{
-    HUB_URL, LoadedProfile, Profile, ProfileSummary, list_profiles, load_hub_profile,
-    new_profile_id, save_hub_profile, vault,
+    HUB_URL, LoadedProfile, Profile, ProfileSummary, delete_profile, list_profiles,
+    load_hub_profile, new_profile_id, save_hub_profile, vault,
 };
 
 /// What the profile editor has to do after a request ended.
@@ -17,6 +17,8 @@ pub enum Outcome {
     Loaded(Box<LoadedProfile>),
     /// The profile as it was saved on the Hub and in its file.
     Saved(Box<Profile>, PathBuf),
+    /// A profile was deleted from the Hub (and its local file removed if requested).
+    Deleted,
     Failed(String),
 }
 
@@ -114,6 +116,22 @@ impl Panel {
                 .map(|saved| Outcome::Saved(Box::new(saved), path))
         });
         Ok(assigned)
+    }
+
+    pub fn delete(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        id: String,
+        local_folder: Option<PathBuf>,
+        data: Option<PathBuf>,
+    ) {
+        self.start(ctx, move || {
+            as_admin(|session| delete_profile(HUB_URL, session, &id))?;
+            if let Some(path) = local_folder {
+                crate::folder::delete_local(data.as_deref(), &path)?;
+            }
+            Ok(Outcome::Deleted)
+        });
     }
 }
 

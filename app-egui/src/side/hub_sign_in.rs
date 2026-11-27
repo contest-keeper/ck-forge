@@ -199,10 +199,7 @@ impl Screen {
                 }
                 State::SigningIn => self.waiting(ui),
                 state => {
-                    small(
-                        ui,
-                        "Hub: not signed in. Sticks made now keep their events on the stick.",
-                    );
+                    small(ui, "Hub: not signed in.");
                     let again = matches!(state, State::Ended(_));
                     let label = if again {
                         "Get a new code"
