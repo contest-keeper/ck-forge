@@ -87,9 +87,12 @@ jobs:
           tool: cargo-about
       - name: Install NSIS
         run: |
-          if ! command -v makensis >/dev/null 2>&1 && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+          # Only NSIS 3 in its own folder counts: this compiler builds the installer that gets signed.
+          nsis="/c/Program Files (x86)/NSIS/makensis.exe"
+          if ! "$nsis" -VERSION 2>/dev/null | grep -q '^v3\.'; then
             choco install nsis --no-progress -y
           fi
+          "$nsis" -VERSION
           echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
         shell: bash
       - name: Build the installer and collect the files under stable names
