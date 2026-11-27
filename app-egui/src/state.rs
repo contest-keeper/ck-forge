@@ -145,6 +145,15 @@ impl AppState {
         self.remember();
     }
 
+    pub fn follows_system(&self) -> bool {
+        !self.mode_chosen
+    }
+
+    pub fn clear_mode(&mut self) {
+        self.mode_chosen = false;
+        self.remember();
+    }
+
     pub fn follow_system(&mut self, dark: bool) {
         if !self.mode_chosen {
             self.look.mode = if dark { Mode::Dark } else { Mode::Light };
@@ -338,5 +347,32 @@ mod tests {
         again.follow_system(true);
         assert_eq!(again.look(), state.look());
         assert_eq!(again.base_path(), Some(Path::new("base.img")));
+    }
+
+    #[test]
+    fn clear_mode_restores_following_system_and_persists_choice() {
+        let data = tempfile::tempdir().expect("folder");
+        let mut state = AppState::load(Some(data.path().to_owned()));
+        assert!(state.follows_system());
+        state.follow_system(true);
+        assert_eq!(state.look().mode, Mode::Dark);
+        assert!(state.follows_system());
+
+        state.set_theme(Theme::Classic);
+        state.set_mode(Mode::Light);
+        assert!(!state.follows_system());
+        state.follow_system(true);
+        assert_eq!(state.look().mode, Mode::Light);
+
+        state.clear_mode();
+        assert!(state.follows_system());
+        state.follow_system(true);
+        assert_eq!(state.look().mode, Mode::Dark);
+
+        let mut reloaded = AppState::load(Some(data.path().to_owned()));
+        assert!(reloaded.follows_system());
+        assert_eq!(reloaded.look().theme, Theme::Classic);
+        reloaded.follow_system(true);
+        assert_eq!(reloaded.look().mode, Mode::Dark);
     }
 }

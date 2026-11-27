@@ -326,7 +326,12 @@ impl Screen {
             if self.loading {
                 widgets::hint(ui, "Finding images\u{2026}");
             } else {
-                if Btn::new("Refresh").small().enabled(ready).show(ui).clicked() {
+                if Btn::new("Refresh")
+                    .small()
+                    .enabled(ready)
+                    .show(ui)
+                    .clicked()
+                {
                     self.refresh(ui.ctx().clone());
                 }
                 if none {
@@ -369,7 +374,12 @@ impl Screen {
                     if button.enabled(ready && id.is_some()).show(ui).clicked() {
                         download.clone_from(&id);
                     }
-                    if Btn::new("Refresh").small().enabled(ready).show(ui).clicked() {
+                    if Btn::new("Refresh")
+                        .small()
+                        .enabled(ready)
+                        .show(ui)
+                        .clicked()
+                    {
                         do_refresh = true;
                     }
                 },

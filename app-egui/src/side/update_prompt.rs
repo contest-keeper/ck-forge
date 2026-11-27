@@ -234,7 +234,7 @@ impl Banner {
             && let Err(why) = app.save_profile()
         {
             self.unsaved = true;
-            self.failure = format!("{why} Updating now loses these edits.");
+            self.failure = format!("{why}\n\nUpdating now loses these edits.");
             return false;
         }
         true
@@ -609,7 +609,9 @@ mod tests {
         capture("update-unsaved", 0.0, |forge| {
             forge.update = Banner::offering(true);
             forge.update.unsaved = true;
-            forge.update.failure = "the profile has problems:\n- bookmark 1 needs a title Updating now loses these edits.".to_owned();
+            forge.update.failure =
+                "the profile has problems:\n- bookmark 1 needs a title\n\nUpdating now loses these edits."
+                    .to_owned();
         });
         capture("update-opened", 0.0, |forge| {
             forge.update = Banner::offering(false);

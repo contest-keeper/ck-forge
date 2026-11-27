@@ -834,6 +834,21 @@ pub fn upload_profile(
     check_profile_status(&mut answer)
 }
 
+/// Removes the profile `id` from the Hub.
+pub fn delete_profile(hub: &str, session: &HubSession, id: &str) -> Result<(), Error> {
+    check_profile_id(id)?;
+    let base = checked_base(hub)?;
+    let mut answer = agent()
+        .delete(format!("{base}/api/v1/profiles/{id}"))
+        .header(AUTHORIZATION, session.authorization()?)
+        .call()
+        .map_err(|e| unreachable_hub(base, &e))?;
+    if answer.status().as_u16() == 404 {
+        return Ok(());
+    }
+    check_profile_status(&mut answer)
+}
+
 /// The id goes into a Hub address, and a profile file from another admin can hold any `hub_id`,
 /// so one with a `/`, `..` or `?` must not steer the admin's token to another Hub route. It is
 /// also a folder name when a profile is loaded.
@@ -950,8 +965,13 @@ mod tests {
             let sent = super::upload_profile(hub, &session, id, &profile)
                 .unwrap_err()
                 .to_string();
+            let removed = super::delete_profile(hub, &session, id)
+                .unwrap_err()
+                .to_string();
             assert!(
-                fetched.contains("profile id") && sent.contains("profile id"),
+                fetched.contains("profile id")
+                    && sent.contains("profile id")
+                    && removed.contains("profile id"),
                 "{id}"
             );
         }

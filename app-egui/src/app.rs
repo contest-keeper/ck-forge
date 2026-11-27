@@ -25,22 +25,22 @@ const STEPS: [Step; 5] = [
     Step {
         title: "Contest profile",
         hint: "Name, desktop, bookmarks",
-        blurb: "Everything a stick needs to know about this contest. Mistakes are shown as you type.",
+        blurb: "",
     },
     Step {
         title: "Connectivity",
         hint: "Sites, Wi-Fi, Bluetooth, USB",
-        blurb: "What the sticks may connect to.",
+        blurb: "",
     },
     Step {
         title: "Screen recording",
         hint: "Mode, upload, retention",
-        blurb: "Whether and how the contestants' screens are recorded.",
+        blurb: "",
     },
     Step {
         title: "Make sticks",
         hint: "Base image, erase and write USB",
-        blurb: "Choose the base image, tick sticks, and write.",
+        blurb: "",
     },
     Step {
         title: "Retire sticks",
@@ -71,6 +71,8 @@ pub struct Forge {
     logo: Option<TextureHandle>,
     /// A close was refused because something was running.
     close_refused: bool,
+    /// Where Back returns from Retire sticks.
+    before_retire: Option<usize>,
 }
 
 impl Forge {
@@ -106,6 +108,7 @@ impl Forge {
             update,
             logo: None,
             close_refused: false,
+            before_retire: None,
         }
     }
 
@@ -134,6 +137,13 @@ impl Forge {
                     }
                 }
             }
+        }
+        if target == RETIRE {
+            if self.step != RETIRE {
+                self.before_retire = Some(self.step);
+            }
+        } else {
+            self.before_retire = None;
         }
         self.step = target;
     }
@@ -331,7 +341,12 @@ impl Forge {
                     }
                     ui.set_min_height(height);
                     if self.step > CONTEST && Btn::new("Back").show(ui).clicked() {
-                        self.go(self.step - 1, ui.ctx());
+                        let back = if self.step == RETIRE {
+                            self.before_retire.unwrap_or(MAKE)
+                        } else {
+                            self.step - 1
+                        };
+                        self.go(back, ui.ctx());
                     }
                     // The button takes its place first; the message gets what is left.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -389,13 +404,22 @@ impl Forge {
                 });
         } else if self.step < MAKE {
             let text = match &self.state.profile_path {
-                None => "Not saved yet. Continue saves it in the Keeper Forge folder.".to_owned(),
+                None => "Not saved yet. Continue saves it.".to_owned(),
                 Some(_) if self.state.is_unsaved() => {
                     "Unsaved changes. Continue saves them.".to_owned()
                 }
-                Some(path) => format!("Saved in {}", path.display()),
+                Some(path) => {
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("profile");
+                    format!("Saved · {name}")
+                }
             };
-            widgets::paragraph(ui, &text, Weight::Regular, t.s.hint, t.c.muted, 1.35);
+            let label = widgets::paragraph(ui, &text, Weight::Regular, t.s.hint, t.c.muted, 1.35);
+            if let Some(path) = &self.state.profile_path {
+                label.on_hover_text(path.display().to_string());
+            }
         }
     }
 
@@ -466,10 +490,12 @@ fn header(ui: &mut Ui, t: &Tokens, step: &Step) {
                 ..TextFormat::default()
             };
             ui.label(LayoutJob::single_section(step.title.to_owned(), format));
-            ui.scope(|ui| {
-                ui.set_max_width(600.0);
-                widgets::paragraph(ui, step.blurb, Weight::Regular, t.s.rem, t.c.muted, 1.5);
-            });
+            if !step.blurb.is_empty() {
+                ui.scope(|ui| {
+                    ui.set_max_width(600.0);
+                    widgets::paragraph(ui, step.blurb, Weight::Regular, t.s.rem, t.c.muted, 1.5);
+                });
+            }
         });
 }
 
