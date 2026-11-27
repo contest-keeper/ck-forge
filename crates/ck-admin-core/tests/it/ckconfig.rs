@@ -67,7 +67,7 @@ fn enrolment_requires_a_compatible_base_and_only_writes_the_code_to_ckconfig() {
     let built = build_enrolment_image(
         &options,
         |_id, settings, number, scope| {
-            assert_eq!(settings.team, profile.settings.team);
+            assert_eq!(settings.team, profile.stick_settings().team);
             assert_eq!(number, 1);
             assert!(scope.is_none());
             Ok(EnrolmentCode::parse(fixture_code).expect("fixture code"))

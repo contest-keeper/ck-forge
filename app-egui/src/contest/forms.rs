@@ -252,10 +252,20 @@ pub fn team_and_site(ui: &mut Ui, settings: &mut Settings) {
     widgets::details(ui, "Team and site (optional)", |ui| {
         grid(ui, &[0, 1, 2], |ui, at| match at {
             0 => {
-                text_field(ui, "Team", Some("{team} placeholder."), &mut settings.team);
+                text_field(
+                    ui,
+                    "Team",
+                    Some("{team} in the computer name. Empty: default team."),
+                    &mut settings.team,
+                );
             }
             1 => {
-                text_field(ui, "Site", Some("{site} placeholder."), &mut settings.site);
+                text_field(
+                    ui,
+                    "Site",
+                    Some("{site} in the computer name. Empty: default site."),
+                    &mut settings.site,
+                );
             }
             _ => {
                 let hint = "Pattern: {team} {site} {n}";
@@ -415,7 +425,7 @@ fn name_for_readers(ui: &Ui, response: &egui::Response, name: &str) {
 pub fn connectivity(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
     widgets::card(ui, |ui| {
         widgets::title(ui, "Allowed sites");
-        let hint = "One domain per line, e.g. kilonova.ro.";
+        let hint = "One domain per line, e.g. kilonova.ro. Always allowed, so judges can load their anti-bot check: challenges.cloudflare.com, .hcaptcha.com.";
         field(ui, "Sites", Some(hint), None, |ui, id| {
             let sites = Input::new(&mut typed.domains)
                 .multiline(4)

@@ -12,16 +12,15 @@ use ck_admin_core::{
 };
 use eframe::egui::{Context, Ui};
 
+use crate::make::format;
 use crate::make::progress::Bar;
 use crate::make::stick_job::Progress;
-use crate::make::{base_image, format};
 use crate::widgets::{self, Btn, Input, Tone};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Method {
     Hub,
     File,
-    Build,
 }
 
 /// What a worker thread reports.
@@ -52,7 +51,6 @@ pub struct Screen {
     failure: String,
     /// An image that is to be the base from now on, until the page takes it.
     new_base: Option<PathBuf>,
-    pub(super) creator: base_image::Screen,
     events: Receiver<Event>,
     sender: Sender<Event>,
 }
@@ -72,7 +70,6 @@ impl Default for Screen {
             bar: Bar::default(),
             failure: String::new(),
             new_base: None,
-            creator: base_image::Screen::default(),
             events,
             sender,
         }
@@ -122,7 +119,7 @@ impl Screen {
 
     /// The image that was just chosen, downloaded, imported or built.
     pub fn take_new_base(&mut self) -> Option<PathBuf> {
-        self.new_base.take().or_else(|| self.creator.take_made())
+        self.new_base.take()
     }
 
     /// The signed-in account changed: the images listed for one account are not for another.
@@ -136,7 +133,6 @@ impl Screen {
 
     /// Takes what the worker threads reported.
     pub fn receive(&mut self) {
-        self.creator.receive();
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::Images(account, _) if account != self.account => {}
@@ -166,8 +162,6 @@ impl Screen {
 
     /// Makes `path` the base image and closes the choices.
     fn adopt(&mut self, path: PathBuf) {
-        // A build that is still running, or not yet taken, must not replace this later choice.
-        self.creator.superseded();
         self.new_base = Some(path);
         self.archive = None;
         self.sha256.clear();
@@ -226,11 +220,10 @@ impl Screen {
                 "Use a file from this PC",
                 "An image you already have.",
             ),
-            (Method::Build, "Build one", "Advanced. 15 to 40 minutes."),
         ];
-        // Three equal columns, or one on a narrow window: never two and one left over.
+        // Two equal columns, or one on a narrow window.
         let across = ui.available_width() + 10.0;
-        let columns: u8 = if across >= 540.0 { 3 } else { 1 };
+        let columns: u8 = if across >= 400.0 { 2 } else { 1 };
         let width = (across / f32::from(columns) - 10.0).floor();
         for line in choices.chunks(usize::from(columns)) {
             let height = line
@@ -253,7 +246,6 @@ impl Screen {
         match self.method {
             Some(Method::Hub) => widgets::inner(ui, |ui| self.hub_ui(ui, signed_in, locked)),
             Some(Method::File) => widgets::inner(ui, |ui| self.file_ui(ui, locked)),
-            Some(Method::Build) => widgets::inner(ui, |ui| self.creator.show(ui, locked)),
             None => {}
         }
         if let Some(base) = base
@@ -571,17 +563,6 @@ mod tests {
         let offered = screen.hub.expect("list");
         let ids: Vec<&str> = offered.iter().map(|image| image.id.as_str()).collect();
         assert_eq!(ids, ["new", "unmarked"]);
-    }
-
-    #[test]
-    fn an_image_picked_during_a_build_stays_the_base() {
-        let mut screen = Screen::default();
-        screen.creator.sample_running();
-        screen.picked(PathBuf::from("picked.img"));
-        assert_eq!(screen.take_new_base(), Some(PathBuf::from("picked.img")));
-        screen.creator.sample_finish(PathBuf::from("built.img"));
-        screen.receive();
-        assert_eq!(screen.take_new_base(), None);
     }
 
     #[test]

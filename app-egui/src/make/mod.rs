@@ -1,7 +1,6 @@
 //! The "Make sticks" page: the base image, the sticks, the write and the old keys, as
 //! `MakePage.svelte` of the earlier window had them.
 
-pub mod base_image;
 mod format;
 pub mod images;
 mod progress;
@@ -12,7 +11,7 @@ pub mod write;
 use eframe::egui::{Context, Ui};
 
 use crate::state::AppState;
-use crate::widgets::{self, Tone};
+use crate::widgets::{self, Btn, Tone};
 
 #[derive(Default)]
 pub struct Page {
@@ -21,6 +20,8 @@ pub struct Page {
     sticks: sticks::Screen,
     /// The admin the old keys were listed for.
     email: Option<String>,
+    /// "Retire old sticks" was clicked: the window moves to that page.
+    pub want_retire: bool,
 }
 
 impl Page {
@@ -35,7 +36,7 @@ impl Page {
             self.sticks.after_write(previous, retire, ctx);
         }
         state.written |= self.write.written;
-        state.busy = self.locked() || self.images.creator.busy() || self.sticks.busy();
+        state.busy = self.locked() || self.sticks.busy();
     }
 
     /// Whether something runs that the steps wait for: a write with its old keys, a download or an
@@ -96,6 +97,14 @@ impl Page {
                 "Write into an image file"
             };
             widgets::details(ui, title, |ui| self.write.file_ui(ui, locked));
+        }
+        // After the write, where a rewritten stick's old key is first thought of.
+        widgets::hint(
+            ui,
+            "A rewritten stick has a new key, and the old key keeps working until you retire it.",
+        );
+        if Btn::new("Retire old sticks…").small().show(ui).clicked() {
+            self.want_retire = true;
         }
     }
 
@@ -213,10 +222,6 @@ mod tests {
             make(forge, false);
             forge.make.images.method = Some(images::Method::File);
             forge.make.images.archive = Some(PathBuf::from(r"D:\dl\keeper-os-0.4.0.img.zst"));
-        });
-        capture("make-nobase-build", 222.0, |forge| {
-            make(forge, false);
-            forge.make.images.method = Some(images::Method::Build);
         });
         capture("make-default", 0.0, |forge| make(forge, true));
         capture("make-disks", 202.0, |forge| disks(forge, &[1]));

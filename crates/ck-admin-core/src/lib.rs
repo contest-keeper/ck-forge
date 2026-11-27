@@ -25,7 +25,7 @@ pub use hardware::HardwareId;
 pub use hub::{
     HubProfile, HubSession, HubStick, HubStickDisk, MintedEnrolmentCode, Pairing, PairingEnd,
     ProfileSummary, Pushed, delete_profile, fetch_profile, list_profiles, list_sticks,
-    mint_enrolment_code, new_profile_id, push_registry, push_registry_signed_in,
+    mint_enrolment_code, new_profile_id, organization_name, push_registry, push_registry_signed_in,
     record_config_hash, record_stick_write, retire_stick_credential, sign_out, sign_settings,
     start_pairing, upload_profile, wait_for_pairing, watch_pairing,
 };
