@@ -25,7 +25,8 @@ pub fn path() -> PathBuf {
 /// stops the work: the line is then only on stderr.
 pub fn step(message: &str) {
     let line = format!("{} {message}", stamp());
-    eprintln!("{line}");
+    // eprintln! panics when stderr is closed, as it is for an app started from the Dock.
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
     let file = path();
     if let Some(folder) = file.parent() {
         let _ = std::fs::create_dir_all(folder);
