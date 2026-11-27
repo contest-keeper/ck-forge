@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
-use ck_admin_core::{HUB_URL, HubStick, list_sticks, retire_stick_credential, vault};
+use ck_admin_core::{HUB_URL, HubSession, HubStick, list_sticks, retire_stick_credential, vault};
 use eframe::egui::{Context, Frame, Margin, ScrollArea, Stroke, Ui, vec2};
 
 use crate::make::format::stick_name;
@@ -26,7 +26,7 @@ enum Event {
     Sticks(u64, Result<Vec<HubStick>, String>),
     Retired(u64, String, Result<(), String>),
     /// The keys of the replaced sticks were tried: the ones that are still active, and why.
-    OldDone(u64, Vec<String>),
+    OldDone(Vec<String>),
 }
 
 pub struct Screen {
@@ -92,13 +92,17 @@ fn list_sticks_on_hub() -> Result<Vec<HubStick>, String> {
     list_sticks(HUB_URL, &session).map_err(hub_error)
 }
 
-fn retire_on_hub(id: &str) -> Result<(), String> {
+fn saved_session() -> Result<HubSession, String> {
     // A test must never reach the credential vault or retire a key, whatever it clicks.
     if cfg!(test) {
         return Err("no Hub in tests".to_owned());
     }
-    let session = vault::load().ok_or_else(|| "sign in to the Hub first".to_owned())?;
-    retire_stick_credential(HUB_URL, &session, id).map_err(hub_error)
+    vault::load().ok_or_else(|| "sign in to the Hub first".to_owned())
+}
+
+fn retire_on_hub(session: &Result<HubSession, String>, id: &str) -> Result<(), String> {
+    let session = session.as_ref().map_err(Clone::clone)?;
+    retire_stick_credential(HUB_URL, session, id).map_err(hub_error)
 }
 
 /// Retires the keys one by one; a key that fails is told, and the others still go.
@@ -143,11 +147,17 @@ impl Screen {
         let sender = self.sender.clone();
         let ctx = ctx.clone();
         thread::spawn(move || {
-            let failed = retire_each(&sticks, retire_on_hub, |id| {
-                // The window may be gone by now; then nobody needs the answer.
-                let _ = sender.send(Event::Retired(account, id.to_owned(), Ok(())));
-            });
-            let _ = sender.send(Event::OldDone(account, failed));
+            // Read once: another admin signing in during the loop must not retire the rest.
+            let session = saved_session();
+            let failed = retire_each(
+                &sticks,
+                |id| retire_on_hub(&session, id),
+                |id| {
+                    // The window may be gone by now; then nobody needs the answer.
+                    let _ = sender.send(Event::Retired(account, id.to_owned(), Ok(())));
+                },
+            );
+            let _ = sender.send(Event::OldDone(failed));
             ctx.request_repaint();
         });
     }
@@ -167,8 +177,6 @@ impl Screen {
         self.retired.clear();
         self.others = None;
         self.other.clear();
-        self.working = None;
-        self.retiring_old = false;
         self.asking = None;
         self.failure.clear();
     }
@@ -177,8 +185,9 @@ impl Screen {
     pub fn receive(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Sticks(account, _) | Event::Retired(account, _, _)
-                    if account != self.account => {}
+                Event::Sticks(account, _) if account != self.account => {}
+                // Its thread has ended; only the answer belongs to the other account.
+                Event::Retired(account, _, _) if account != self.account => self.working = None,
                 Event::Sticks(_, result) => {
                     self.loading = false;
                     match result {
@@ -198,11 +207,10 @@ impl Screen {
                         Err(why) => self.failure = why,
                     }
                 }
-                Event::OldDone(account, failed) => {
-                    // Failed keys stay reported even after an account change so active keys are not lost.
-                    if account == self.account {
-                        self.retiring_old = false;
-                    }
+                // Taken whatever the account: the thread has ended, and a key that is still active
+                // must stay reported.
+                Event::OldDone(failed) => {
+                    self.retiring_old = false;
                     if !failed.is_empty() {
                         let keys = failed.join("\n");
                         if self.old_failure.is_empty() {
@@ -238,7 +246,7 @@ impl Screen {
         let account = self.account;
         let sender = self.sender.clone();
         thread::spawn(move || {
-            let result = retire_on_hub(&id);
+            let result = retire_on_hub(&saved_session(), &id);
             let _ = sender.send(Event::Retired(account, id, result));
             ctx.request_repaint();
         });
@@ -637,32 +645,23 @@ mod tests {
             ..Screen::default()
         };
         let stale_retired = Event::Retired(screen.account, "b".to_owned(), Ok(()));
-        let stale_done = Event::OldDone(screen.account, vec!["a: down".to_owned()]);
+        let done = Event::OldDone(vec!["a: down".to_owned()]);
         screen.forget();
         assert!(screen.retired.is_empty());
-        assert!(screen.working.is_none());
-        assert!(!screen.retiring_old);
+        // Both threads still run, so closing and writing stay refused.
+        assert!(screen.working.is_some() && screen.retiring_old());
         assert!(screen.asking.is_none());
         assert_eq!(screen.failure, "");
 
-        screen.retiring_old = true;
         assert!(screen.sender.send(stale_retired).is_ok());
-        assert!(screen.sender.send(stale_done).is_ok());
+        assert!(screen.sender.send(done).is_ok());
         screen.receive();
         assert!(screen.retired.is_empty());
-        assert!(screen.retiring_old);
+        assert!(!screen.busy());
         assert!(screen.old_failure.contains("a: down"));
-        assert!(
-            screen
-                .sender
-                .send(Event::OldDone(
-                    screen.account,
-                    vec!["b: timeout".to_owned()]
-                ))
-                .is_ok()
-        );
+        let later = Event::OldDone(vec!["b: timeout".to_owned()]);
+        assert!(screen.sender.send(later).is_ok());
         screen.receive();
-        assert!(!screen.retiring_old);
         assert!(screen.old_failure.contains("a: down"));
         assert!(screen.old_failure.contains("b: timeout"));
     }
