@@ -96,7 +96,9 @@ jobs:
           PUBKEY: ${{ steps.key.outputs.pubkey }}
       - name: Install NSIS
         run: |
-          choco install nsis --no-progress -y
+          if ! command -v makensis >/dev/null 2>&1 && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            choco install nsis --no-progress -y
+          fi
           echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
         shell: bash
       - uses: taiki-e/install-action@v2

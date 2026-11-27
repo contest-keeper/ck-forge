@@ -31,7 +31,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: forge-windows-test
-      - run: cargo test --workspace
+      - run: cargo test --locked --workspace
   macos-test:
     # The disk code for macOS reads recorded diskutil plists, so it is tested here without a disk.
     # Off until the repository variable CK_MACOS_CI is `true`: on 2026-11-24 GitHub refused to start
@@ -46,7 +46,7 @@ jobs:
         with:
           shared-key: forge-macos-test
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo test --locked --workspace
   egui:
     runs-on: windows-latest
     env:
@@ -81,13 +81,13 @@ jobs:
             .
             app-egui
             tools/update-signer
+      # The tool that signs updates is its own workspace, so the root checks do not reach it.
+      - run: cargo fmt --check
+        working-directory: tools/update-signer
       - run: cargo clippy --locked --all-targets -- -D warnings
         working-directory: app-egui
       - run: cargo test --locked
         working-directory: app-egui
-      # The tool that signs updates is its own workspace, so the root checks do not reach it.
-      - run: cargo fmt --check
-        working-directory: tools/update-signer
       - run: cargo clippy --locked --all-targets -- -D warnings
         working-directory: tools/update-signer
       - run: cargo test --locked
@@ -101,7 +101,9 @@ jobs:
       - name: Install NSIS
         if: steps.installer.outputs.build == 'true'
         run: |
-          choco install nsis --no-progress -y
+          if ! command -v makensis >/dev/null 2>&1 && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            choco install nsis --no-progress -y
+          fi
           echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
         shell: bash
       # The same steps as the published builds, so a broken installer or a licence that is not allowed

@@ -18,3 +18,44 @@ concurrency:
 jobs:
   rust:
     uses: contest-keeper/.github/.github/workflows/rust-ci.yml@main
+  windows-test:
+    runs-on: windows-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned GNU toolchain
+        run: |
+          rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
+          echo "RUSTUP_TOOLCHAIN=1.99.1-x86_64-pc-windows-gnu" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forge-windows-test
+      - run: cargo test --locked --workspace --no-run
+  egui:
+    runs-on: windows-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned GNU toolchain
+        run: |
+          rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal --component clippy,rustfmt
+          echo "RUSTUP_TOOLCHAIN=1.99.1-x86_64-pc-windows-gnu" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forge-egui
+          workspaces: |
+            .
+            app-egui
+            tools/update-signer
+      - run: cargo clippy --locked --all-targets -- -D warnings
+        working-directory: app-egui
+      - run: cargo test --locked --no-run
+        working-directory: app-egui
+      - run: cargo clippy --locked --all-targets -- -D warnings
+        working-directory: tools/update-signer
+      - run: cargo test --locked --no-run
+        working-directory: tools/update-signer
