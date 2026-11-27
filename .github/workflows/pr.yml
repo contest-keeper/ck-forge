@@ -106,8 +106,8 @@ jobs:
           if ! "$nsis" -VERSION 2>/dev/null | grep -q '^v3\.'; then
             choco install nsis --no-progress -y
           fi
-          "$nsis" -VERSION
-          echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
+          "$nsis" -VERSION | grep '^v3\.'
+          echo "MAKENSIS=$nsis" >> "$GITHUB_ENV"
         shell: bash
       # The same steps as the published builds, so a broken installer or a licence that is not allowed
       # (app-egui/about.toml) stops the pull request and not the build after the merge.

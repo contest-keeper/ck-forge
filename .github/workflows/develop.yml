@@ -101,8 +101,8 @@ jobs:
           if ! "$nsis" -VERSION 2>/dev/null | grep -q '^v3\.'; then
             choco install nsis --no-progress -y
           fi
-          "$nsis" -VERSION
-          echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
+          "$nsis" -VERSION | grep '^v3\.'
+          echo "MAKENSIS=$nsis" >> "$GITHUB_ENV"
         shell: bash
       - uses: taiki-e/install-action@v2
         with:
