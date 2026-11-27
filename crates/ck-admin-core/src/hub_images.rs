@@ -26,10 +26,18 @@ pub struct HubImage {
     pub profile: String,
     pub size: u64,
     pub filename: Option<String>,
+    /// The Hub's mark for the newest image of its family and profile. A Hub that does not send it
+    /// marks nothing as old.
+    #[serde(default = "newest")]
+    pub latest: bool,
     #[serde(skip_serializing)]
     url: String,
     #[serde(skip_serializing)]
     sha256: String,
+}
+
+fn newest() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
