@@ -3,8 +3,7 @@
 
 use eframe::egui::{
     self, Align, Color32, Frame, Layout, Margin, Panel, Rect, Role, ScrollArea, Sense, Stroke,
-    StrokeKind, TextFormat, TextureHandle, TextureOptions, Ui, WidgetInfo, pos2, text::LayoutJob,
-    vec2,
+    StrokeKind, TextFormat, Ui, WidgetInfo, pos2, text::LayoutJob, vec2,
 };
 
 use crate::side::{hub_sign_in, settings, update_prompt};
@@ -68,7 +67,6 @@ pub struct Forge {
     pub hub: hub_sign_in::Screen,
     pub settings: settings::Panel,
     pub update: update_prompt::Banner,
-    logo: Option<TextureHandle>,
     /// A close was refused because something was running.
     close_refused: bool,
     /// Where Back returns from Retire sticks.
@@ -106,7 +104,6 @@ impl Forge {
             hub,
             settings: settings::Panel::default(),
             update,
-            logo: None,
             close_refused: false,
             before_retire: None,
         }
@@ -243,7 +240,6 @@ impl Forge {
                     .frame(side_foot_frame(t))
                     .show(ui, |ui| self.side_foot(ui, t));
                 ui.spacing_mut().item_spacing.y = 22.0;
-                self.brand(ui, t);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     let saved = self.state.profile_path.is_some();
@@ -256,26 +252,11 @@ impl Forge {
                         self.state.written,
                         false,
                     ];
-                    // Retiring is not a step of making sticks: it has its own button below.
+                    // Retiring is not a step of making sticks: it has its own button in the footer.
                     for (at, step) in STEPS.iter().enumerate().take(RETIRE) {
                         if step_button(ui, at, step, at == self.step, done[at]).clicked() {
                             self.go(at, ui.ctx());
                         }
-                    }
-                    ui.add_space(10.0);
-                    let signed_in = self.state.hub_email.is_some();
-                    let active = self.step == RETIRE;
-                    let mut retire_btn = Btn::new("Retire sticks\u{2026}")
-                        .small()
-                        .enabled(signed_in || active);
-                    if active {
-                        retire_btn = retire_btn.primary();
-                    }
-                    let response = retire_btn
-                        .show(ui)
-                        .on_disabled_hover_text("Sign in to the Hub to retire old sticks.");
-                    if response.clicked() {
-                        self.go(RETIRE, ui.ctx());
                     }
                 });
                 foot.response.rect
@@ -294,30 +275,6 @@ impl Forge {
             0.0,
             color,
         );
-    }
-
-    fn brand(&mut self, ui: &mut Ui, t: &Tokens) {
-        if self.logo.is_none() {
-            // The pixel icon of the browser extension: keep its edges sharp.
-            self.logo = crate::icon().map(|icon| {
-                let size = [icon.width as usize, icon.height as usize];
-                let picture = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
-                ui.ctx()
-                    .load_texture("logo", picture, TextureOptions::NEAREST)
-            });
-        }
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            ui.add_space(8.0);
-            if let Some(logo) = &self.logo {
-                ui.add(egui::Image::new(logo).fit_to_exact_size(vec2(32.0, 32.0)));
-            }
-            ui.label(
-                egui::RichText::new("Keeper Forge")
-                    .font(font(Weight::Bold, t.s.brand))
-                    .color(t.c.text),
-            );
-        });
     }
 
     /// Sign-in, the profile's name and the settings (`.side-foot`).
@@ -357,6 +314,18 @@ impl Forge {
                             self.step - 1
                         };
                         self.go(back, ui.ctx());
+                    }
+                    // In the footer so it is reachable from every step: retiring needs the Hub
+                    // only, and a profile with problems must not stand in its way.
+                    if self.step != RETIRE {
+                        let retire = Btn::new("Retire old sticks…")
+                            .small()
+                            .enabled(self.state.hub_email.is_some())
+                            .show(ui)
+                            .on_disabled_hover_text("Sign in to the Hub to retire old sticks.");
+                        if retire.clicked() {
+                            self.go(RETIRE, ui.ctx());
+                        }
                     }
                     // The button takes its place first; the message gets what is left.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

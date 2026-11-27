@@ -82,7 +82,7 @@ pub fn push_registry(
         .ok_or_else(|| Error::Hub("the Hub did not start a session".into()))?;
 
     let cookie = sensitive_header(&cookie)?;
-    let url = format!("{}/sticks", org_url(&agent, base, &COOKIE, &cookie)?);
+    let url = format!("{}/sticks", org_url(&agent, base, &COOKIE, &cookie)?.0);
     post_registry(&agent, base, &url, COOKIE, cookie, body)
 }
 
@@ -136,16 +136,18 @@ struct MeAnswer {
 #[derive(Deserialize)]
 struct MeOrganization {
     slug: String,
+    #[serde(default)]
+    name: String,
 }
 
-/// `{base}/api/v1/orgs/{slug}` for the one organization the signed-in account belongs to. Forge
-/// works with one organization at a time, so an account with none or several is refused.
+/// `{base}/api/v1/orgs/{slug}` and the name of the one organization the signed-in account belongs
+/// to. Forge works with one organization at a time, so an account with none or several is refused.
 fn org_url(
     agent: &ureq::Agent,
     base: &str,
     name: &HeaderName,
     value: &HeaderValue,
-) -> Result<String, Error> {
+) -> Result<(String, String), Error> {
     let mut answer = agent
         .get(format!("{base}/api/v1/me"))
         .header(name, value.clone())
@@ -177,7 +179,19 @@ fn org_url(
             "the Hub sent an organization name Forge cannot use".into(),
         ));
     }
-    Ok(format!("{base}/api/v1/orgs/{}", only.slug))
+    let name = if only.name.is_empty() {
+        &only.slug
+    } else {
+        &only.name
+    };
+    Ok((format!("{base}/api/v1/orgs/{}", only.slug), name.clone()))
+}
+
+/// The name of the organization the account belongs to, to show next to the sign-in.
+pub fn organization_name(hub: &str, session: &HubSession) -> Result<String, Error> {
+    let base = checked_base(hub)?;
+    let (_, name) = org_url(&agent(), base, &AUTHORIZATION, &session.authorization()?)?;
+    Ok(name)
 }
 
 /// Builds a header value that carries a secret and marks it sensitive, so the HTTP stack leaves it
@@ -220,7 +234,7 @@ impl HubSession {
         if let Some(slug) = self.org.get() {
             return Ok(format!("{base}/api/v1/orgs/{slug}{tail}"));
         }
-        let url = org_url(&agent(), base, &AUTHORIZATION, &self.authorization()?)?;
+        let (url, _) = org_url(&agent(), base, &AUTHORIZATION, &self.authorization()?)?;
         let _ = self
             .org
             .set(url.rsplit('/').next().unwrap_or_default().to_owned());

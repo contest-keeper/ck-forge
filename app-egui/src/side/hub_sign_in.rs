@@ -71,6 +71,8 @@ pub enum Event {
     SignedIn(String, Option<String>),
     Ended(Ended),
     Failed(String),
+    /// The name of the organization of the signed-in account.
+    Organization(u64, String),
     /// The Hub ended the session that an earlier run saved.
     SessionEnded,
 }
@@ -96,6 +98,11 @@ pub struct Screen {
     code: Option<(String, Instant)>,
     /// What happened to the registry sent after signing in.
     registry: Option<String>,
+    /// The organization of the signed-in account, once the Hub has said; asked once per sign-in.
+    organization: Option<String>,
+    organization_asked: bool,
+    /// Counts the sign-ins and sign-outs, so a lookup that answers late is known to be old.
+    generation: u64,
     /// The saved session has not been checked with the Hub yet.
     check: bool,
     /// The session on screen is still the one an earlier run saved.
@@ -113,6 +120,9 @@ impl Screen {
             state,
             code: None,
             registry: None,
+            organization: None,
+            organization_asked: false,
+            generation: 0,
             check: false,
             restored: false,
             cancel: Arc::default(),
@@ -153,6 +163,10 @@ impl Screen {
                 None => {}
             }
         }
+        if matches!(self.state, State::SignedIn(_)) && !self.organization_asked {
+            self.organization_asked = true;
+            ask_organization(self.sender.clone(), ctx.clone(), self.generation);
+        }
         app.hub_email = match &self.state {
             State::SignedIn(email) => Some(email.clone()),
             _ => None,
@@ -168,10 +182,18 @@ impl Screen {
                 return Some(Saved::Revoke);
             }
             Event::SignedIn(_, registry) => self.registry.clone_from(registry),
+            Event::Organization(generation, name) => {
+                // An answer for an earlier account is not this account's organization.
+                if *generation == self.generation {
+                    self.organization = Some(name.clone());
+                }
+                return None;
+            }
             // About the saved session only: a sign-out or a newer sign-in made it old news.
             Event::SessionEnded if !self.restored => return None,
             Event::SessionEnded => {
                 self.restored = false;
+                self.forget_organization();
                 self.state = self.state.after(event);
                 return Some(Saved::Forget);
             }
@@ -187,9 +209,19 @@ impl Screen {
             ui.spacing_mut().item_spacing.y = 6.0;
             match self.state.clone() {
                 State::SignedIn(email) => {
-                    small(ui, "Hub: signed in as");
                     let t = tokens(ui.ctx());
-                    widgets::paragraph(ui, &email, Weight::Bold, t.rem(0.82), t.c.text, 1.35);
+                    // The organization first, then the account: two short lines and one button.
+                    if let Some(organization) = &self.organization {
+                        widgets::paragraph(
+                            ui,
+                            organization,
+                            Weight::Bold,
+                            t.rem(0.82),
+                            t.c.text,
+                            1.35,
+                        );
+                    }
+                    small(ui, &email);
                     if Btn::new("Sign out").small().show(ui).clicked() {
                         self.sign_out();
                     }
@@ -260,6 +292,7 @@ impl Screen {
         self.state = State::SigningIn;
         self.code = None;
         self.registry = None;
+        self.forget_organization();
         self.restored = false;
         self.cancel = Arc::default();
         let cancel = Arc::clone(&self.cancel);
@@ -272,11 +305,18 @@ impl Screen {
         });
     }
 
+    fn forget_organization(&mut self) {
+        self.organization = None;
+        self.organization_asked = false;
+        self.generation += 1;
+    }
+
     fn sign_out(&mut self) {
         let session = vault::load();
         vault::forget();
         self.state = State::SignedOut;
         self.registry = None;
+        self.forget_organization();
         self.restored = false;
         if let Some(session) = session {
             // On a thread: a slow Hub must not freeze the window.
@@ -291,6 +331,20 @@ enum Saved {
     Forget,
     /// Forget it and end it at the Hub.
     Revoke,
+}
+
+/// Asks the Hub which organization the saved session belongs to. A Hub that cannot be reached or an
+/// account with several organizations is not an answer: the line is left out.
+fn ask_organization(sender: Sender<Event>, ctx: Context, generation: u64) {
+    thread::spawn(move || {
+        let Some(session) = vault::load() else {
+            return;
+        };
+        if let Ok(name) = ck_admin_core::organization_name(HUB_URL, &session) {
+            let _ = sender.send(Event::Organization(generation, name));
+            ctx.request_repaint();
+        }
+    });
 }
 
 /// Asks the Hub whether the saved session still stands. A Hub that cannot be reached is not an

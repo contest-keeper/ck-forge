@@ -1347,12 +1347,9 @@ mod tests {
                 pill(ui, Tone::Ok, "Ready");
             });
             ui.horizontal_top(|ui| {
-                let width = (ui.available_width() - 16.0) / 3.0;
+                let width = (ui.available_width() - 16.0) / 2.0;
                 choice(ui, true, "Download", "The usual way.", width);
                 choice(ui, false, "Use a file", "An image you have.", width);
-                ui.add_enabled_ui(false, |ui| {
-                    choice(ui, false, "Build one", "Advanced.", width)
-                });
             });
         });
         card(ui, |ui| {

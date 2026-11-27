@@ -114,7 +114,7 @@ fn check_lists_every_problem_and_fails() {
     let dir = TempDir::new().expect("temp dir");
     std::fs::write(
         dir.path().join("p.json"),
-        r#"{"name":"x","settings":{"api":{"heartbeat_s":0},"team":""}}"#,
+        r#"{"name":"x","settings":{"api":{"heartbeat_s":0},"team":"x\u0007"}}"#,
     )
     .expect("write");
     let result = forge(&["profile", "check", "p.json"], dir.path());
