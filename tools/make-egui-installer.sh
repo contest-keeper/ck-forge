@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # Absolute paths: makensis reads relative ones from the script folder, not from here.
-makensis -V2 "-DVERSION=$1" \
+"${MAKENSIS:-makensis}" -V2 "-DVERSION=$1" \
   "-DAPP=$(cygpath -aw app-egui/target/release/ck-forge-egui.exe)" \
   "-DHELPER=$(cygpath -aw target/release/ck-forge.exe)" \
   "-DLICENCE=$(cygpath -aw LICENSE)" \

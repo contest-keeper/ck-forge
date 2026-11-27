@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use ck_protocol::{Bookmark, Platform, Settings, UploadMode, WifiPassword};
+use ck_protocol::{Bookmark, Platform, RecordingMode, Settings, UploadMode, WifiPassword};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
@@ -9,13 +9,28 @@ use crate::error::Error;
 use crate::file::{read_json, write_json_atomically};
 use crate::registry::CredentialScope;
 
-const DEFAULT_BOOKMARKS: [(&str, &str); 2] = [
-    ("Codeforces", "https://codeforces.com"),
-    ("C++ reference", "https://en.cppreference.com"),
-];
+const DEFAULT_BOOKMARKS: [(&str, &str); 1] = [("C++ reference", "https://en.cppreference.com")];
 
-/// The sites of the default bookmarks, which is all a new profile lets contestants reach.
-const DEFAULT_ALLOWED_DOMAINS: [&str; 2] = [".codeforces.com", ".cppreference.com"];
+/// The sites of the default bookmarks. The judge is added when the admin picks the platform.
+const DEFAULT_ALLOWED_DOMAINS: [&str; 1] = [".cppreference.com"];
+
+/// Sites every stick reaches, because judges put their anti-bot check there and without it the
+/// judge does not load. They only serve that check: no search, no code, no answers.
+pub const ALWAYS_ALLOWED_DOMAINS: [&str; 2] = ["challenges.cloudflare.com", ".hcaptcha.com"];
+
+/// What a blank team or site becomes on a stick, so the computer name is never empty.
+const DEFAULT_TEAM: &str = "default team";
+const DEFAULT_SITE: &str = "default site";
+
+/// How the platform is called on a bookmark.
+fn platform_name(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Codeforces => "Codeforces",
+        Platform::Vjudge => "VJudge",
+        Platform::Kilonova => "Kilonova",
+        Platform::Other => "Contest",
+    }
+}
 
 /// Codeforces and `VJudge` number their contests with digits only.
 fn is_contest_id(id: &str) -> bool {
@@ -98,7 +113,7 @@ pub fn follow_contest(profile: &mut Profile, was_platform: Platform, was_id: &st
             branding.bookmarks.insert(
                 0,
                 Bookmark {
-                    title: "Contest".to_owned(),
+                    title: platform_name(settings.contest.platform).to_owned(),
                     url: url.clone(),
                 },
             );
@@ -165,7 +180,10 @@ impl Profile {
     #[must_use]
     pub fn template() -> Self {
         let mut settings = Settings::default();
-        settings.contest.platform = Platform::Codeforces;
+        // Nothing is prefilled that the admin has not chosen: no judge, no team, no recording.
+        settings.team.clear();
+        settings.site.clear();
+        settings.recording.mode = RecordingMode::Off;
         settings.branding.bookmarks = DEFAULT_BOOKMARKS
             .iter()
             .map(|(title, url)| Bookmark {
@@ -219,6 +237,17 @@ impl Profile {
         if settings.contest.name.is_empty() {
             settings.contest.name.clone_from(&self.name);
         }
+        if settings.team.trim().is_empty() {
+            DEFAULT_TEAM.clone_into(&mut settings.team);
+        }
+        if settings.site.trim().is_empty() {
+            DEFAULT_SITE.clone_into(&mut settings.site);
+        }
+        for domain in ALWAYS_ALLOWED_DOMAINS {
+            if !settings.network.allowed_domains.iter().any(|d| d == domain) {
+                settings.network.allowed_domains.push(domain.to_owned());
+            }
+        }
         if let Some(url) = contest_url(settings.contest.platform, &settings.contest.contest_id) {
             // The contest itself comes first, so contestants find it before the reference sites.
             // One the admin already has, under any title, is left as it is, and one the admin
@@ -228,7 +257,7 @@ impl Profile {
                 settings.branding.bookmarks.insert(
                     0,
                     Bookmark {
-                        title: "Contest".to_owned(),
+                        title: platform_name(settings.contest.platform).to_owned(),
                         url,
                     },
                 );
@@ -291,7 +320,8 @@ impl Profile {
     /// Empty when the profile is fine.
     #[must_use]
     pub fn problems(&self) -> Vec<ck_protocol::Problem> {
-        self.settings.validate()
+        // As it is built: a blank team or site is not a problem, it gets a default name.
+        self.stick_settings().validate()
     }
 
     /// Reads a profile and checks its settings: a profile with problems is an error.

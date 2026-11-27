@@ -1,7 +1,6 @@
 //! The "Make sticks" page: the base image, the sticks, the write and the old keys, as
 //! `MakePage.svelte` of the earlier window had them.
 
-pub mod base_image;
 mod format;
 pub mod images;
 mod progress;
@@ -36,7 +35,7 @@ impl Page {
                 .after_write(previous, retire, account.as_deref(), ctx);
         }
         state.written |= self.write.written;
-        state.busy = self.locked() || self.images.creator.busy() || self.sticks.busy();
+        state.busy = self.locked() || self.sticks.busy();
     }
 
     /// Whether something runs that the steps wait for: a write with its old keys, a download or an
@@ -219,10 +218,6 @@ mod tests {
             make(forge, false);
             forge.make.images.method = Some(images::Method::File);
             forge.make.images.archive = Some(PathBuf::from(r"D:\dl\keeper-os-0.4.0.img.zst"));
-        });
-        capture("make-nobase-build", 222.0, |forge| {
-            make(forge, false);
-            forge.make.images.method = Some(images::Method::Build);
         });
         capture("make-default", 0.0, |forge| make(forge, true));
         capture("make-disks", 202.0, |forge| disks(forge, &[1]));
