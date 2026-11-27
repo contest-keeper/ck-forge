@@ -1,8 +1,8 @@
 # The licences of the egui window and its crates. It is the list of ../about.toml plus the two licences of
-# the fonts that egui ships (epaint_default_fonts: OFL-1.1 and Ubuntu-font-1.0). Both allow redistribution
-# when their notices come with the program, which THIRD-PARTY-LICENSES.txt does. These two are NOT in
-# ../deny.toml or in a recorded licence decision yet: the window is only built for the develop pre-release
-# until the licence owner has approved them.
+# the fonts that egui ships (epaint_default_fonts: OFL-1.1 and Ubuntu-font-1.0) and BSL-1.0 for the
+# Windows clipboard crates (clipboard-win, error-code) pulled in by eframe's clipboard feature. These are
+# NOT in ../deny.toml or in a recorded licence decision yet: the window is only built for the develop
+# pre-release until the licence owner has approved them.
 accepted = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
@@ -15,6 +15,7 @@ accepted = [
   "CDLA-Permissive-2.0",
   "OFL-1.1",
   "Ubuntu-font-1.0",
+  "BSL-1.0",
 ]
 # The window runs on Windows and on macOS (Intel and Apple silicon), so the notices cover the crates of all three.
 targets = ["x86_64-pc-windows-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin"]
