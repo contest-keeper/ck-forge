@@ -19,6 +19,8 @@ use ck_admin_core::{
 use ck_protocol::{StickId, WifiPassword};
 use serde::Deserialize;
 
+use crate::log::step;
+
 /// What the job tells the window.
 pub enum Event {
     /// How far the sticks are written and checked.
@@ -91,11 +93,22 @@ fn hardware_of(disks: &[u32]) -> Vec<Option<HardwareId>> {
 /// Runs the whole write on the calling thread and sends its progress and its end. `cancel` is set
 /// by the window when the admin cancels.
 pub fn run(request: &Request, cancel: &AtomicBool, events: &Sender<Event>, repaint: &dyn Fn()) {
+    step(&format!(
+        "write: start; disks {:?}, to file {}, first-boot enrolment {}, wifi password typed {}",
+        request.disks,
+        request.to_file.is_some(),
+        request.first_boot_enrolment,
+        request.wifi_password.is_some()
+    ));
     let result = write_all(request, cancel, &|progress| {
         // The window may be gone by now; then nobody needs the answer.
         let _ = events.send(Event::Progress(progress));
         repaint();
     });
+    match &result {
+        Ok(hash) => step(&format!("write: finished, SHA-256 {hash}")),
+        Err(why) => step(&format!("write: FAILED: {why}")),
+    }
     let _ = events.send(Event::Done(result));
     repaint();
 }
@@ -109,6 +122,10 @@ fn write_all(
         return Err("choose a disk or a file to write to".to_owned());
     }
     let session = vault::load();
+    step(&format!(
+        "write: signed in to the Hub: {}",
+        session.is_some()
+    ));
     // Every stick gets an image of its own, so every stick has its own identity. The images are
     // small (only the start of the base is copied) and are removed when the write ends.
     let work = std::env::temp_dir().join(format!("ck-sticks-{}", std::process::id()));
@@ -201,6 +218,7 @@ fn make_and_write(
     made: &mut Vec<MadeStick>,
 ) -> Result<String, String> {
     let images = build_images(request, session, cancel, work, report, made)?;
+    step(&format!("write: {} image(s) built", images.len()));
     // A cancel during the last image must not start the write either.
     if cancel.load(Ordering::Relaxed) {
         return Err(CANCELLED_BEFORE_WRITING.to_owned());
@@ -298,11 +316,20 @@ fn each_image(
         }
         if snapshot.is_none() {
             let profile = Profile::load(&request.profile).map_err(|e| e.to_string())?;
+            step(&format!(
+                "image: profile {} loaded",
+                request.profile.display()
+            ));
             let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(&request.profile))
                 .map_err(|e| e.to_string())?;
             snapshot = Some(Snapshot { profile, wallpaper });
         }
         let image = work.join(format!("stick-{}.img", index + 1));
+        step(&format!(
+            "image: building stick {} of {}",
+            index + 1,
+            request.disks.len().max(1)
+        ));
         if let Some(snapshot) = &snapshot {
             build(index, snapshot, &image)?;
         }
@@ -312,6 +339,32 @@ fn each_image(
 }
 
 const CANCELLED_BEFORE_WRITING: &str = "cancelled: nothing was written";
+
+/// Has the Hub sign the settings of an image, when signed in, and logs how that went.
+fn sign_logged(session: Option<&HubSession>, bytes: &[u8]) -> Result<String, AdminError> {
+    let signed = session.map_or(Ok(String::new()), |s| sign_settings(HUB_URL, s, bytes));
+    match &signed {
+        Ok(_) => step(&format!(
+            "image: settings signed by the Hub: {}",
+            session.is_some()
+        )),
+        Err(e) => step(&format!("image: the Hub did not sign the settings: {e}")),
+    }
+    signed
+}
+
+/// The Wi-Fi name and whether a password is set, never the password: a wrong or missing one is the
+/// usual reason a stick never joins the network.
+fn log_wifi(profile: &Profile) {
+    match &profile.settings.wifi {
+        Some(wifi) => step(&format!(
+            "image: wifi network {:?}, password set {}",
+            wifi.ssid,
+            wifi.password.is_some()
+        )),
+        None => step("image: no wifi network in the profile, so the stick gets none"),
+    }
+}
 
 /// Makes one stick image. First-boot enrolment keeps the signing key on the stick from birth.
 /// `hardware` is the disk the image goes to, when it is known, so the Hub can count rewrites.
@@ -325,6 +378,7 @@ fn build_stick(
 ) -> Result<MadeStick, String> {
     let mut profile = snapshot.profile.clone();
     profile.set_wifi_password(request.wifi_password.clone());
+    log_wifi(&profile);
     // The address in the profile file is not used: it is the sign-in that decides.
     profile.settings.api.url = if session.is_some() {
         HUB_URL.to_owned()
@@ -348,9 +402,16 @@ fn build_stick(
         }
     };
     // An image that only accepts settings the Hub signed gets them signed, by the signed-in admin.
-    let signer =
-        |bytes: &[u8]| session.map_or(Ok(String::new()), |s| sign_settings(HUB_URL, s, bytes));
+    let signer = |bytes: &[u8]| sign_logged(session, bytes);
     let sign: Option<SignSettings<'_>> = session.map(|_| &signer as SignSettings<'_>);
+    step(&format!(
+        "image: mode {}",
+        if request.first_boot_enrolment {
+            "first-boot enrolment"
+        } else {
+            "thin image"
+        }
+    ));
     if request.first_boot_enrolment {
         let Some(session) = session else {
             return Err("sign in to the Hub to use first-boot enrolment".to_owned());
@@ -368,11 +429,19 @@ fn build_stick(
             &options,
             |settings, machine_number, scope| {
                 mint_enrolment_code(HUB_URL, session, settings, machine_number, scope, hardware)
+                    .inspect(|_| step("image: enrolment code minted by the Hub"))
+                    .inspect_err(|e| {
+                        step(&format!("image: the Hub refused an enrolment code: {e}"));
+                    })
                     .map(|minted| minted.code)
             },
             progress,
         )
         .map_err(|e| e.to_string())?;
+        step(&format!(
+            "image: enrolment image built for stick {}",
+            config.stick_id
+        ));
         return Ok(MadeStick {
             config_sha256: enrolment_config_sha256(&config),
             id: config.stick_id,
@@ -392,8 +461,17 @@ fn build_stick(
     )
     .map_err(|e| e.to_string())?;
     // The next successful push includes this stick if the Hub is unavailable now.
+    step(&format!(
+        "image: thin image built for stick {}",
+        built.config.stick_id
+    ));
     if let Some(session) = session {
-        let _ = push_registry_signed_in(HUB_URL, session, &registry);
+        match push_registry_signed_in(HUB_URL, session, &registry) {
+            Ok(_) => step("image: stick sent to the Hub"),
+            Err(e) => step(&format!(
+                "image: could not send the stick to the Hub yet: {e}"
+            )),
+        }
     }
     Ok(MadeStick {
         config_sha256: stick_config_sha256(&built.config),
@@ -408,9 +486,18 @@ fn build_stick(
 /// is then only not checked, or not counted as rewritten.
 fn record_written(session: &HubSession, written: &[MadeStick]) {
     for stick in written {
-        let _ = record_config_hash(HUB_URL, session, &stick.id, &stick.config_sha256);
+        match record_config_hash(HUB_URL, session, &stick.id, &stick.config_sha256) {
+            Ok(()) => step(&format!("hub: settings hash recorded for {}", stick.id)),
+            Err(e) => step(&format!(
+                "hub: settings hash NOT recorded for {}: {e}",
+                stick.id
+            )),
+        }
         if let Some(disk) = &stick.disk {
-            let _ = record_stick_write(HUB_URL, session, &stick.id, disk);
+            match record_stick_write(HUB_URL, session, &stick.id, disk) {
+                Ok(()) => step(&format!("hub: write recorded for {}", stick.id)),
+                Err(e) => step(&format!("hub: write NOT recorded for {}: {e}", stick.id)),
+            }
         }
     }
 }
@@ -719,7 +806,13 @@ fn write_elevated(
             &cancel_file,
         )?
     };
+    step(&format!(
+        "helper: starting {} for {} image(s)",
+        exe.display(),
+        images.len()
+    ));
     let mut child = start_elevated(&exe, &arguments)?;
+    let mut last_state = String::new();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
@@ -727,12 +820,25 @@ fn write_elevated(
         if cancel.load(Ordering::Relaxed) {
             let _ = std::fs::write(&cancel_file, b"cancel");
         }
-        if let Some(progress) = read_state(&progress_file).as_ref().and_then(progress_of) {
+        let state = read_state(&progress_file);
+        if let Some(state) = &state
+            && state.state != last_state
+        {
+            step(&format!("helper: state {}", state.state));
+            last_state.clone_from(&state.state);
+        }
+        if let Some(progress) = state.as_ref().and_then(progress_of) {
             report(progress);
         }
         std::thread::sleep(Duration::from_millis(500));
     };
     let finished = read_state(&progress_file);
+    step(&format!(
+        "helper: exited ({status}); last state {:?}, message {:?}, failed sticks {:?}",
+        finished.as_ref().map(|f| &f.state),
+        finished.as_ref().and_then(|f| f.message.as_ref()),
+        finished.as_ref().map(|f| &f.failed)
+    ));
     let _ = std::fs::remove_file(&progress_file);
     let _ = std::fs::remove_file(&cancel_file);
     Ok((finished, status.success()))

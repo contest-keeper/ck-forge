@@ -6,6 +6,7 @@
 mod app;
 mod contest;
 mod folder;
+mod log;
 mod make;
 #[cfg(test)]
 mod shots;
@@ -36,6 +37,12 @@ fn decode(bytes: &[u8]) -> Option<eframe::egui::IconData> {
 }
 
 fn main() -> eframe::Result {
+    log::step(&format!(
+        "Keeper Forge {} starts on {}; log file {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        log::path().display()
+    ));
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_inner_size([1000.0, 760.0])
         .with_min_inner_size([760.0, 560.0]);
