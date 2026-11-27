@@ -99,6 +99,11 @@ impl Page {
         }
     }
 
+    /// Clears transient state when leaving the Retire sticks page.
+    pub fn leave_retire(&mut self) {
+        self.sticks.leave();
+    }
+
     /// The page that retires the keys of old sticks.
     pub fn show_retire(&mut self, ui: &mut Ui, state: &AppState) {
         if state.hub_email.is_none() {

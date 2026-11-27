@@ -45,7 +45,7 @@ const STEPS: [Step; 5] = [
     Step {
         title: "Retire sticks",
         hint: "Old keys of rewritten sticks",
-        blurb: "A rewritten stick has a new key, and the old key keeps working until you retire it.",
+        blurb: "",
     },
 ];
 
@@ -137,6 +137,9 @@ impl Forge {
                     }
                 }
             }
+        }
+        if self.step == RETIRE && target != RETIRE {
+            self.make.leave_retire();
         }
         if target == RETIRE {
             if self.step != RETIRE {
@@ -260,11 +263,18 @@ impl Forge {
                         }
                     }
                     ui.add_space(10.0);
-                    if Btn::new("Retire old sticks\u{2026}")
+                    let signed_in = self.state.hub_email.is_some();
+                    let active = self.step == RETIRE;
+                    let mut retire_btn = Btn::new("Retire sticks\u{2026}")
                         .small()
+                        .enabled(signed_in || active);
+                    if active {
+                        retire_btn = retire_btn.primary();
+                    }
+                    let response = retire_btn
                         .show(ui)
-                        .clicked()
-                    {
+                        .on_disabled_hover_text("Sign in to the Hub to retire old sticks.");
+                    if response.clicked() {
                         self.go(RETIRE, ui.ctx());
                     }
                 });
