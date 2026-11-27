@@ -175,7 +175,8 @@ fn number_field(ui: &mut Ui, label: &str, hint: &str, held: String, apply: impl 
 }
 
 /// The card "Contest".
-pub fn contest(ui: &mut Ui, settings: &mut Settings) {
+pub fn contest(ui: &mut Ui, profile: &mut Profile) {
+    let settings = &mut profile.settings;
     let was = (
         settings.contest.platform,
         settings.contest.contest_id.clone(),
@@ -192,7 +193,7 @@ pub fn contest(ui: &mut Ui, settings: &mut Settings) {
         });
     });
     // The contest's page joins the bookmarks and becomes the home page, for the admin to change.
-    ck_admin_core::follow_contest(settings, was.0, &was.1);
+    ck_admin_core::follow_contest(profile, was.0, &was.1);
 }
 
 /// The judge the contest is on. A platform an older profile has is kept in the list.

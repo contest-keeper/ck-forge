@@ -40,7 +40,7 @@ pub use image::{
     image_configuration, requires_signed_settings, show_image, stick_config_sha256,
     supports_enrolment,
 };
-pub use profile::{Profile, StickKeyWindow, contest_url, follow_contest};
+pub use profile::{ContestBookmark, Profile, StickKeyWindow, contest_url, follow_contest};
 pub use registry::{CredentialScope, Registry, RegistryEntry};
 pub use stick::{local_now, make_stick_config};
 pub use wallpaper::{MAX_WALLPAPER_BYTES, Wallpaper, add_wallpaper, wallpaper_data_url};

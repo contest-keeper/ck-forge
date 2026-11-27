@@ -46,16 +46,31 @@ fn platform_domain(platform: Platform) -> Option<&'static str> {
     }
 }
 
+/// Whether the bookmark the form added has been removed or changed by the admin since.
+fn taken_over(state: &ContestBookmark, settings: &Settings) -> bool {
+    state.admin_owned
+        || state
+            .managed
+            .as_ref()
+            .is_some_and(|url| !settings.branding.bookmarks.iter().any(|b| &b.url == url))
+}
+
 /// Keeps the contest's bookmark, the home page and the allowed site in step with the platform and
 /// contest id the admin chose; `was_platform` and `was_id` are what they were before the change.
 ///
 /// - A valid id adds a "Contest" bookmark first, and makes it the home page when there is none.
 /// - A new id or platform moves that bookmark (and the home page, if it was the contest) with it,
 ///   and an id that is no longer valid takes it away.
-/// - A bookmark the admin changed, or removed, is never touched or brought back, and a home page
-///   the admin chose stays.
+/// - Once the admin removes or changes that bookmark it is theirs: the form never adds, moves or
+///   brings one back, whatever ids follow, and a home page the admin chose stays.
 /// - The platform's site is added to the allowed sites when the contest has one.
-pub fn follow_contest(settings: &mut Settings, was_platform: Platform, was_id: &str) {
+pub fn follow_contest(profile: &mut Profile, was_platform: Platform, was_id: &str) {
+    let settings = &mut profile.settings;
+    let state = &mut profile.contest_bookmark;
+    if taken_over(state, settings) {
+        state.managed = None;
+        state.admin_owned = true;
+    }
     let before = contest_url(was_platform, was_id);
     let now = contest_url(settings.contest.platform, &settings.contest.contest_id);
     if before == now {
@@ -63,20 +78,23 @@ pub fn follow_contest(settings: &mut Settings, was_platform: Platform, was_id: &
     }
     let branding = &mut settings.branding;
     if let Some(old) = &before {
-        // The bookmark still is the one this added, and it follows; otherwise it is the admin's.
-        if let Some(at) = branding.bookmarks.iter().position(|b| &b.url == old) {
-            match &now {
-                Some(url) => branding.bookmarks[at].url.clone_from(url),
-                None => {
-                    branding.bookmarks.remove(at);
-                }
+        // The bookmark the form added follows; one the admin took over is left alone.
+        if state.managed.as_ref() == Some(old)
+            && let Some(at) = branding.bookmarks.iter().position(|b| &b.url == old)
+        {
+            if let Some(url) = &now {
+                branding.bookmarks[at].url.clone_from(url);
+                state.managed.clone_from(&now);
+            } else {
+                branding.bookmarks.remove(at);
+                state.managed = None;
             }
         }
         if branding.home_page.as_ref() == Some(old) {
             branding.home_page.clone_from(&now);
         }
     } else if let Some(url) = &now {
-        if !branding.bookmarks.iter().any(|b| &b.url == url) {
+        if !state.admin_owned && !branding.bookmarks.iter().any(|b| &b.url == url) {
             branding.bookmarks.insert(
                 0,
                 Bookmark {
@@ -84,6 +102,7 @@ pub fn follow_contest(settings: &mut Settings, was_platform: Platform, was_id: &
                     url: url.clone(),
                 },
             );
+            state.managed = Some(url.clone());
         }
         if branding.home_page.is_none() {
             branding.home_page = Some(url.clone());
@@ -110,6 +129,23 @@ pub struct StickKeyWindow {
     pub valid_until: String,
 }
 
+/// What the form remembers about the contest bookmark it keeps, so the admin's own choices last.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContestBookmark {
+    /// The address of the bookmark the form added, while it is still there as it was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<String>,
+    /// The admin removed or changed that bookmark. The form then never adds or moves one again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin_owned: bool,
+}
+
+impl ContestBookmark {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// The admin's settings for one contest, saved as a JSON file.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Profile {
@@ -120,6 +156,8 @@ pub struct Profile {
     pub hub_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stick_key_window: Option<StickKeyWindow>,
+    #[serde(default, skip_serializing_if = "ContestBookmark::is_default")]
+    pub contest_bookmark: ContestBookmark,
 }
 
 impl Profile {
@@ -144,6 +182,7 @@ impl Profile {
             settings,
             hub_id: None,
             stick_key_window: None,
+            contest_bookmark: ContestBookmark::default(),
         }
     }
 
@@ -182,8 +221,10 @@ impl Profile {
         }
         if let Some(url) = contest_url(settings.contest.platform, &settings.contest.contest_id) {
             // The contest itself comes first, so contestants find it before the reference sites.
-            // One the admin already has, under any title, is left as it is.
-            if !settings.branding.bookmarks.iter().any(|b| b.url == url) {
+            // One the admin already has, under any title, is left as it is, and one the admin
+            // removed or changed is not put back.
+            let theirs = taken_over(&self.contest_bookmark, &settings);
+            if !theirs && !settings.branding.bookmarks.iter().any(|b| b.url == url) {
                 settings.branding.bookmarks.insert(
                     0,
                     Bookmark {

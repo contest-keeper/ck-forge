@@ -263,7 +263,7 @@ fn choose(profile: &mut Profile, platform: Platform, id: &str) {
     );
     profile.settings.contest.platform = platform;
     id.clone_into(&mut profile.settings.contest.contest_id);
-    ck_admin_core::follow_contest(&mut profile.settings, was.0, &was.1);
+    ck_admin_core::follow_contest(profile, was.0, &was.1);
 }
 
 #[test]
@@ -338,6 +338,59 @@ fn what_the_admin_changed_is_not_touched_again() {
     other.settings.branding.bookmarks.remove(0);
     choose(&mut other, Platform::Codeforces, "12");
     assert_eq!(other.settings.branding.bookmarks.len(), 2);
+}
+
+#[test]
+fn a_removed_or_changed_bookmark_stays_theirs_across_an_empty_id_a_new_one_and_a_build() {
+    let mut removed = Profile::template();
+    choose(&mut removed, Platform::Vjudge, "871412");
+    removed.settings.branding.bookmarks.remove(0);
+    // The form is drawn again before the next change, and sees it is gone.
+    choose(&mut removed, Platform::Vjudge, "871412");
+    choose(&mut removed, Platform::Vjudge, "");
+    choose(&mut removed, Platform::Vjudge, "999");
+    assert_eq!(
+        removed.settings.branding.bookmarks.len(),
+        2,
+        "not brought back"
+    );
+    assert!(
+        !removed
+            .stick_settings()
+            .branding
+            .bookmarks
+            .iter()
+            .any(|b| b.url.ends_with("/999")),
+        "a build does not put it back"
+    );
+
+    let mut changed = Profile::template();
+    choose(&mut changed, Platform::Vjudge, "871412");
+    changed.settings.branding.bookmarks[0].url =
+        "https://vjudge.net/contest/871412#rank".to_owned();
+    choose(&mut changed, Platform::Vjudge, "871412");
+    choose(&mut changed, Platform::Vjudge, "");
+    choose(&mut changed, Platform::Vjudge, "5");
+    let urls: Vec<&str> = changed
+        .settings
+        .branding
+        .bookmarks
+        .iter()
+        .map(|b| b.url.as_str())
+        .collect();
+    assert_eq!(
+        urls.iter().filter(|u| u.contains("vjudge.net")).count(),
+        1,
+        "{urls:?}"
+    );
+    // What the form remembers is saved with the profile, so it lasts across a restart.
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("p.json");
+    removed.save(&path).expect("save");
+    let mut loaded = Profile::load(&path).expect("load");
+    choose(&mut loaded, Platform::Vjudge, "");
+    choose(&mut loaded, Platform::Vjudge, "42");
+    assert_eq!(loaded.settings.branding.bookmarks.len(), 2);
 }
 
 #[test]
