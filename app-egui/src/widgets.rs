@@ -284,13 +284,16 @@ fn paint_button(ui: &Ui, t: &Tokens, response: &Response, kind: Kind, enabled: b
     if t.classic() {
         let danger = kind == Kind::Danger;
         painter.rect_filled(rect, 0.0, if danger { c.danger_solid } else { c.panel });
-        if kind == Kind::Primary {
-            // No weight to stand out with: the extension's heavy outline, instead of the bevel.
-            painter.rect_stroke(rect, 0.0, Stroke::new(2.0, c.text), StrokeKind::Inside);
-        } else if enabled && response.is_pointer_button_down_on() {
-            bevel(ui, rect, Bevel::Pressed);
+        let bevel_rect = if kind == Kind::Primary {
+            painter.rect_stroke(rect, 0.0, Stroke::new(1.0, c.text), StrokeKind::Inside);
+            rect.shrink(1.0)
         } else {
-            bevel(ui, rect, Bevel::Raised);
+            rect
+        };
+        if enabled && response.is_pointer_button_down_on() {
+            bevel(ui, bevel_rect, Bevel::Pressed);
+        } else {
+            bevel(ui, bevel_rect, Bevel::Raised);
         }
         return match (enabled, danger) {
             (false, _) => c.disabled,
@@ -376,12 +379,22 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// A card that opens and closes under its title (`details.card`). `None` while it is closed.
 pub fn details<R>(ui: &mut Ui, summary: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
-    card(ui, |ui| opening(ui, summary, false, add))
+    card(ui, |ui| opening(ui, summary, false, false, add))
 }
 
 /// A title that opens and closes what is under it, inside the place it is in (`<details>`).
 pub fn disclosure<R>(ui: &mut Ui, summary: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
-    opening(ui, summary, true, add)
+    opening(ui, summary, true, false, add)
+}
+
+/// Like [`disclosure`], with `default_open` before the user has toggled it.
+pub fn disclosure_with_default<R>(
+    ui: &mut Ui,
+    summary: &str,
+    default_open: bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    opening(ui, summary, true, default_open, add)
 }
 
 /// The title row of both. Only the plain one has the browser's triangle: a card's title is laid out as a
@@ -390,11 +403,12 @@ fn opening<R>(
     ui: &mut Ui,
     summary: &str,
     triangle: bool,
+    default_open: bool,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
     let t = tokens(ui.ctx());
     let id = ui.make_persistent_id(("details", summary));
-    let mut open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
+    let mut open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(default_open));
     let weight = if triangle {
         Weight::Semibold
     } else {
@@ -766,6 +780,7 @@ pub fn pill(ui: &mut Ui, tone: Tone, text: &str) -> Response {
         Tone::Ok if t.classic() => (t.c.accent, Color32::WHITE),
         Tone::Ok => (t.c.ok_bg, t.c.ok),
         Tone::Warn => (t.c.warn_bg, t.c.warn),
+        Tone::Error if t.classic() => (t.c.danger_solid, Color32::WHITE),
         Tone::Error => (t.c.danger_bg, t.c.danger_text),
         Tone::Off if t.classic() => (Color32::TRANSPARENT, t.c.text),
         Tone::Off => (t.c.soft, t.c.muted),
@@ -786,7 +801,7 @@ pub fn pill(ui: &mut Ui, tone: Tone, text: &str) -> Response {
         rect.height() / 2.0
     };
     ui.painter().rect_filled(rect, radius, fill);
-    if t.classic() && tone == Tone::Off {
+    if t.classic() && matches!(tone, Tone::Off | Tone::Error) {
         bevel(ui, rect, Bevel::Thin);
     }
     ui.painter().galley(rect.min + pad, galley, ink);
@@ -1146,6 +1161,24 @@ pub fn choice_sized(
     let height = height.max(name_galley.size().y + 4.0 + text_galley.size().y + 2.0 * pad.y);
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     response.widget_info(|| WidgetInfo::selected(Role::Button, enabled, pressed, name));
+    if t.classic() {
+        let down = pressed || (enabled && response.is_pointer_button_down_on());
+        ui.painter()
+            .rect_filled(rect, 0.0, if pressed { t.c.pushed } else { t.c.panel });
+        bevel(ui, rect, if down { Bevel::Pressed } else { Bevel::Raised });
+        let (ink, sub) = if enabled {
+            (t.c.text, t.c.muted)
+        } else {
+            (t.c.disabled, t.c.disabled)
+        };
+        let below = rect.min + pad + vec2(0.0, name_galley.size().y + 4.0);
+        ui.painter()
+            .galley_with_override_text_color(rect.min + pad, name_galley, ink);
+        ui.painter()
+            .galley_with_override_text_color(below, text_galley, sub);
+        focus_ring(ui, &response, 0);
+        return response;
+    }
     let (fill, edge) = if pressed {
         (t.c.accent_soft, t.c.accent)
     } else {
@@ -1194,18 +1227,26 @@ pub fn dialog<R>(
 ) -> (R, bool) {
     let t = tokens(ctx);
     let width = width.min(ctx.content_rect().width() - 32.0);
-    let frame = Frame::new()
+    let mut frame = Frame::new()
         .fill(t.c.panel)
-        .stroke(Stroke::new(1.0, t.c.line_strong))
         .corner_radius(t.s.radius_lg)
         .inner_margin(egui::Margin::symmetric(24, 22));
+    if !t.classic() {
+        frame = frame.stroke(Stroke::new(1.0, t.c.line_strong));
+    }
     let shown = egui::Modal::new(Id::unique(id))
-        .frame(frame)
+        .frame(Frame::NONE)
         .backdrop_color(Color32::from_black_alpha(115))
         .show(ctx, |ui| {
-            ui.set_width(width - 50.0);
-            ui.spacing_mut().item_spacing.y = 10.0;
-            add(ui)
+            let framed = frame.show(ui, |ui| {
+                ui.set_width(width - 50.0);
+                ui.spacing_mut().item_spacing.y = 10.0;
+                add(ui)
+            });
+            if t.classic() {
+                bevel(ui, framed.response.rect, Bevel::Raised);
+            }
+            framed.inner
         });
     let dismissed = shown.should_close();
     (shown.inner, dismissed)

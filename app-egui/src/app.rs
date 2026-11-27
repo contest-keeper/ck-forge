@@ -44,7 +44,7 @@ const STEPS: [Step; 5] = [
     Step {
         title: "Retire sticks",
         hint: "Old keys of rewritten sticks",
-        blurb: "A rewritten stick has a new key, and the old key keeps working until you retire it.",
+        blurb: "",
     },
 ];
 
@@ -134,6 +134,9 @@ impl Forge {
                     }
                 }
             }
+        }
+        if self.step == RETIRE && target != RETIRE {
+            self.make.leave_retire();
         }
         if target == RETIRE {
             if self.step != RETIRE {

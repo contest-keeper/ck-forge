@@ -91,21 +91,27 @@ fn hub_push(file: &Path) -> Result<String, Error> {
     ))
 }
 
+fn format_hub_stick(stick: &ck_admin_core::HubStick) -> String {
+    let mut parts: Vec<String> = [&stick.stick_id, &stick.team, &stick.site, &stick.contest]
+        .into_iter()
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect();
+    match (&stick.retired_at, stick.machine_number) {
+        (Some(_), _) => parts.push("[retired]".to_owned()),
+        (None, Some(number)) => parts.push(format!("machine {number}")),
+        (None, None) => {}
+    }
+    parts.join("  ")
+}
+
 fn hub_sticks() -> Result<String, Error> {
     let session = session()?;
     let sticks = forget_ended(ck_admin_core::list_sticks(HUB_URL, &session))?;
     let mut text = String::new();
-    for stick in sticks {
-        let state = match (&stick.retired_at, stick.machine_number) {
-            (Some(_), _) => " [retired]".to_owned(),
-            (None, Some(number)) => format!(" machine {number}"),
-            (None, None) => String::new(),
-        };
-        let _ = writeln!(
-            text,
-            "{}  {}  {}  {}{state}",
-            stick.stick_id, stick.team, stick.site, stick.contest
-        );
+    for stick in &sticks {
+        let _ = writeln!(text, "{}", format_hub_stick(stick));
     }
     Ok(text)
 }
@@ -171,5 +177,37 @@ pub(crate) fn run_hub(command: HubCommand) -> Result<String, Error> {
         HubCommand::Retire { id } => hub_retire(&id),
         HubCommand::Images => hub_images(),
         HubCommand::Download { id, out } => hub_download(&id, &out),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ck_admin_core::HubStick;
+
+    use super::*;
+
+    fn stick(id: &str) -> HubStick {
+        serde_json::from_str(&format!(r#"{{"stick_id":"{id}"}}"#)).expect("stick")
+    }
+
+    #[test]
+    fn unactivated_stick_has_no_blank_field_gaps() {
+        assert_eq!(format_hub_stick(&stick("abc123")), "abc123");
+
+        let mut active = stick("def456");
+        active.team = "Alpha".to_owned();
+        active.site = "Hall A".to_owned();
+        active.contest = "Finals".to_owned();
+        active.machine_number = Some(3);
+        assert_eq!(
+            format_hub_stick(&active),
+            "def456  Alpha  Hall A  Finals  machine 3"
+        );
+
+        active.retired_at = Some("2026-11-27".to_owned());
+        assert_eq!(
+            format_hub_stick(&active),
+            "def456  Alpha  Hall A  Finals  [retired]"
+        );
     }
 }

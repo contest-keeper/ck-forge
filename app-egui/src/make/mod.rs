@@ -103,9 +103,19 @@ impl Page {
             ui,
             "A rewritten stick has a new key, and the old key keeps working until you retire it.",
         );
-        if Btn::new("Retire old sticks…").small().show(ui).clicked() {
+        let retire = Btn::new("Retire old sticks…")
+            .small()
+            .enabled(signed_in)
+            .show(ui)
+            .on_disabled_hover_text("Sign in to the Hub to retire old sticks.");
+        if retire.clicked() {
             self.want_retire = true;
         }
+    }
+
+    /// Clears transient state when leaving the Retire sticks page.
+    pub fn leave_retire(&mut self) {
+        self.sticks.leave();
     }
 
     /// The page that retires the keys of old sticks.
