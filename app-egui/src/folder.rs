@@ -133,25 +133,31 @@ pub fn list_local(data: &Path) -> Vec<Local> {
     found
 }
 
-/// Removes a locally saved profile. Profiles stored inside `data/profiles/<folder>` have their
-/// dedicated folder removed too; files opened from elsewhere only remove the profile JSON.
+/// Removes a locally saved profile file and its named wallpaper, preserving sibling files such
+/// as `ck-registry.json`. If the profile lived in an otherwise empty `data/profiles/<folder>`,
+/// that empty directory is removed too.
 pub fn delete_local(data: Option<&Path>, path: &Path) -> Result<(), String> {
+    let wallpaper = Profile::load(path)
+        .ok()
+        .and_then(|profile| profile.settings.branding.wallpaper)
+        .filter(|name| Path::new(name).file_name().and_then(|n| n.to_str()) == Some(name));
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("could not delete profile: {e}")),
+    }
+    if let (Some(folder), Some(name)) = (path.parent(), wallpaper) {
+        let _ = std::fs::remove_file(folder.join(name));
+    }
     if let Some(root) = data.map(|d| d.join("profiles"))
         && path.starts_with(&root)
         && let Some(folder) = path.parent()
         && folder != root
     {
-        return match std::fs::remove_dir_all(folder) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("could not delete profile: {e}")),
-        };
+        // Only removes the directory when it is empty; ignores DirectoryNotEmpty so a registry stays.
+        let _ = std::fs::remove_dir(folder);
     }
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("could not delete profile: {e}")),
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -250,23 +256,37 @@ mod tests {
     }
 
     #[test]
-    fn delete_local_removes_dedicated_folder_for_managed_profiles_and_only_file_for_external() {
+    fn delete_local_removes_managed_profile_and_wallpaper_while_keeping_registry() {
         let data = tempfile::tempdir().expect("folder");
-        let (managed_path, _) = save_in(data.path(), &Profile::template(), None).expect("saved");
+        let source = tempfile::tempdir().expect("pic");
+        let pic = source.path().join("banner.png");
+        std::fs::write(&pic, b"pic").expect("pic");
+        let mut with_pic = Profile::template();
+        with_pic.settings.branding.wallpaper = Some("banner.png".to_owned());
+        let (managed_path, _) =
+            save_in(data.path(), &with_pic, Some(&pic)).expect("saved with wallpaper");
         let managed_folder = managed_path.parent().expect("folder").to_path_buf();
-        std::fs::write(managed_folder.join("wallpaper.png"), b"pic").expect("extra");
         let (other_path, _) = save_in(data.path(), &Profile::template(), None).expect("saved");
 
+        // An empty folder without a registry is removed cleanly alongside the profile & wallpaper.
         delete_local(Some(data.path()), &managed_path).expect("deleted managed");
         assert!(!managed_folder.exists());
         assert!(other_path.is_file());
 
-        // A file directly under `profiles/` is not treated as a dedicated profile folder.
+        // When a stick registry exists alongside the profile, the registry is kept intact.
+        let other_folder = other_path.parent().expect("other").to_path_buf();
+        let registry = other_folder.join("ck-registry.json");
+        std::fs::write(&registry, r#"{"sticks":[]}"#).expect("registry");
+        delete_local(Some(data.path()), &other_path).expect("deleted profile with registry");
+        assert!(!other_path.exists());
+        assert!(registry.is_file());
+
+        // A file directly under `profiles/` does not remove `profiles/`.
         let direct = data.path().join("profiles").join("direct.json");
         std::fs::write(&direct, "{}").expect("direct");
         delete_local(Some(data.path()), &direct).expect("deleted direct");
         assert!(!direct.exists());
-        assert!(other_path.is_file());
+        assert!(data.path().join("profiles").is_dir());
 
         // An external file leaves its directory and sibling files intact.
         let external_dir = tempfile::tempdir().expect("external");

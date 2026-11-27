@@ -138,7 +138,13 @@ impl Forge {
                 }
             }
         }
-        self.before_retire = (target == RETIRE && self.step != RETIRE).then_some(self.step);
+        if target == RETIRE {
+            if self.step != RETIRE {
+                self.before_retire = Some(self.step);
+            }
+        } else {
+            self.before_retire = None;
+        }
         self.step = target;
     }
 

@@ -413,7 +413,7 @@ impl Screen {
             RowAction::ConfirmDelete => {
                 self.confirm_delete = None;
                 self.clear_messages();
-                if let Some(id) = entry.hub_id {
+                if let (Some(id), true) = (entry.hub_id, state.hub_email.is_some()) {
                     self.deleting_active = here;
                     self.hub.delete(
                         ui.ctx(),
@@ -467,7 +467,7 @@ impl Screen {
                     .add_filter("Picture", &PICTURES)
                     .pick_file();
                 if let Some(source) = picked {
-                    self.use_wallpaper(state, &source);
+                    self.use_wallpaper(ui.ctx(), state, &source);
                 }
             }
             None => {}
@@ -629,7 +629,7 @@ impl Screen {
     }
 
     /// Copies a picture next to the profile, which is saved first so that it has a place.
-    fn use_wallpaper(&mut self, state: &mut AppState, source: &Path) {
+    fn use_wallpaper(&mut self, ctx: &egui::Context, state: &mut AppState, source: &Path) {
         let added = state
             .save_profile()
             .and_then(|path| copy_wallpaper(&path, source));
@@ -639,8 +639,9 @@ impl Screen {
                     profile.settings.branding.wallpaper = Some(name);
                     state.wallpaper_revision += 1;
                 }
-                if let Err(why) = state.save_profile() {
-                    self.wallpaper_failure = why;
+                match state.save_profile() {
+                    Ok(path) => self.sync_hub(ctx, state, path),
+                    Err(why) => self.wallpaper_failure = why,
                 }
             }
             Err(why) => self.wallpaper_failure = why,
@@ -732,7 +733,7 @@ mod tests {
         let (data, mut state, mut screen) = sample();
         let source = data.path().join("source.png");
         picture(&source, 1);
-        screen.use_wallpaper(&mut state, &source);
+        screen.use_wallpaper(&egui::Context::default(), &mut state, &source);
         assert_eq!(screen.wallpaper_failure, "");
         let path = state.profile_path.clone().expect("saved");
         assert!(folder_of(&path).join("wallpaper.png").is_file());
@@ -750,9 +751,10 @@ mod tests {
     #[test]
     fn save_as_takes_the_wallpaper_along_and_replaces_no_other() {
         let (data, mut state, mut screen) = sample();
+        let ctx = egui::Context::default();
         let source = data.path().join("source.png");
         picture(&source, 1);
-        screen.use_wallpaper(&mut state, &source);
+        screen.use_wallpaper(&ctx, &mut state, &source);
         let first = state.profile_path.clone();
 
         let other = tempfile::tempdir().expect("folder");
@@ -775,9 +777,10 @@ mod tests {
     #[test]
     fn a_failed_wallpaper_copy_leaves_the_editor_on_the_old_file() {
         let (data, mut state, mut screen) = sample();
+        let ctx = egui::Context::default();
         let source = data.path().join("source.png");
         picture(&source, 1);
-        screen.use_wallpaper(&mut state, &source);
+        screen.use_wallpaper(&ctx, &mut state, &source);
         let first = state.profile_path.clone().expect("saved");
         std::fs::remove_file(folder_of(&first).join("wallpaper.png")).expect("removed");
 
@@ -791,14 +794,15 @@ mod tests {
     #[test]
     fn choosing_a_link_to_the_wallpaper_keeps_the_picture() {
         let (data, mut state, mut screen) = sample();
+        let ctx = egui::Context::default();
         let source = data.path().join("source.png");
         picture(&source, 1);
-        screen.use_wallpaper(&mut state, &source);
+        screen.use_wallpaper(&ctx, &mut state, &source);
         let folder = folder_of(state.profile_path.as_ref().expect("saved")).to_owned();
         let link = folder.join("link.png");
         std::fs::hard_link(folder.join("wallpaper.png"), &link).expect("link");
 
-        screen.use_wallpaper(&mut state, &link);
+        screen.use_wallpaper(&ctx, &mut state, &link);
         assert_eq!(screen.wallpaper_failure, "");
         assert_eq!(
             std::fs::read(folder.join("wallpaper.png")).expect("picture"),
