@@ -763,8 +763,8 @@ mod profiles {
         assert!(seen[5].contains("venue"), "the network name is shared");
         assert!(seen[5].contains("2026-11-19T13:00:00Z"));
         assert!(
-            !seen.iter().any(|r| r.contains("hunter2")),
-            "the Wi-Fi password never goes to the Hub"
+            seen[5].contains("hunter2-hunter2"),
+            "the Hub keeps the Wi-Fi password encrypted, so it is sent to this PC's Hub"
         );
         assert!(
             seen.iter()

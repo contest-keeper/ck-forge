@@ -268,8 +268,8 @@ impl Profile {
         settings
     }
 
-    /// The settings without the Wi-Fi password. This is what is saved in a profile file and sent
-    /// to the Hub: the password belongs only on the stick, so it is typed again for each build.
+    /// The settings without the Wi-Fi password. This is what is saved in a profile
+    /// file: the password is kept encrypted in the Hub (see `sync_wifi_password`), never on disk.
     #[must_use]
     pub fn settings_without_secrets(&self) -> Settings {
         let mut settings = self.settings.clone();

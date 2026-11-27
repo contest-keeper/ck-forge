@@ -631,13 +631,13 @@ impl Screen {
             widgets::field(
                 ui,
                 &format!("Wi-Fi password for \u{201c}{network}\u{201d}"),
-                Some("Written only to the sticks; never saved in the profile or Hub."),
+                Some("Written to the sticks and kept encrypted in the Hub for this profile; never shown again. Leave empty to use the saved one."),
                 None,
                 |ui, label| {
                     ui.add_enabled_ui(idle, |ui| {
                         let input = Input::new(&mut self.wifi_password)
                             .password()
-                            .placeholder("Leave empty for an open network")
+                            .placeholder("Leave empty to use the saved password")
                             .show(ui);
                         input.labelled_by(label);
                     });
