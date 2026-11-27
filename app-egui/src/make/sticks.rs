@@ -2,6 +2,7 @@
 //! Hub knows (`ConfirmRetire.svelte`), and retiring keys afterwards (`RetireOldKeys.svelte`).
 
 use std::collections::BTreeSet;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -110,7 +111,13 @@ fn saved_session() -> Result<HubSession, String> {
 
 fn retire_on_hub(session: &Result<HubSession, String>, id: &str) -> Result<(), String> {
     let session = session.as_ref().map_err(Clone::clone)?;
-    retire_stick_credential(HUB_URL, session, id).map_err(hub_error)
+    answered(|| retire_stick_credential(HUB_URL, session, id).map_err(hub_error))
+}
+
+/// A panic must still become an answer: without one the window stays busy and cannot be closed.
+fn answered(request: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    catch_unwind(AssertUnwindSafe(request))
+        .unwrap_or_else(|_| Err("Forge failed, so it is unknown whether the key is retired".into()))
 }
 
 /// The session a batch may use: only the one of the account that started the write.
@@ -719,6 +726,12 @@ mod tests {
         assert!(session_of(session(), Some("a@b.c")).is_ok());
         assert!(session_of(session(), Some("d@e.f")).is_err());
         assert!(session_of(session(), None).is_err());
+    }
+
+    #[test]
+    fn a_request_that_panics_still_answers() {
+        assert!(answered(|| panic!("boom")).is_err());
+        assert!(answered(|| Ok(())).is_ok());
     }
 
     #[test]
