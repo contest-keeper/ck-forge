@@ -210,7 +210,7 @@ pub(crate) enum ImageCommand {
         /// Applying it needs WSL on Windows
         #[arg(long)]
         patch: Option<PathBuf>,
-        /// Where downloads are kept (default: the system cache folder)
+        /// Where downloads are kept (default: local app data cache folder, or ./ck-forge-cache when unset)
         #[arg(long)]
         cache: Option<PathBuf>,
         /// The QEMU folder (default: searched on PATH, or C:\Program Files\qemu on Windows)

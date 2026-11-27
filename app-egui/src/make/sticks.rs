@@ -177,9 +177,7 @@ impl Screen {
     pub fn receive(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Sticks(account, _)
-                | Event::Retired(account, _, _)
-                | Event::OldDone(account, _)
+                Event::Sticks(account, _) | Event::Retired(account, _, _)
                     if account != self.account => {}
                 Event::Sticks(_, result) => {
                     self.loading = false;
@@ -200,8 +198,11 @@ impl Screen {
                         Err(why) => self.failure = why,
                     }
                 }
-                Event::OldDone(_, failed) => {
-                    self.retiring_old = false;
+                Event::OldDone(account, failed) => {
+                    // Failed keys stay reported even after an account change so active keys are not lost.
+                    if account == self.account {
+                        self.retiring_old = false;
+                    }
                     if !failed.is_empty() {
                         self.old_failure = format!(
                             "The new sticks are written, but these old keys are still active:\n{}",
@@ -639,11 +640,13 @@ mod tests {
         assert!(screen.asking.is_none());
         assert_eq!(screen.failure, "");
 
+        screen.retiring_old = true;
         assert!(screen.sender.send(stale_retired).is_ok());
         assert!(screen.sender.send(stale_done).is_ok());
         screen.receive();
         assert!(screen.retired.is_empty());
-        assert_eq!(screen.old_failure, "");
+        assert!(screen.retiring_old);
+        assert!(screen.old_failure.contains("a: down"));
     }
 
     #[test]
