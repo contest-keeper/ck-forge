@@ -2,6 +2,8 @@
 //! Hub knows (`ConfirmRetire.svelte`), and retiring keys afterwards (`RetireOldKeys.svelte`).
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
@@ -47,6 +49,8 @@ pub struct Screen {
     working: Option<String>,
     /// The keys of the replaced sticks are being retired after a write.
     retiring_old: bool,
+    /// Set when the account changes: a running batch sends no further key.
+    stop: Arc<AtomicBool>,
     /// The stick whose retiring waits for a second click: it cannot be undone.
     pub(super) asking: Option<String>,
     failure: String,
@@ -68,6 +72,7 @@ impl Default for Screen {
             account: 0,
             working: None,
             retiring_old: false,
+            stop: Arc::default(),
             asking: None,
             failure: String::new(),
             old_failure: String::new(),
@@ -108,6 +113,18 @@ fn retire_on_hub(session: &Result<HubSession, String>, id: &str) -> Result<(), S
     retire_stick_credential(HUB_URL, session, id).map_err(hub_error)
 }
 
+/// The session a batch may use: only the one of the account that started the write.
+fn session_of(
+    session: Result<HubSession, String>,
+    account: Option<&str>,
+) -> Result<HubSession, String> {
+    let session = session?;
+    if Some(session.email.as_str()) != account {
+        return Err("another account is signed in than the one that started the write".to_owned());
+    }
+    Ok(session)
+}
+
 /// Retires the keys one by one; a key that fails is told, and the others still go.
 fn retire_each(
     sticks: &[HubStick],
@@ -136,7 +153,13 @@ impl Screen {
 
     /// Called only when a write ended with everything written and read back: remembers the sticks
     /// it replaced and, when the admin asked for it, retires their keys.
-    pub fn after_write(&mut self, previous: Vec<HubStick>, retire: bool, ctx: &Context) {
+    pub fn after_write(
+        &mut self,
+        previous: Vec<HubStick>,
+        retire: bool,
+        started_by: Option<&str>,
+        ctx: &Context,
+    ) {
         self.retired.clear();
         self.others = None;
         self.old_failure.clear();
@@ -150,11 +173,17 @@ impl Screen {
         let sender = self.sender.clone();
         let ctx = ctx.clone();
         // Read once, now: another admin signing in later must not retire these keys.
-        let session = saved_session();
+        let session = session_of(saved_session(), started_by);
+        let stop = Arc::clone(&self.stop);
         thread::spawn(move || {
             let failed = retire_each(
                 &sticks,
-                |id| retire_on_hub(&session, id),
+                |id| {
+                    if stop.load(Ordering::Relaxed) {
+                        return Err("not tried, the signed-in account changed".to_owned());
+                    }
+                    retire_on_hub(&session, id)
+                },
                 |id| {
                     // The window may be gone by now; then nobody needs the answer.
                     let _ = sender.send(Event::OldRetired(account, id.to_owned()));
@@ -175,6 +204,8 @@ impl Screen {
     /// about keys that are still active stays.
     pub fn forget(&mut self) {
         self.account += 1;
+        self.stop.store(true, Ordering::Relaxed);
+        self.stop = Arc::default();
         self.loading = false;
         self.previous.clear();
         self.retired.clear();
@@ -584,7 +615,7 @@ mod tests {
     #[test]
     fn keeping_the_old_keys_retires_nothing() {
         let mut screen = Screen::default();
-        screen.after_write(vec![stick("a")], false, &Context::default());
+        screen.after_write(vec![stick("a")], false, None, &Context::default());
         assert!(!screen.busy());
         assert_eq!(screen.previous.len(), 1);
     }
@@ -655,7 +686,10 @@ mod tests {
         let stale_retired = Event::Retired(screen.account, "b".to_owned(), Ok(()));
         let progress = Event::OldRetired(screen.account, "c".to_owned());
         let done = Event::OldDone(vec!["a: down".to_owned()]);
+        let running = Arc::clone(&screen.stop);
         screen.forget();
+        // The running batch is told to stop; the next one is not.
+        assert!(running.load(Ordering::Relaxed) && !screen.stop.load(Ordering::Relaxed));
         assert!(screen.retired.is_empty());
         // Both threads still run, so closing and writing stay refused.
         assert!(screen.working.is_some() && screen.retiring_old());
@@ -677,6 +711,14 @@ mod tests {
         screen.receive();
         assert!(screen.old_failure.contains("a: down"));
         assert!(screen.old_failure.contains("b: timeout"));
+    }
+
+    #[test]
+    fn a_batch_uses_only_the_session_of_the_account_that_started_the_write() {
+        let session = || Ok(HubSession::restore("secret".to_owned(), "a@b.c".to_owned()));
+        assert!(session_of(session(), Some("a@b.c")).is_ok());
+        assert!(session_of(session(), Some("d@e.f")).is_err());
+        assert!(session_of(session(), None).is_err());
     }
 
     #[test]

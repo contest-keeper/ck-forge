@@ -124,10 +124,13 @@ pub struct Screen {
     pub written: bool,
     /// A write that worked, until the page takes it: the sticks it replaced, and whether to retire
     /// their keys.
-    finished: Option<(Vec<HubStick>, bool)>,
+    finished: Option<Finished>,
     events: Receiver<Event>,
     sender: Sender<Event>,
 }
+
+/// The sticks a write replaced, whether to retire their keys, and the account it was started in.
+pub type Finished = (Vec<HubStick>, bool, Option<String>);
 
 /// A write that is running on its own thread.
 struct Job {
@@ -136,6 +139,7 @@ struct Job {
     events: Receiver<JobEvent>,
     before: Vec<HubStick>,
     retire: bool,
+    account: Option<String>,
     /// How many sticks it writes; none for a test file.
     disks: usize,
     started: Instant,
@@ -224,7 +228,7 @@ impl Screen {
     }
 
     /// The write that just worked, if one did.
-    pub fn take_finished(&mut self) -> Option<(Vec<HubStick>, bool)> {
+    pub fn take_finished(&mut self) -> Option<Finished> {
         self.finished.take()
     }
 
@@ -423,7 +427,7 @@ impl Screen {
         if result.is_ok() {
             self.written = true;
             // Only here: the old keys are needed until the new sticks are written and read back.
-            self.finished = Some((job.before, job.retire));
+            self.finished = Some((job.before, job.retire, job.account));
         }
     }
 
@@ -535,6 +539,7 @@ impl Screen {
             events,
             before,
             retire,
+            account: self.email.clone(),
             disks,
             started: Instant::now(),
         });
@@ -972,6 +977,7 @@ impl Screen {
             events,
             before: Vec::new(),
             retire: false,
+            account: None,
             disks: 1,
             started: began,
         });
@@ -1143,7 +1149,7 @@ pub(super) mod tests {
             assert_eq!(screen.written, worked);
             let finished = screen.take_finished();
             assert_eq!(finished.is_some(), worked);
-            assert!(finished.is_none_or(|(before, retire)| retire && before.len() == 1));
+            assert!(finished.is_none_or(|(before, retire, _)| retire && before.len() == 1));
         }
     }
 

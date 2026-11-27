@@ -31,8 +31,9 @@ impl Page {
         self.sticks.receive();
         self.write.receive(ctx);
         self.follow(ctx, state);
-        if let Some((previous, retire)) = self.write.take_finished() {
-            self.sticks.after_write(previous, retire, ctx);
+        if let Some((previous, retire, account)) = self.write.take_finished() {
+            self.sticks
+                .after_write(previous, retire, account.as_deref(), ctx);
         }
         state.written |= self.write.written;
         state.busy = self.locked() || self.images.creator.busy() || self.sticks.busy();
