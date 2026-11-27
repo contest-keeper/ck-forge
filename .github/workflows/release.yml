@@ -87,8 +87,13 @@ jobs:
           tool: cargo-about
       - name: Install NSIS
         run: |
-          choco install nsis --no-progress -y
-          echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
+          # Only NSIS 3 in its own folder counts: this compiler builds the installer that gets signed.
+          nsis="/c/Program Files (x86)/NSIS/makensis.exe"
+          if ! "$nsis" -VERSION 2>/dev/null | grep -q '^v3\.'; then
+            choco install nsis --no-progress -y
+          fi
+          "$nsis" -VERSION | grep '^v3\.'
+          echo "MAKENSIS=$nsis" >> "$GITHUB_ENV"
         shell: bash
       - name: Build the installer and collect the files under stable names
         # The licence step fails on a licence that is not allowed (app-egui/about.toml) or on an empty
