@@ -372,7 +372,8 @@ fn build_enrolment_stick(
     hardware: Option<&HardwareId>,
     progress: impl FnMut(u64, u64),
 ) -> Result<MadeStick, String> {
-    let config = build_enrolment_image(
+    let mut minted_id: Option<StickId> = None;
+    let config = match build_enrolment_image(
         options,
         |stick_id, settings, machine_number, scope| {
             mint_enrolment_code(
@@ -384,15 +385,24 @@ fn build_enrolment_stick(
                 scope,
                 hardware,
             )
-            .inspect(|_| step("image: enrolment code minted by the Hub"))
+            .inspect(|_| {
+                minted_id = Some(stick_id.clone());
+                step("image: enrolment code minted by the Hub");
+            })
             .inspect_err(|e| {
                 step(&format!("image: the Hub refused an enrolment code: {e}"));
             })
             .map(|minted| minted.code)
         },
         progress,
-    )
-    .map_err(|e| e.to_string())?;
+    ) {
+        Ok(config) => config,
+        Err(error) => {
+            return Err(retire_minted_stick(minted_id.as_ref(), &error, |id| {
+                retire_stick_credential(HUB_URL, session, id)
+            }));
+        }
+    };
     step(&format!(
         "image: enrolment image built for stick {}",
         config.stick_id
@@ -403,6 +413,35 @@ fn build_enrolment_stick(
         disk: None,
         registered: true,
     })
+}
+
+/// Retires a pre-registered stick right away when minting succeeded before image creation failed,
+/// so no unactivated stick is left behind on the Hub.
+fn retire_minted_stick(
+    minted_id: Option<&StickId>,
+    error: &AdminError,
+    retire: impl FnOnce(&str) -> Result<(), AdminError>,
+) -> String {
+    let message = error.to_string();
+    let Some(id) = minted_id else {
+        return message;
+    };
+    match retire(id.as_str()) {
+        Ok(()) | Err(AdminError::NoSuchStick) => {
+            step(&format!(
+                "image: retired unactivated stick {id} after image build failure"
+            ));
+            message
+        }
+        Err(retire_err) => {
+            step(&format!(
+                "image: could not retire unactivated stick {id} after image build failure: {retire_err}"
+            ));
+            format!(
+                "{message}. stick {id} could not be retired on the Hub, so retire it there: {retire_err}"
+            )
+        }
+    }
 }
 
 /// Makes one stick image. First-boot enrolment keeps the signing key on the stick from birth.
@@ -1152,5 +1191,38 @@ mod tests {
             &mut Vec::new(),
         );
         assert_eq!(result, Err(CANCELLED_BEFORE_WRITING.to_owned()));
+    }
+
+    #[test]
+    fn failed_enrolment_build_retires_minted_stick_when_minting_succeeded() {
+        let id = StickId::parse("12345678-1234-1234-1234-1234567890ab").expect("id");
+
+        let mut called = false;
+        let msg = retire_minted_stick(None, &AdminError::Hub("bad base".into()), |_| {
+            called = true;
+            Ok(())
+        });
+        assert!(!called);
+        assert_eq!(msg, "bad base");
+
+        let mut retired = Vec::new();
+        let msg = retire_minted_stick(Some(&id), &AdminError::Hub("signing failed".into()), |s| {
+            retired.push(s.to_owned());
+            Ok(())
+        });
+        assert_eq!(retired, [id.as_str()]);
+        assert_eq!(msg, "signing failed");
+
+        let msg = retire_minted_stick(Some(&id), &AdminError::Hub("write failed".into()), |_| {
+            Err(AdminError::NoSuchStick)
+        });
+        assert_eq!(msg, "write failed");
+
+        let msg = retire_minted_stick(Some(&id), &AdminError::Hub("write failed".into()), |_| {
+            Err(AdminError::Hub("hub unreachable".into()))
+        });
+        assert!(msg.contains("write failed"));
+        assert!(msg.contains(id.as_str()));
+        assert!(msg.contains("hub unreachable"));
     }
 }
