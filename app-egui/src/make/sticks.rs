@@ -24,7 +24,10 @@ pub enum Choice {
 enum Event {
     /// The list, and the account generation it was asked in.
     Sticks(u64, Result<Vec<HubStick>, String>),
+    /// The answer to a click here: it ends `working`.
     Retired(u64, String, Result<(), String>),
+    /// One more key of the replaced sticks is retired; the batch goes on.
+    OldRetired(u64, String),
     /// The keys of the replaced sticks were tried: the ones that are still active, and why.
     OldDone(Vec<String>),
 }
@@ -146,15 +149,15 @@ impl Screen {
         let account = self.account;
         let sender = self.sender.clone();
         let ctx = ctx.clone();
+        // Read once, now: another admin signing in later must not retire these keys.
+        let session = saved_session();
         thread::spawn(move || {
-            // Read once: another admin signing in during the loop must not retire the rest.
-            let session = saved_session();
             let failed = retire_each(
                 &sticks,
                 |id| retire_on_hub(&session, id),
                 |id| {
                     // The window may be gone by now; then nobody needs the answer.
-                    let _ = sender.send(Event::Retired(account, id.to_owned(), Ok(())));
+                    let _ = sender.send(Event::OldRetired(account, id.to_owned()));
                 },
             );
             let _ = sender.send(Event::OldDone(failed));
@@ -185,9 +188,8 @@ impl Screen {
     pub fn receive(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Sticks(account, _) if account != self.account => {}
-                // Its thread has ended; only the answer belongs to the other account.
-                Event::Retired(account, _, _) if account != self.account => self.working = None,
+                Event::Sticks(account, _) | Event::OldRetired(account, _)
+                    if account != self.account => {}
                 Event::Sticks(_, result) => {
                     self.loading = false;
                     match result {
@@ -195,16 +197,15 @@ impl Screen {
                         Err(why) => self.failure = why,
                     }
                 }
-                Event::Retired(_, id, result) => {
+                Event::OldRetired(_, id) => self.mark_retired(id),
+                Event::Retired(account, id, result) => {
+                    // The thread has ended, whichever account its answer is for.
                     self.working = None;
-                    match result {
-                        Ok(()) => {
-                            if self.other == id {
-                                self.other.clear();
-                            }
-                            self.retired.insert(id);
+                    if account == self.account {
+                        match result {
+                            Ok(()) => self.mark_retired(id),
+                            Err(why) => self.failure = why,
                         }
-                        Err(why) => self.failure = why,
                     }
                 }
                 // Taken whatever the account: the thread has ended, and a key that is still active
@@ -225,6 +226,13 @@ impl Screen {
                 }
             }
         }
+    }
+
+    fn mark_retired(&mut self, id: String) {
+        if self.other == id {
+            self.other.clear();
+        }
+        self.retired.insert(id);
     }
 
     fn refresh(&mut self, ctx: Context) {
@@ -645,6 +653,7 @@ mod tests {
             ..Screen::default()
         };
         let stale_retired = Event::Retired(screen.account, "b".to_owned(), Ok(()));
+        let progress = Event::OldRetired(screen.account, "c".to_owned());
         let done = Event::OldDone(vec!["a: down".to_owned()]);
         screen.forget();
         assert!(screen.retired.is_empty());
@@ -653,8 +662,12 @@ mod tests {
         assert!(screen.asking.is_none());
         assert_eq!(screen.failure, "");
 
-        assert!(screen.sender.send(stale_retired).is_ok());
+        assert!(screen.sender.send(progress).is_ok());
         assert!(screen.sender.send(done).is_ok());
+        screen.receive();
+        // The batch ended; the retirement started by a click still runs.
+        assert!(screen.busy() && !screen.retiring_old());
+        assert!(screen.sender.send(stale_retired).is_ok());
         screen.receive();
         assert!(screen.retired.is_empty());
         assert!(!screen.busy());
