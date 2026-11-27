@@ -376,6 +376,9 @@ fn build_enrolment_stick(
     let config = match build_enrolment_image(
         options,
         |stick_id, settings, machine_number, scope| {
+            // Record before sending so truncated HTTP 201 responses still attempt cleanup;
+            // `NoSuchStick` is ignored if nothing was created on the Hub.
+            minted_id = Some(stick_id.clone());
             mint_enrolment_code(
                 HUB_URL,
                 session,
@@ -386,7 +389,6 @@ fn build_enrolment_stick(
                 hardware,
             )
             .inspect(|_| {
-                minted_id = Some(stick_id.clone());
                 step("image: enrolment code minted by the Hub");
             })
             .inspect_err(|e| {
