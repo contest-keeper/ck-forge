@@ -89,8 +89,14 @@ pub fn follow_contest(settings: &mut Settings, was_platform: Platform, was_id: &
             branding.home_page = Some(url.clone());
         }
     }
-    if now.is_some()
-        && let Some(domain) = platform_domain(settings.contest.platform)
+    if now.is_some() {
+        allow_platform_site(settings);
+    }
+}
+
+/// Lets contestants reach the site of the platform the contest is on, when it is not allowed yet.
+fn allow_platform_site(settings: &mut Settings) {
+    if let Some(domain) = platform_domain(settings.contest.platform)
         && !settings.network.allowed_domains.iter().any(|d| d == domain)
     {
         settings.network.allowed_domains.push(domain.to_owned());
@@ -186,6 +192,8 @@ impl Profile {
                     },
                 );
             }
+            // A bookmark to a site the stick does not allow would open nothing.
+            allow_platform_site(&mut settings);
         }
         settings
     }

@@ -351,8 +351,25 @@ fn only_a_numbered_contest_of_a_known_platform_has_a_page_and_a_vjudge_stick_ope
     let mut profile = Profile::template();
     profile.settings.contest.platform = Platform::Vjudge;
     profile.settings.contest.contest_id = "871412".to_owned();
-    let bookmarks = profile.stick_settings().branding.bookmarks;
-    assert_eq!(bookmarks[0].url, "https://vjudge.net/contest/871412");
+    let built = profile.stick_settings();
+    assert_eq!(
+        built.branding.bookmarks[0].url,
+        "https://vjudge.net/contest/871412"
+    );
+    // The contest's site is allowed on the stick even when the profile never listed it.
+    assert!(
+        built
+            .network
+            .allowed_domains
+            .contains(&".vjudge.net".to_owned())
+    );
+    assert!(
+        !profile
+            .settings
+            .network
+            .allowed_domains
+            .contains(&".vjudge.net".to_owned())
+    );
     // A non-number on VJudge is warned about like on Codeforces.
     profile.settings.contest.contest_id = "abc".to_owned();
     assert!(
