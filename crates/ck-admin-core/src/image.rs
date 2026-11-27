@@ -241,7 +241,12 @@ pub fn supports_enrolment(base: &Path) -> Result<bool, Error> {
 /// only after checking that the base and settings can use enrolment.
 pub fn build_enrolment_image(
     options: &EnrolmentBuild<'_>,
-    mint: impl FnOnce(&Settings, u32, Option<&CredentialScope>) -> Result<EnrolmentCode, Error>,
+    mint: impl FnOnce(
+        &StickId,
+        &Settings,
+        u32,
+        Option<&CredentialScope>,
+    ) -> Result<EnrolmentCode, Error>,
     progress: impl FnMut(u64, u64),
 ) -> Result<EnrolmentConfig, Error> {
     if !supports_enrolment(options.base)? {
@@ -274,7 +279,7 @@ pub fn build_enrolment_image(
     // The number belongs to the code, so keep the reservation if minting or writing fails.
     let machine_number =
         Registry::reserve_enrolment(options.registry, &id, &settings.contest.name)?;
-    let code = mint(&settings, machine_number, scope.as_ref())?;
+    let code = mint(&id, &settings, machine_number, scope.as_ref())?;
     let config = EnrolmentConfig::new(id, options.now, Some(machine_number), code, settings);
     let bytes = enrolment_json(&config);
     let signature = signature_of(signed, options.sign, &bytes)?;

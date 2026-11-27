@@ -40,7 +40,7 @@ const STEPS: [Step; 5] = [
     Step {
         title: "Make sticks",
         hint: "Base image, erase and write USB",
-        blurb: "Choose the base image once, tick the sticks and write. Each stick gets its own identity from the saved profile. Your computer asks for administrator permission when the write starts.",
+        blurb: "Choose the base image, tick sticks, and write.",
     },
     Step {
         title: "Retire sticks",
