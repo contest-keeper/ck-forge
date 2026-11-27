@@ -252,7 +252,7 @@ impl Forge {
                         self.state.written,
                         false,
                     ];
-                    // Retiring is not a step of making sticks: it has its own button on the Make page.
+                    // Retiring is not a step of making sticks: it has its own button in the footer.
                     for (at, step) in STEPS.iter().enumerate().take(RETIRE) {
                         if step_button(ui, at, step, at == self.step, done[at]).clicked() {
                             self.go(at, ui.ctx());
@@ -314,6 +314,18 @@ impl Forge {
                             self.step - 1
                         };
                         self.go(back, ui.ctx());
+                    }
+                    // In the footer so it is reachable from every step: retiring needs the Hub
+                    // only, and a profile with problems must not stand in its way.
+                    if self.step != RETIRE {
+                        let retire = Btn::new("Retire old sticks…")
+                            .small()
+                            .enabled(self.state.hub_email.is_some())
+                            .show(ui)
+                            .on_disabled_hover_text("Sign in to the Hub to retire old sticks.");
+                        if retire.clicked() {
+                            self.go(RETIRE, ui.ctx());
+                        }
                     }
                     // The button takes its place first; the message gets what is left.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -412,9 +424,6 @@ impl Forge {
                                     // A sync that failed after Continue is told on the way.
                                     widgets::note(ui, Tone::Error, self.contest.failure());
                                     self.make.show(ui, &mut self.state);
-                                    if std::mem::take(&mut self.make.want_retire) {
-                                        self.go(RETIRE, ui.ctx());
-                                    }
                                 }
                                 _ => self.make.show_retire(ui, &self.state),
                             }

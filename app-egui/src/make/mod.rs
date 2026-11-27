@@ -11,7 +11,7 @@ pub mod write;
 use eframe::egui::{Context, Ui};
 
 use crate::state::AppState;
-use crate::widgets::{self, Btn, Tone};
+use crate::widgets::{self, Tone};
 
 #[derive(Default)]
 pub struct Page {
@@ -20,8 +20,6 @@ pub struct Page {
     sticks: sticks::Screen,
     /// The admin the old keys were listed for.
     email: Option<String>,
-    /// "Retire old sticks" was clicked: the window moves to that page.
-    pub want_retire: bool,
 }
 
 impl Page {
@@ -97,19 +95,6 @@ impl Page {
                 "Write into an image file"
             };
             widgets::details(ui, title, |ui| self.write.file_ui(ui, locked));
-        }
-        // After the write, where a rewritten stick's old key is first thought of.
-        widgets::hint(
-            ui,
-            "A rewritten stick has a new key, and the old key keeps working until you retire it.",
-        );
-        let retire = Btn::new("Retire old sticks…")
-            .small()
-            .enabled(signed_in)
-            .show(ui)
-            .on_disabled_hover_text("Sign in to the Hub to retire old sticks.");
-        if retire.clicked() {
-            self.want_retire = true;
         }
     }
 

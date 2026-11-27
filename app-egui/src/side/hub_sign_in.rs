@@ -72,7 +72,7 @@ pub enum Event {
     Ended(Ended),
     Failed(String),
     /// The name of the organization of the signed-in account.
-    Organization(String),
+    Organization(u64, String),
     /// The Hub ended the session that an earlier run saved.
     SessionEnded,
 }
@@ -101,6 +101,8 @@ pub struct Screen {
     /// The organization of the signed-in account, once the Hub has said; asked once per sign-in.
     organization: Option<String>,
     organization_asked: bool,
+    /// Counts the sign-ins and sign-outs, so a lookup that answers late is known to be old.
+    generation: u64,
     /// The saved session has not been checked with the Hub yet.
     check: bool,
     /// The session on screen is still the one an earlier run saved.
@@ -120,6 +122,7 @@ impl Screen {
             registry: None,
             organization: None,
             organization_asked: false,
+            generation: 0,
             check: false,
             restored: false,
             cancel: Arc::default(),
@@ -162,7 +165,7 @@ impl Screen {
         }
         if matches!(self.state, State::SignedIn(_)) && !self.organization_asked {
             self.organization_asked = true;
-            ask_organization(self.sender.clone(), ctx.clone());
+            ask_organization(self.sender.clone(), ctx.clone(), self.generation);
         }
         app.hub_email = match &self.state {
             State::SignedIn(email) => Some(email.clone()),
@@ -179,8 +182,11 @@ impl Screen {
                 return Some(Saved::Revoke);
             }
             Event::SignedIn(_, registry) => self.registry.clone_from(registry),
-            Event::Organization(name) => {
-                self.organization = Some(name.clone());
+            Event::Organization(generation, name) => {
+                // An answer for an earlier account is not this account's organization.
+                if *generation == self.generation {
+                    self.organization = Some(name.clone());
+                }
                 return None;
             }
             // About the saved session only: a sign-out or a newer sign-in made it old news.
@@ -302,6 +308,7 @@ impl Screen {
     fn forget_organization(&mut self) {
         self.organization = None;
         self.organization_asked = false;
+        self.generation += 1;
     }
 
     fn sign_out(&mut self) {
@@ -328,13 +335,13 @@ enum Saved {
 
 /// Asks the Hub which organization the saved session belongs to. A Hub that cannot be reached or an
 /// account with several organizations is not an answer: the line is left out.
-fn ask_organization(sender: Sender<Event>, ctx: Context) {
+fn ask_organization(sender: Sender<Event>, ctx: Context, generation: u64) {
     thread::spawn(move || {
         let Some(session) = vault::load() else {
             return;
         };
         if let Ok(name) = ck_admin_core::organization_name(HUB_URL, &session) {
-            let _ = sender.send(Event::Organization(name));
+            let _ = sender.send(Event::Organization(generation, name));
             ctx.request_repaint();
         }
     });
