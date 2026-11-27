@@ -190,13 +190,7 @@ impl Screen {
     }
 
     pub fn show(&mut self, ui: &mut Ui, base: Option<&Path>, signed_in: bool, locked: bool) {
-        widgets::step_head(
-            ui,
-            1,
-            base.is_some(),
-            "Base image",
-            "The system every stick is copied from. Forge remembers your choice.",
-        );
+        widgets::step_head(ui, 1, base.is_some(), "Base image", "");
         match base {
             Some(base) if self.method.is_none() => self.chosen_ui(ui, base, locked),
             _ => self.choices_ui(ui, base, signed_in, locked),
@@ -208,10 +202,8 @@ impl Screen {
     }
 
     fn chosen_ui(&mut self, ui: &mut Ui, base: &Path, locked: bool) {
-        let below = [
-            &base.display().to_string(),
-            "Keep this file in place until all sticks are written.",
-        ];
+        let full = base.display().to_string();
+        let below = [full.as_str()];
         widgets::path_row(ui, &format::file_name(base), &below, |ui| {
             let other = Btn::new("Use another image\u{2026}").small();
             if other.enabled(!locked).show(ui).clicked() {
@@ -259,7 +251,7 @@ impl Screen {
             });
         }
         match self.method {
-            Some(Method::Hub) => widgets::inner(ui, |ui| self.hub_ui(ui, locked)),
+            Some(Method::Hub) => widgets::inner(ui, |ui| self.hub_ui(ui, signed_in, locked)),
             Some(Method::File) => widgets::inner(ui, |ui| self.file_ui(ui, locked)),
             Some(Method::Build) => widgets::inner(ui, |ui| self.creator.show(ui, locked)),
             None => {}
@@ -324,21 +316,22 @@ impl Screen {
         }
     }
 
-    fn hub_ui(&mut self, ui: &mut Ui, locked: bool) {
+    fn hub_ui(&mut self, ui: &mut Ui, signed_in: bool, locked: bool) {
+        if signed_in && self.hub.is_none() && !self.loading && self.failure.is_empty() {
+            self.refresh(ui.ctx().clone());
+        }
         let ready = !locked && !self.loading;
         let Some(images) = self.hub.as_ref().filter(|images| !images.is_empty()) else {
             let none = self.hub.is_some();
-            let text = if self.loading {
-                "Finding images\u{2026}"
+            if self.loading {
+                widgets::hint(ui, "Finding images\u{2026}");
             } else {
-                "Get Keeper OS from Hub"
-            };
-            let button = Btn::new(text).small();
-            if button.enabled(ready).show(ui).clicked() {
-                self.refresh(ui.ctx().clone());
-            }
-            if none {
-                widgets::hint(ui, "The Hub has no images available.");
+                if Btn::new("Refresh").small().enabled(ready).show(ui).clicked() {
+                    self.refresh(ui.ctx().clone());
+                }
+                if none {
+                    widgets::hint(ui, "The Hub has no images available.");
+                }
             }
             return;
         };
@@ -350,6 +343,7 @@ impl Screen {
         options.extend(labels.iter().map(String::as_str).enumerate());
         let chosen = &mut self.chosen;
         let mut download = None;
+        let mut do_refresh = false;
         widgets::path_box(ui, |ui| {
             let id = images.get(*chosen).map(|image| image.id.clone());
             let about = images.get(*chosen).map(|image| {
@@ -375,9 +369,15 @@ impl Screen {
                     if button.enabled(ready && id.is_some()).show(ui).clicked() {
                         download.clone_from(&id);
                     }
+                    if Btn::new("Refresh").small().enabled(ready).show(ui).clicked() {
+                        do_refresh = true;
+                    }
                 },
             );
         });
+        if do_refresh {
+            self.refresh(ui.ctx().clone());
+        }
         if let Some(id) = download
             && let Some(out) = choose_base_to_save()
         {

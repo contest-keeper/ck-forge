@@ -357,8 +357,18 @@ mod enrolment {
             fingerprint: "ab".repeat(32),
             serial_hint: "1234".to_owned(),
         };
-        let minted = mint_enrolment_code(&hub, &session(), &settings, 4, Some(&scope), Some(&disk))
-            .expect("mint enrolment code");
+        let stick_id =
+            ck_protocol::StickId::parse("11111111-2222-4333-8444-555555555555").expect("stick id");
+        let minted = mint_enrolment_code(
+            &hub,
+            &session(),
+            &stick_id,
+            &settings,
+            4,
+            Some(&scope),
+            Some(&disk),
+        )
+        .expect("mint enrolment code");
         assert_eq!(minted.code.expose(), fixture_code);
         assert_eq!(minted.expires_at, utc("2026-11-19T23:00:00Z"));
         assert!(!format!("{minted:?}").contains(fixture_code));
@@ -372,8 +382,9 @@ mod enrolment {
         );
         assert_eq!(
             serde_json::from_str::<Value>(body).expect("mint request"),
-            json!({"team": "Team A", "site": "Lab B", "contest": "Regional Finals",
-                "machine_number": 4, "credential_scope": scope, "lifetime_minutes": 1440,
+            json!({"stick_id": stick_id, "team": "Team A", "site": "Lab B",
+                "contest": "Regional Finals", "machine_number": 4,
+                "credential_scope": scope, "lifetime_minutes": 30 * 24 * 60,
                 "hardware": {"fingerprint": "ab".repeat(32), "serial_hint": "1234"}}),
         );
     }
@@ -394,8 +405,18 @@ mod enrolment {
             ),
         ] {
             let (hub, _) = fake_hub(vec![response]);
-            let error = mint_enrolment_code(&hub, &session(), &Settings::default(), 1, None, None)
-                .unwrap_err();
+            let stick_id = ck_protocol::StickId::parse("11111111-2222-4333-8444-555555555555")
+                .expect("stick id");
+            let error = mint_enrolment_code(
+                &hub,
+                &session(),
+                &stick_id,
+                &Settings::default(),
+                1,
+                None,
+                None,
+            )
+            .unwrap_err();
             assert!(!error.to_string().contains(fixture));
         }
     }

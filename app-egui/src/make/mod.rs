@@ -169,7 +169,6 @@ mod tests {
         sign_in(forge);
         let write = &mut forge.make.write;
         write.support.enrolment = Some(true);
-        write.first_boot_enrolment = true;
         let mut system = disk(0, "Samsung SSD 980", "S64DNF0", 1_000_000_000_000, "NVMe");
         system.is_system = true;
         write.disks = vec![

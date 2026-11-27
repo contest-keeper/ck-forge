@@ -63,8 +63,8 @@ struct MadeStick {
     config_sha256: String,
     /// The disk it goes to, for a stick that already has its key.
     disk: Option<HardwareId>,
-    /// Whether the Hub already knows this stick id. A first-boot enrolment stick is not known until it
-    /// claims its code (the Hub picks the id then), and the code runs out by itself.
+    /// Whether the Hub already knows this stick id (both pre-registered enrolment sticks and
+    /// pushed legacy sticks must be cleaned up if the write fails or is cancelled).
     registered: bool,
 }
 
@@ -366,6 +366,45 @@ fn log_wifi(profile: &Profile) {
     }
 }
 
+fn build_enrolment_stick(
+    options: &EnrolmentBuild<'_>,
+    session: &HubSession,
+    hardware: Option<&HardwareId>,
+    progress: impl FnMut(u64, u64),
+) -> Result<MadeStick, String> {
+    let config = build_enrolment_image(
+        options,
+        |stick_id, settings, machine_number, scope| {
+            mint_enrolment_code(
+                HUB_URL,
+                session,
+                stick_id,
+                settings,
+                machine_number,
+                scope,
+                hardware,
+            )
+            .inspect(|_| step("image: enrolment code minted by the Hub"))
+            .inspect_err(|e| {
+                step(&format!("image: the Hub refused an enrolment code: {e}"));
+            })
+            .map(|minted| minted.code)
+        },
+        progress,
+    )
+    .map_err(|e| e.to_string())?;
+    step(&format!(
+        "image: enrolment image built for stick {}",
+        config.stick_id
+    ));
+    Ok(MadeStick {
+        config_sha256: enrolment_config_sha256(&config),
+        id: config.stick_id,
+        disk: None,
+        registered: true,
+    })
+}
+
 /// Makes one stick image. First-boot enrolment keeps the signing key on the stick from birth.
 /// `hardware` is the disk the image goes to, when it is known, so the Hub can count rewrites.
 fn build_stick(
@@ -425,29 +464,7 @@ fn build_stick(
             now,
             sign,
         };
-        let config = build_enrolment_image(
-            &options,
-            |settings, machine_number, scope| {
-                mint_enrolment_code(HUB_URL, session, settings, machine_number, scope, hardware)
-                    .inspect(|_| step("image: enrolment code minted by the Hub"))
-                    .inspect_err(|e| {
-                        step(&format!("image: the Hub refused an enrolment code: {e}"));
-                    })
-                    .map(|minted| minted.code)
-            },
-            progress,
-        )
-        .map_err(|e| e.to_string())?;
-        step(&format!(
-            "image: enrolment image built for stick {}",
-            config.stick_id
-        ));
-        return Ok(MadeStick {
-            config_sha256: enrolment_config_sha256(&config),
-            id: config.stick_id,
-            disk: None,
-            registered: false,
-        });
+        return build_enrolment_stick(&options, session, hardware, progress);
     }
     let built = build_thin_image(
         &request.base,
@@ -582,9 +599,9 @@ fn progress_of(state: &HelperState) -> Option<Progress> {
 fn explain(why: String, macos: bool) -> String {
     if macos && (why.contains("Operation not permitted") || why.contains("(os error 1)")) {
         return format!(
-            "{why}
-
-macOS blocked the write to the stick, although the password was accepted.              Open System Settings > Privacy & Security > Full Disk Access, switch on Keeper Forge              (add it with + when it is not listed), quit Keeper Forge, open it again and write again."
+            "{why}\n\nmacOS blocked the write to the stick, although the password was accepted. \
+             Open System Settings > Privacy & Security > Full Disk Access, switch on Keeper Forge \
+             (add it with + when it is not listed), quit Keeper Forge, open it again and write again."
         );
     }
     why

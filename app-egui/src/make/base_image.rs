@@ -182,7 +182,7 @@ impl Screen {
         if save
             && let Some(path) = rfd::FileDialog::new()
                 .add_filter("Disk image", &["img"])
-                .set_file_name("stick.img")
+                .set_file_name("keeper-os.img")
                 .save_file()
         {
             self.out = Some(path);

@@ -84,6 +84,8 @@ pub struct Screen {
     pub(super) size: u64,
     /// Whether the disks are being listed, which can take seconds.
     listing: bool,
+    /// True after "Find sticks" completed so an empty USB list can show an empty-state message.
+    has_listed: bool,
     /// Goes up whenever the disks are forgotten, so a late answer is dropped.
     generation: u64,
     /// The base image the sticks are made from.
@@ -93,7 +95,6 @@ pub struct Screen {
     /// The signed-in admin.
     pub(super) email: Option<String>,
     pub(super) support: Support,
-    pub(super) first_boot_enrolment: bool,
     allow_virtual: bool,
     /// The Wi-Fi password, typed for this write only. It is never saved, logged or shown.
     wifi_password: String,
@@ -147,12 +148,12 @@ impl Default for Screen {
             disks: Vec::new(),
             size: 0,
             listing: false,
+            has_listed: false,
             generation: 0,
             base: None,
             profile: None,
             email: None,
             support: Support::default(),
-            first_boot_enrolment: false,
             allow_virtual: false,
             wifi_password: String::new(),
             to_file: None,
@@ -232,6 +233,7 @@ impl Screen {
     fn forget_disks(&mut self) {
         self.generation += 1;
         self.listing = false;
+        self.has_listed = false;
         self.disks.clear();
         self.chosen.clear();
         self.typed.clear();
@@ -278,7 +280,6 @@ impl Screen {
     /// Asks the base image what it supports; reading it can take a while.
     fn ask_support(&mut self, ctx: Context) {
         self.support = Support::default();
-        self.first_boot_enrolment = false;
         let Some(base) = self.base.clone() else {
             return;
         };
@@ -349,6 +350,7 @@ impl Screen {
                         Ok((size, disks)) => {
                             self.size = size;
                             self.disks = disks;
+                            self.has_listed = true;
                             self.look_up_earlier(ctx.clone());
                         }
                         Err(why) => self.failure = why,
@@ -358,8 +360,6 @@ impl Screen {
                     if self.base.as_ref() == Some(&base) && signed_in == self.email.is_some() =>
                 {
                     self.support = support;
-                    // The recommended way is the default whenever the image can do it.
-                    self.first_boot_enrolment = support.enrolment == Some(true);
                 }
                 Event::Earlier(generation, email, result)
                     if generation == self.generation && self.email.as_ref() == Some(&email) =>
@@ -398,7 +398,6 @@ impl Screen {
         };
         self.typed.clear();
         self.wifi_password.clear();
-        self.first_boot_enrolment = self.support.enrolment == Some(true);
         let took = format::duration(job.started.elapsed().as_secs());
         match &result {
             Ok(hash) => {
@@ -512,7 +511,7 @@ impl Screen {
             to_file,
             allow_virtual: self.allow_virtual,
             wifi_password: (!password.is_empty()).then(|| WifiPassword::new(password)),
-            first_boot_enrolment: self.support.enrolment == Some(true) && self.first_boot_enrolment,
+            first_boot_enrolment: self.support.enrolment == Some(true),
         })
     }
 
@@ -549,15 +548,14 @@ impl Screen {
             2,
             !self.chosen.is_empty(),
             "Sticks to write",
-            "Plug in the sticks, then find them. Forge only offers USB sticks that are big enough \
-             for the base image, and never the disk Windows runs from.",
+            "Only removable USB sticks are listed.",
         );
         let idle = !locked && self.job.is_none();
         self.bind_password(network);
         if let Some(network) = network {
             self.wifi_ui(ui, network, idle);
         }
-        self.key_ui(ui, idle);
+        self.key_ui(ui);
         // Where the window cannot write, the list is only for reading the numbers.
         let may_list = self.ready() || !CAN_WRITE;
         ui.horizontal(|ui| {
@@ -633,11 +631,7 @@ impl Screen {
             widgets::field(
                 ui,
                 &format!("Wi-Fi password for \u{201c}{network}\u{201d}"),
-                Some(
-                    "The sticks join this network by themselves at every boot. The password is \
-                     written on the sticks and nowhere else: not in the profile, the Hub or any \
-                     log. It is cleared after each write.",
-                ),
+                Some("Written only to the sticks; never saved in the profile or Hub."),
                 None,
                 |ui, label| {
                     ui.add_enabled_ui(idle, |ui| {
@@ -652,74 +646,31 @@ impl Screen {
         });
     }
 
-    /// What this write does with the sticks' secret keys, and what the image asks for.
-    fn key_ui(&mut self, ui: &mut Ui, idle: bool) {
+    /// Key handling notes for the selected base image and sign-in state.
+    fn key_ui(&self, ui: &mut Ui) {
         if self.must_sign_in() {
             widgets::note(
                 ui,
                 Tone::Error,
-                "This image only accepts settings the Hub signed, so you have to be signed in to \
-                 the Hub to write sticks from it. Sign in at the bottom left.",
+                "Sign in to the Hub (bottom left) — this image requires signed settings.",
             );
-        } else if self.support.signature {
-            widgets::hint(
-                ui,
-                "This image only accepts settings the Hub signed. Forge gets each stick's settings \
-                 signed when it writes, so edits made to the CKCONFIG drive on another PC are \
-                 refused by the stick.",
-            );
-        }
-        if self.support.enrolment == Some(true) {
-            ui.add_enabled_ui(idle, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    widgets::check_weight(
-                        ui,
-                        &mut self.first_boot_enrolment,
-                        "Create each stick's key at its first boot",
-                        Weight::Semibold,
-                    );
-                    ui.label("(recommended)");
-                });
-            });
-            if self.first_boot_enrolment {
-                widgets::hint(
-                    ui,
-                    "The key is made on the stick and is never written to the CKCONFIG drive, \
-                     which any PC can read. Boot each stick once, online (cable, or the Wi-Fi in \
-                     the profile), within 24 hours of writing it. After that the code on the stick \
-                     is useless.",
-                );
-            } else {
-                widgets::note(
-                    ui,
-                    Tone::Error,
-                    "Without this, the stick's secret key is written in the settings file on the \
-                     CKCONFIG drive. Anyone with the stick can read it on a PC and copy it.",
-                );
-            }
         } else if self.email.is_none() {
             widgets::note(
                 ui,
-                Tone::Error,
-                "Not signed in to the Hub, so the sticks cannot create their key at first boot. \
-                 Each stick's secret key is written in the settings file on the CKCONFIG drive, \
-                 where anyone with the stick can read it. Sign in to the Hub to avoid that.",
+                Tone::Warn,
+                "Not signed in to the Hub. Sticks will use a static key on disk until you sign in.",
             );
         } else if self.support.enrolment == Some(false) && self.base.is_some() {
             widgets::note(
                 ui,
-                Tone::Error,
-                "This base image cannot create keys at first boot, so each stick's secret key is \
-                 written in the settings file on the CKCONFIG drive. A newer Keeper OS image can.",
+                Tone::Warn,
+                "This image stores keys on disk. Newer Keeper OS images activate on first boot.",
             );
         }
     }
 
     fn disks_ui(&mut self, ui: &mut Ui, pick: bool) {
-        if self.disks.is_empty() {
-            return;
-        }
+        let mut shown = 0usize;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 8.0;
             for disk in &self.disks {
@@ -729,6 +680,7 @@ impl Screen {
                 if matches!(&refusal, Some(why) if !matches!(why, ck_writer::Error::TooSmall { .. })) {
                     continue;
                 }
+                shown += 1;
                 let serial = disk.serial_number.as_deref().unwrap_or("").trim();
                 let mut detail = format!("{} \u{b7} {}", disk.size_text(), disk.bus_type);
                 if !serial.is_empty() {
@@ -767,6 +719,9 @@ impl Screen {
                 }
             }
         });
+        if shown == 0 && self.has_listed && !self.listing {
+            widgets::hint(ui, "No removable USB sticks found.");
+        }
     }
 
     /// Step 3. `profile` is the name of the profile.
@@ -777,8 +732,7 @@ impl Screen {
             3,
             self.written && !self.success.is_empty(),
             "Erase and write",
-            "Everything on the chosen sticks is erased. Each stick gets its own identity from the \
-             saved profile. Your computer asks for administrator permission when the write starts.",
+            "Erases the chosen sticks and writes your saved profile.",
         );
         if !CAN_WRITE {
             self.command_ui(ui);

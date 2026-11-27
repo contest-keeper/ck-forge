@@ -444,12 +444,13 @@ pub struct MintedEnrolmentCode {
     pub expires_at: OffsetDateTime,
 }
 
-/// How long an enrolment code works. Sticks are usually written a day before they are first
-/// booted, so the Hub's one hour is too short; this is the longest the Hub allows.
-const ENROLMENT_CODE_MINUTES: i64 = 24 * 60;
+/// How long an enrolment code works. Sticks may be prepared days ahead of a contest, so 30 days
+/// matches the longest lifetime the Hub allows.
+const ENROLMENT_CODE_MINUTES: i64 = 30 * 24 * 60;
 
 #[derive(Serialize)]
 struct EnrolmentRequest<'a> {
+    stick_id: &'a StickId,
     team: &'a str,
     site: &'a str,
     contest: &'a str,
@@ -465,6 +466,7 @@ struct EnrolmentRequest<'a> {
 pub fn mint_enrolment_code(
     hub: &str,
     session: &HubSession,
+    stick_id: &StickId,
     settings: &Settings,
     machine_number: u32,
     credential_scope: Option<&CredentialScope>,
@@ -473,6 +475,7 @@ pub fn mint_enrolment_code(
     let hub = checked_base(hub)?;
     let bearer = session.authorization()?;
     let request = EnrolmentRequest {
+        stick_id,
         team: settings.team.trim(),
         site: settings.site.trim(),
         contest: &settings.contest.name,

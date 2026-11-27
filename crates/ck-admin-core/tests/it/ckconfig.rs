@@ -48,7 +48,7 @@ fn enrolment_requires_a_compatible_base_and_only_writes_the_code_to_ckconfig() {
     };
     assert!(!supports_enrolment(&base).expect("old image"));
     assert!(matches!(
-        build_enrolment_image(&options, |_, _, _| panic!("must not mint"), |_, _| {}),
+        build_enrolment_image(&options, |_, _, _, _| panic!("must not mint"), |_, _| {}),
         Err(Error::EnrolmentUnsupported)
     ));
     assert!(!registry.exists() && !out.exists());
@@ -66,7 +66,7 @@ fn enrolment_requires_a_compatible_base_and_only_writes_the_code_to_ckconfig() {
     let fixture_code = "ABCD-EFGH-JKLM-NPQR-STUV";
     let built = build_enrolment_image(
         &options,
-        |settings, number, scope| {
+        |_id, settings, number, scope| {
             assert_eq!(settings.team, profile.settings.team);
             assert_eq!(number, 1);
             assert!(scope.is_none());

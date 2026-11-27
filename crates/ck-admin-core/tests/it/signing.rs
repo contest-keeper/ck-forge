@@ -80,8 +80,8 @@ fn settings_for_such_an_image_cannot_be_made_without_a_signer() {
         now: time(),
         sign: None,
     };
-    let error =
-        build_enrolment_image(&options, |_, _, _| panic!("must not mint"), |_, _| {}).unwrap_err();
+    let error = build_enrolment_image(&options, |_, _, _, _| panic!("must not mint"), |_, _| {})
+        .unwrap_err();
     assert!(matches!(error, Error::SignedSettingsRequired), "{error}");
     assert!(!out.exists() && !registry.exists());
 }
@@ -126,7 +126,7 @@ fn the_signature_is_made_over_the_exact_bytes_that_are_written() {
     };
     build_enrolment_image(
         &options,
-        |_, _, _| Ok(EnrolmentCode::parse("ABCD-EFGH-JKLM-NPQR-STUV").expect("code")),
+        |_, _, _, _| Ok(EnrolmentCode::parse("ABCD-EFGH-JKLM-NPQR-STUV").expect("code")),
         |_, _| {},
     )
     .expect("a signed enrolment image");
