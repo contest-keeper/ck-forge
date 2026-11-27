@@ -8,6 +8,7 @@ use crate::hub::{
 };
 use crate::profile::{ContestBookmark, Profile};
 use crate::wallpaper::Wallpaper;
+use ck_protocol::WifiPassword;
 
 /// Where sticks report and where admins sign in. Every build from develop, a pull request or a
 /// local checkout uses the develop Hub; only the release workflow sets `CK_HUB_URL` to the
@@ -95,4 +96,38 @@ pub fn save_hub_profile(
     profile.hub_id = Some(id);
     profile.save(path)?;
     Ok(profile)
+}
+
+/// The Wi-Fi password to write for the network `ssid` of profile `id`. A typed password is kept in
+/// the Hub (encrypted there) for the next time; without one, the Hub's is used. A password kept for
+/// another network is never used.
+///
+/// # Errors
+/// Any error of the Hub request. The caller may still write with the typed password.
+pub fn sync_wifi_password(
+    hub: &str,
+    session: &HubSession,
+    id: &str,
+    ssid: &str,
+    typed: Option<&WifiPassword>,
+) -> Result<Option<WifiPassword>, Error> {
+    let mut remote = fetch_profile(hub, session, id)?;
+    let Some(wifi) = remote
+        .settings
+        .wifi
+        .as_mut()
+        .filter(|wifi| wifi.ssid == ssid)
+    else {
+        return Ok(typed.cloned());
+    };
+    match typed {
+        Some(typed) => {
+            if wifi.password.as_ref() != Some(typed) {
+                wifi.password = Some(typed.clone());
+                upload_profile(hub, session, id, &remote)?;
+            }
+            Ok(Some(typed.clone()))
+        }
+        None => Ok(wifi.password.clone()),
+    }
 }

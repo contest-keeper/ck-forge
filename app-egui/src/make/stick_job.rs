@@ -14,7 +14,7 @@ use ck_admin_core::{
     EnrolmentBuild, Error as AdminError, HUB_URL, HardwareId, HubSession, Profile, Registry,
     SignSettings, Wallpaper, build_enrolment_image, build_thin_image, enrolment_config_sha256,
     folder_of, local_now, mint_enrolment_code, push_registry_signed_in, record_config_hash,
-    record_stick_write, retire_stick_credential, sign_settings, stick_config_sha256, vault,
+    record_stick_write, retire_stick_credential, sign_settings, stick_config_sha256, sync_wifi_password, vault,
 };
 use ck_protocol::{StickId, WifiPassword};
 use serde::Deserialize;
@@ -286,12 +286,33 @@ fn build_images(
     } else {
         hardware_of(&request.disks)
     };
-    each_image(request, cancel, work, |index, settings, image| {
+    each_image(request, session, cancel, work, |index, settings, image| {
         let disk = hardware.get(index).and_then(Option::as_ref);
         let stick = build_stick(request, session, settings, image, disk, report)?;
         made.push(stick);
         Ok(())
     })
+}
+
+/// Stores a typed Wi-Fi password in the Hub, or takes the one it kept, so the admin types it once.
+/// The Hub being unreachable only means the typed password is used as it is.
+fn keep_wifi_password_in_hub(
+    session: Option<&HubSession>,
+    profile: &mut Profile,
+    typed: Option<&WifiPassword>,
+) {
+    let mut password = typed.cloned();
+    if let (Some(session), Some(id), Some(wifi)) = (
+        session,
+        profile.hub_id.as_deref(),
+        profile.settings.wifi.as_ref(),
+    ) {
+        match sync_wifi_password(HUB_URL, session, id, &wifi.ssid, typed) {
+            Ok(found) => password = found,
+            Err(e) => step(&format!("image: Wi-Fi password not synced with the Hub: {e}")),
+        }
+    }
+    profile.set_wifi_password(password);
 }
 
 /// What every stick of one write gets from the saved profile.
@@ -304,6 +325,7 @@ struct Snapshot {
 /// while the write runs cannot give the later sticks other settings than the first.
 fn each_image(
     request: &Request,
+    session: Option<&HubSession>,
     cancel: &AtomicBool,
     work: &Path,
     mut build: impl FnMut(usize, &Snapshot, &Path) -> Result<(), String>,
@@ -322,6 +344,8 @@ fn each_image(
             ));
             let wallpaper = Wallpaper::read(&profile.stick_settings(), folder_of(&request.profile))
                 .map_err(|e| e.to_string())?;
+            let mut profile = profile;
+            keep_wifi_password_in_hub(session, &mut profile, request.wifi_password.as_ref());
             snapshot = Some(Snapshot { profile, wallpaper });
         }
         let image = work.join(format!("stick-{}.img", index + 1));
@@ -457,7 +481,7 @@ fn build_stick(
     report: &dyn Fn(Progress),
 ) -> Result<MadeStick, String> {
     let mut profile = snapshot.profile.clone();
-    profile.set_wifi_password(request.wifi_password.clone());
+    // The password of the snapshot already holds the typed one, or the one the Hub kept.
     log_wifi(&profile);
     // The address in the profile file is not used: it is the sign-in that decides.
     profile.settings.api.url = if session.is_some() {
@@ -1156,6 +1180,7 @@ mod tests {
         let mut seen = Vec::new();
         let images = each_image(
             &request,
+            None,
             &AtomicBool::new(false),
             folder.path(),
             |_, snapshot, _| {

@@ -816,9 +816,11 @@ pub fn upload_profile(
     let wallpaper = profile.wallpaper.as_ref().map(|w| {
         json!({ "name": w.name, "data_base64": base64::engine::general_purpose::STANDARD.encode(&w.bytes) })
     });
-    // The Wi-Fi password never leaves the admin's computer except on a stick.
+    // The Hub keeps the Wi-Fi password encrypted, but it only goes over https or to this PC.
     let mut shared = profile.settings.clone();
-    if let Some(wifi) = &mut shared.wifi {
+    if let Some(wifi) = &mut shared.wifi
+        && !safe_for_password(base)
+    {
         wifi.password = None;
     }
     let mut settings = serde_json::to_value(&shared)
