@@ -247,7 +247,7 @@ impl Screen {
                 Input::new(&mut profile.name).show(ui).labelled_by(id);
             });
         });
-        forms::contest(ui, &mut profile.settings);
+        forms::contest(ui, profile);
         widgets::card(ui, |ui| self.desktop(ui, state));
         if let Some(profile) = &mut state.profile {
             forms::team_and_site(ui, &mut profile.settings);

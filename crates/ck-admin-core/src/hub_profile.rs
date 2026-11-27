@@ -6,7 +6,7 @@ use crate::file::folder_of;
 use crate::hub::{
     HubProfile, HubSession, check_profile_id, fetch_profile, new_profile_id, upload_profile,
 };
-use crate::profile::Profile;
+use crate::profile::{ContestBookmark, Profile};
 use crate::wallpaper::Wallpaper;
 
 /// Where sticks report and where admins sign in. Every build from develop, a pull request or a
@@ -63,6 +63,8 @@ pub fn load_hub_profile(
         settings,
         hub_id: Some(id.to_owned()),
         stick_key_window: remote.stick_key_window,
+        // The Hub keeps the settings, not what the form remembers about the bookmark.
+        contest_bookmark: ContestBookmark::default(),
     };
     let path = folder.join("contest-profile.json");
     profile.save(&path)?;

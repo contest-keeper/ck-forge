@@ -1,5 +1,5 @@
 use ck_admin_core::{Error, Profile, Registry, RegistryEntry, StickKeyWindow, make_stick_config};
-use ck_protocol::{LocalDateTime, Problem, UploadMode};
+use ck_protocol::{LocalDateTime, Platform, Problem, UploadMode};
 use tempfile::TempDir;
 
 fn time() -> LocalDateTime {
@@ -253,6 +253,184 @@ fn a_new_profile_is_for_codeforces_and_the_contest_is_the_first_bookmark() {
     profile.settings.contest.contest_id = "x y".to_owned();
     assert_eq!(profile.stick_settings().branding.bookmarks.len(), 2);
     assert_eq!(profile.warnings().len(), warnings + 1);
+}
+
+/// Types a contest id or picks a platform the way the form does: change, then follow.
+fn choose(profile: &mut Profile, platform: Platform, id: &str) {
+    let was = (
+        profile.settings.contest.platform,
+        profile.settings.contest.contest_id.clone(),
+    );
+    profile.settings.contest.platform = platform;
+    id.clone_into(&mut profile.settings.contest.contest_id);
+    ck_admin_core::follow_contest(profile, was.0, &was.1);
+}
+
+#[test]
+fn choosing_a_platform_and_contest_adds_its_page_as_the_first_bookmark_and_the_home_page() {
+    let mut profile = Profile::template();
+    choose(&mut profile, Platform::Codeforces, "2042");
+    let branding = &profile.settings.branding;
+    assert_eq!(
+        branding.bookmarks[0].url,
+        "https://codeforces.com/contest/2042"
+    );
+    assert_eq!(
+        branding.home_page.as_deref(),
+        Some("https://codeforces.com/contest/2042")
+    );
+
+    // Changing the platform moves the bookmark and the home page with it, and lets the site in.
+    choose(&mut profile, Platform::Vjudge, "871412");
+    let branding = &profile.settings.branding;
+    assert_eq!(
+        branding.bookmarks[0].url,
+        "https://vjudge.net/contest/871412"
+    );
+    assert_eq!(branding.bookmarks.len(), 3, "moved, not added");
+    assert_eq!(
+        branding.home_page.as_deref(),
+        Some("https://vjudge.net/contest/871412")
+    );
+    assert!(
+        profile
+            .settings
+            .network
+            .allowed_domains
+            .contains(&".vjudge.net".to_owned())
+    );
+    // A number being typed digit by digit follows too, and an id that is not valid takes it away.
+    choose(&mut profile, Platform::Vjudge, "8714123");
+    assert_eq!(
+        profile.settings.branding.bookmarks[0].url,
+        "https://vjudge.net/contest/8714123"
+    );
+    choose(&mut profile, Platform::Vjudge, "");
+    assert_eq!(profile.settings.branding.bookmarks.len(), 2);
+    assert_eq!(profile.settings.branding.home_page, None);
+}
+
+#[test]
+fn what_the_admin_changed_is_not_touched_again() {
+    let mut profile = Profile::template();
+    choose(&mut profile, Platform::Vjudge, "871412");
+    // The admin renames the bookmark, points the home page elsewhere, then picks another contest.
+    profile.settings.branding.bookmarks[0].url =
+        "https://vjudge.net/contest/871412#status".to_owned();
+    profile.settings.branding.home_page = Some("https://en.cppreference.com".to_owned());
+    choose(&mut profile, Platform::Vjudge, "999");
+    let branding = &profile.settings.branding;
+    assert_eq!(
+        branding.bookmarks[0].url,
+        "https://vjudge.net/contest/871412#status"
+    );
+    assert_eq!(
+        branding.home_page.as_deref(),
+        Some("https://en.cppreference.com")
+    );
+    assert!(
+        !branding.bookmarks.iter().any(|b| b.url.ends_with("/999")),
+        "not added again"
+    );
+    // A bookmark the admin removed is not brought back by a new id either.
+    let mut other = Profile::template();
+    choose(&mut other, Platform::Codeforces, "1");
+    other.settings.branding.bookmarks.remove(0);
+    choose(&mut other, Platform::Codeforces, "12");
+    assert_eq!(other.settings.branding.bookmarks.len(), 2);
+}
+
+#[test]
+fn a_removed_or_changed_bookmark_stays_theirs_across_an_empty_id_a_new_one_and_a_build() {
+    let mut removed = Profile::template();
+    choose(&mut removed, Platform::Vjudge, "871412");
+    removed.settings.branding.bookmarks.remove(0);
+    // The form is drawn again before the next change, and sees it is gone.
+    choose(&mut removed, Platform::Vjudge, "871412");
+    choose(&mut removed, Platform::Vjudge, "");
+    choose(&mut removed, Platform::Vjudge, "999");
+    assert_eq!(
+        removed.settings.branding.bookmarks.len(),
+        2,
+        "not brought back"
+    );
+    assert!(
+        !removed
+            .stick_settings()
+            .branding
+            .bookmarks
+            .iter()
+            .any(|b| b.url.ends_with("/999")),
+        "a build does not put it back"
+    );
+
+    let mut changed = Profile::template();
+    choose(&mut changed, Platform::Vjudge, "871412");
+    changed.settings.branding.bookmarks[0].url =
+        "https://vjudge.net/contest/871412#rank".to_owned();
+    choose(&mut changed, Platform::Vjudge, "871412");
+    choose(&mut changed, Platform::Vjudge, "");
+    choose(&mut changed, Platform::Vjudge, "5");
+    let urls: Vec<&str> = changed
+        .settings
+        .branding
+        .bookmarks
+        .iter()
+        .map(|b| b.url.as_str())
+        .collect();
+    assert_eq!(
+        urls.iter().filter(|u| u.contains("vjudge.net")).count(),
+        1,
+        "{urls:?}"
+    );
+    // What the form remembers is saved with the profile, so it lasts across a restart.
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("p.json");
+    removed.save(&path).expect("save");
+    let mut loaded = Profile::load(&path).expect("load");
+    choose(&mut loaded, Platform::Vjudge, "");
+    choose(&mut loaded, Platform::Vjudge, "42");
+    assert_eq!(loaded.settings.branding.bookmarks.len(), 2);
+}
+
+#[test]
+fn only_a_numbered_contest_of_a_known_platform_has_a_page_and_a_vjudge_stick_opens_it() {
+    assert_eq!(
+        ck_admin_core::contest_url(Platform::Vjudge, " 871412 ").as_deref(),
+        Some("https://vjudge.net/contest/871412")
+    );
+    assert_eq!(ck_admin_core::contest_url(Platform::Vjudge, "8x"), None);
+    assert_eq!(ck_admin_core::contest_url(Platform::Kilonova, "12"), None);
+    let mut profile = Profile::template();
+    profile.settings.contest.platform = Platform::Vjudge;
+    profile.settings.contest.contest_id = "871412".to_owned();
+    let built = profile.stick_settings();
+    assert_eq!(
+        built.branding.bookmarks[0].url,
+        "https://vjudge.net/contest/871412"
+    );
+    // The contest's site is allowed on the stick even when the profile never listed it.
+    assert!(
+        built
+            .network
+            .allowed_domains
+            .contains(&".vjudge.net".to_owned())
+    );
+    assert!(
+        !profile
+            .settings
+            .network
+            .allowed_domains
+            .contains(&".vjudge.net".to_owned())
+    );
+    // A non-number on VJudge is warned about like on Codeforces.
+    profile.settings.contest.contest_id = "abc".to_owned();
+    assert!(
+        profile
+            .warnings()
+            .iter()
+            .any(|w| w.contains("not a number"))
+    );
 }
 
 #[test]

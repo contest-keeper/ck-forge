@@ -17,8 +17,109 @@ const DEFAULT_BOOKMARKS: [(&str, &str); 2] = [
 /// The sites of the default bookmarks, which is all a new profile lets contestants reach.
 const DEFAULT_ALLOWED_DOMAINS: [&str; 2] = [".codeforces.com", ".cppreference.com"];
 
-fn is_codeforces_id(id: &str) -> bool {
+/// Codeforces and `VJudge` number their contests with digits only.
+fn is_contest_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Where a contest of a judge is opened, or `None` for a platform with no such page or an id that
+/// is not a number.
+#[must_use]
+pub fn contest_url(platform: Platform, id: &str) -> Option<String> {
+    let id = id.trim();
+    if !is_contest_id(id) {
+        return None;
+    }
+    match platform {
+        Platform::Codeforces => Some(format!("https://codeforces.com/contest/{id}")),
+        Platform::Vjudge => Some(format!("https://vjudge.net/contest/{id}")),
+        Platform::Kilonova | Platform::Other => None,
+    }
+}
+
+/// The site contestants must reach to open a contest of the platform.
+fn platform_domain(platform: Platform) -> Option<&'static str> {
+    match platform {
+        Platform::Codeforces => Some(".codeforces.com"),
+        Platform::Vjudge => Some(".vjudge.net"),
+        Platform::Kilonova | Platform::Other => None,
+    }
+}
+
+/// Whether the bookmark the form added has been removed or changed by the admin since.
+fn taken_over(state: &ContestBookmark, settings: &Settings) -> bool {
+    state.admin_owned
+        || state
+            .managed
+            .as_ref()
+            .is_some_and(|url| !settings.branding.bookmarks.iter().any(|b| &b.url == url))
+}
+
+/// Keeps the contest's bookmark, the home page and the allowed site in step with the platform and
+/// contest id the admin chose; `was_platform` and `was_id` are what they were before the change.
+///
+/// - A valid id adds a "Contest" bookmark first, and makes it the home page when there is none.
+/// - A new id or platform moves that bookmark (and the home page, if it was the contest) with it,
+///   and an id that is no longer valid takes it away.
+/// - Once the admin removes or changes that bookmark it is theirs: the form never adds, moves or
+///   brings one back, whatever ids follow, and a home page the admin chose stays.
+/// - The platform's site is added to the allowed sites when the contest has one.
+pub fn follow_contest(profile: &mut Profile, was_platform: Platform, was_id: &str) {
+    let settings = &mut profile.settings;
+    let state = &mut profile.contest_bookmark;
+    if taken_over(state, settings) {
+        state.managed = None;
+        state.admin_owned = true;
+    }
+    let before = contest_url(was_platform, was_id);
+    let now = contest_url(settings.contest.platform, &settings.contest.contest_id);
+    if before == now {
+        return;
+    }
+    let branding = &mut settings.branding;
+    if let Some(old) = &before {
+        // The bookmark the form added follows; one the admin took over is left alone.
+        if state.managed.as_ref() == Some(old)
+            && let Some(at) = branding.bookmarks.iter().position(|b| &b.url == old)
+        {
+            if let Some(url) = &now {
+                branding.bookmarks[at].url.clone_from(url);
+                state.managed.clone_from(&now);
+            } else {
+                branding.bookmarks.remove(at);
+                state.managed = None;
+            }
+        }
+        if branding.home_page.as_ref() == Some(old) {
+            branding.home_page.clone_from(&now);
+        }
+    } else if let Some(url) = &now {
+        if !state.admin_owned && !branding.bookmarks.iter().any(|b| &b.url == url) {
+            branding.bookmarks.insert(
+                0,
+                Bookmark {
+                    title: "Contest".to_owned(),
+                    url: url.clone(),
+                },
+            );
+            state.managed = Some(url.clone());
+        }
+        if branding.home_page.is_none() {
+            branding.home_page = Some(url.clone());
+        }
+    }
+    if now.is_some() {
+        allow_platform_site(settings);
+    }
+}
+
+/// Lets contestants reach the site of the platform the contest is on, when it is not allowed yet.
+fn allow_platform_site(settings: &mut Settings) {
+    if let Some(domain) = platform_domain(settings.contest.platform)
+        && !settings.network.allowed_domains.iter().any(|d| d == domain)
+    {
+        settings.network.allowed_domains.push(domain.to_owned());
+    }
 }
 
 /// Explicit UTC dates keep a saved contest independent of the organizer's time zone.
@@ -26,6 +127,23 @@ fn is_codeforces_id(id: &str) -> bool {
 pub struct StickKeyWindow {
     pub valid_from: String,
     pub valid_until: String,
+}
+
+/// What the form remembers about the contest bookmark it keeps, so the admin's own choices last.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContestBookmark {
+    /// The address of the bookmark the form added, while it is still there as it was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<String>,
+    /// The admin removed or changed that bookmark. The form then never adds or moves one again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin_owned: bool,
+}
+
+impl ContestBookmark {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// The admin's settings for one contest, saved as a JSON file.
@@ -38,6 +156,8 @@ pub struct Profile {
     pub hub_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stick_key_window: Option<StickKeyWindow>,
+    #[serde(default, skip_serializing_if = "ContestBookmark::is_default")]
+    pub contest_bookmark: ContestBookmark,
 }
 
 impl Profile {
@@ -62,6 +182,7 @@ impl Profile {
             settings,
             hub_id: None,
             stick_key_window: None,
+            contest_bookmark: ContestBookmark::default(),
         }
     }
 
@@ -98,18 +219,22 @@ impl Profile {
         if settings.contest.name.is_empty() {
             settings.contest.name.clone_from(&self.name);
         }
-        let contest_id = settings.contest.contest_id.trim();
-        if is_codeforces_id(contest_id) {
+        if let Some(url) = contest_url(settings.contest.platform, &settings.contest.contest_id) {
             // The contest itself comes first, so contestants find it before the reference sites.
-            let url = format!("https://codeforces.com/contest/{contest_id}");
-            settings.branding.bookmarks.retain(|b| b.url != url);
-            settings.branding.bookmarks.insert(
-                0,
-                Bookmark {
-                    title: "Contest".to_owned(),
-                    url,
-                },
-            );
+            // One the admin already has, under any title, is left as it is, and one the admin
+            // removed or changed is not put back.
+            let theirs = taken_over(&self.contest_bookmark, &settings);
+            if !theirs && !settings.branding.bookmarks.iter().any(|b| b.url == url) {
+                settings.branding.bookmarks.insert(
+                    0,
+                    Bookmark {
+                        title: "Contest".to_owned(),
+                        url,
+                    },
+                );
+            }
+            // A bookmark to a site the stick does not allow would open nothing.
+            allow_platform_site(&mut settings);
         }
         settings
     }
@@ -138,7 +263,11 @@ impl Profile {
     pub fn warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         let contest_id = self.settings.contest.contest_id.trim();
-        if !contest_id.is_empty() && !is_codeforces_id(contest_id) {
+        let numbered = matches!(
+            self.settings.contest.platform,
+            Platform::Codeforces | Platform::Vjudge
+        );
+        if numbered && !contest_id.is_empty() && !is_contest_id(contest_id) {
             warnings.push(
                 "the contest ID is not a number, so contestants get no bookmark for the contest"
                     .to_owned(),

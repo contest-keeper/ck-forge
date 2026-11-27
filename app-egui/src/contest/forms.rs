@@ -175,29 +175,57 @@ fn number_field(ui: &mut Ui, label: &str, hint: &str, held: String, apply: impl 
 }
 
 /// The card "Contest".
-pub fn contest(ui: &mut Ui, settings: &mut Settings) {
+pub fn contest(ui: &mut Ui, profile: &mut Profile) {
+    let settings = &mut profile.settings;
+    let was = (
+        settings.contest.platform,
+        settings.contest.contest_id.clone(),
+    );
     widgets::card(ui, |ui| {
         widgets::title(ui, "Contest");
-        grid(ui, &[0, 1], |ui, at| match at {
+        grid(ui, &[0, 1, 2], |ui, at| match at {
             0 => {
                 let hint = "Shown on the stick. Empty uses the profile name.";
                 text_field(ui, "Contest name", Some(hint), &mut settings.contest.name);
             }
+            1 => platform_field(ui, &mut settings.contest),
             _ => contest_id(ui, &mut settings.contest),
         });
+    });
+    // The contest's page joins the bookmarks and becomes the home page, for the admin to change.
+    ck_admin_core::follow_contest(profile, was.0, &was.1);
+}
+
+/// The judge the contest is on. A platform an older profile has is kept in the list.
+fn platform_field(ui: &mut Ui, contest: &mut Contest) {
+    let mut options = vec![
+        (Platform::Codeforces, "Codeforces"),
+        (Platform::Vjudge, "VJudge"),
+    ];
+    for (platform, name) in [(Platform::Kilonova, "Kilonova"), (Platform::Other, "Other")] {
+        if contest.platform == platform {
+            options.push((platform, name));
+        }
+    }
+    let hint = "Adds the contest page to the bookmarks as the home page. You can change both.";
+    field(ui, "Platform", Some(hint), None, |ui, id| {
+        widgets::select(ui, "contest-platform", &mut contest.platform, &options).labelled_by(id);
     });
 }
 
 fn contest_id(ui: &mut Ui, contest: &mut Contest) {
     let id = contest.contest_id.trim();
-    // Codeforces numbers its contests with digits only, and a wrong number gives a stick that opens
-    // a page that is not there.
-    let wrong = contest.platform == Platform::Codeforces && !id.chars().all(|c| c.is_ascii_digit());
-    let error = wrong
-        .then_some("Use digits only, like 1985. It is the number in codeforces.com/contest/1985.");
-    let hint = "The number in codeforces.com/contest/\u{2026}";
-    let name = "Codeforces contest ID";
-    field(ui, name, Some(hint), error, |ui, label| {
+    // Codeforces and VJudge number their contests with digits only, and a wrong number gives a
+    // stick that opens a page that is not there.
+    let numbered = matches!(contest.platform, Platform::Codeforces | Platform::Vjudge);
+    let wrong = numbered && !id.chars().all(|c| c.is_ascii_digit());
+    let (site, name) = match contest.platform {
+        Platform::Vjudge => ("vjudge.net/contest/", "VJudge contest ID"),
+        _ => ("codeforces.com/contest/", "Codeforces contest ID"),
+    };
+    let error = wrong.then(|| format!("Use digits only, like 1985. It is the number in {site}1985."));
+    let hint = format!("The number in {site}\u{2026}");
+    field(ui, name, Some(hint.as_str()), error.as_deref(), |ui, label| {
         Input::new(&mut contest.contest_id)
             .invalid(wrong)
             .show(ui)
