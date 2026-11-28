@@ -81,7 +81,10 @@ jobs:
             .
             app-egui
             tools/update-signer
-      # The tool that signs updates is its own workspace, so the root checks do not reach it.
+      # The window and the tool that signs updates are their own workspaces, so the root checks do not
+      # reach them.
+      - run: cargo fmt --check
+        working-directory: app-egui
       - run: cargo fmt --check
         working-directory: tools/update-signer
       - run: cargo clippy --locked --all-targets -- -D warnings

@@ -14,7 +14,8 @@ use ck_admin_core::{
     EnrolmentBuild, Error as AdminError, HUB_URL, HardwareId, HubSession, Profile, Registry,
     SignSettings, Wallpaper, build_enrolment_image, build_thin_image, enrolment_config_sha256,
     folder_of, local_now, mint_enrolment_code, push_registry_signed_in, record_config_hash,
-    record_stick_write, retire_stick_credential, sign_settings, stick_config_sha256, sync_wifi_password, vault,
+    record_stick_write, retire_stick_credential, sign_settings, stick_config_sha256,
+    sync_wifi_password, vault,
 };
 use ck_protocol::{StickId, WifiPassword};
 use serde::Deserialize;
@@ -309,7 +310,9 @@ fn keep_wifi_password_in_hub(
     ) {
         match sync_wifi_password(HUB_URL, session, id, &wifi.ssid, typed) {
             Ok(found) => password = found,
-            Err(e) => step(&format!("image: Wi-Fi password not synced with the Hub: {e}")),
+            Err(e) => step(&format!(
+                "image: Wi-Fi password not synced with the Hub: {e}"
+            )),
         }
     }
     profile.set_wifi_password(password);
