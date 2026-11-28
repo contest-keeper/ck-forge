@@ -258,7 +258,7 @@ impl Screen {
                         let keys = failed.join("\n");
                         if self.old_failure.is_empty() {
                             self.old_failure = format!(
-                                "The new sticks are written, but these old keys are still active:\n{keys}"
+                                "The new sticks are written, but these old keys may still be active:\n{keys}"
                             );
                         } else {
                             self.old_failure.push('\n');
