@@ -487,3 +487,62 @@ fn the_wifi_password_goes_on_the_stick_but_never_into_the_saved_profile() {
     open.set_wifi_password(Some(WifiPassword::new("hunter2-hunter2")));
     assert_eq!(open.settings.wifi, None);
 }
+
+#[test]
+fn a_bookmark_allows_its_own_site_and_never_a_wider_one() {
+    use ck_admin_core::site_of;
+    assert_eq!(
+        site_of("https://www.Example.org/a?b#c").as_deref(),
+        Some(".example.org")
+    );
+    assert_eq!(
+        site_of("http://en.cppreference.com").as_deref(),
+        Some(".en.cppreference.com")
+    );
+    // A name under a shared host stays that name, so one user's page never opens the whole host.
+    assert_eq!(
+        site_of("https://user.github.io/x").as_deref(),
+        Some(".user.github.io")
+    );
+    assert_eq!(
+        site_of("https://user:pw@host.test:8443/p").as_deref(),
+        Some(".host.test")
+    );
+    for bad in [
+        "ftp://x.org",
+        "https://localhost",
+        "https://[::1]/",
+        "https://bad_host.org",
+        "javascript:alert(1)",
+        "",
+    ] {
+        assert_eq!(site_of(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn the_stick_allows_the_sites_of_its_bookmarks_once_each() {
+    let mut profile = Profile::template();
+    profile
+        .settings
+        .branding
+        .bookmarks
+        .push(ck_protocol::Bookmark {
+            title: "Wiki".to_owned(),
+            url: "https://wiki.example.org/start".to_owned(),
+        });
+    // The typed list already lets in .cppreference.com, so the bookmark to a page of it adds nothing.
+    let built = profile.stick_settings().network.allowed_domains;
+    assert!(built.contains(&".wiki.example.org".to_owned()), "{built:?}");
+    assert_eq!(
+        built.iter().filter(|d| d.contains("cppreference")).count(),
+        1,
+        "{built:?}"
+    );
+    assert!(built.contains(&"challenges.cloudflare.com".to_owned()));
+    // What the profile itself keeps is only what the admin typed.
+    assert_eq!(
+        profile.settings.network.allowed_domains,
+        [".cppreference.com"]
+    );
+}

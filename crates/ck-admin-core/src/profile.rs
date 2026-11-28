@@ -22,14 +22,67 @@ pub const ALWAYS_ALLOWED_DOMAINS: [&str; 2] = ["challenges.cloudflare.com", ".hc
 const DEFAULT_TEAM: &str = "default team";
 const DEFAULT_SITE: &str = "default site";
 
-/// How the platform is called on a bookmark.
+/// How the platform is called on a bookmark. Only judges with a contest page get one.
 fn platform_name(platform: Platform) -> &'static str {
     match platform {
-        Platform::Codeforces => "Codeforces",
         Platform::Vjudge => "VJudge",
-        Platform::Kilonova => "Kilonova",
-        Platform::Other => "Contest",
+        _ => "Codeforces",
     }
+}
+
+/// The allowed-sites entry for a link: its host with a leading dot, which lets in the host and its
+/// subdomains. A leading "www." is dropped because a site answers on both. It is never wider than
+/// the link's own host, so no list of public suffixes is needed (`user.github.io` stays itself).
+#[must_use]
+pub fn site_of(link: &str) -> Option<String> {
+    let link = link.trim().to_ascii_lowercase();
+    let rest = link
+        .strip_prefix("https://")
+        .or_else(|| link.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?.split(':').next()?;
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    ck_protocol::network::is_valid_domain(host).then(|| format!(".{host}"))
+}
+
+/// Whether an allowed-sites entry already lets in `site` (a dotted entry from [`site_of`]).
+fn covers(entry: &str, site: &str) -> bool {
+    let host = site.trim_start_matches('.');
+    entry.strip_prefix('.').is_some_and(|wide| {
+        host == wide
+            || host
+                .strip_suffix(wide)
+                .is_some_and(|rest| rest.ends_with('.'))
+    })
+}
+
+/// The sites that are allowed without being typed: those of every bookmark and of the home page,
+/// and the ones judges need for their anti-bot check. Entries the typed list already covers are
+/// left out. This is what a stick gets on top of the typed list.
+#[must_use]
+pub fn added_sites(settings: &Settings) -> Vec<String> {
+    let branding = &settings.branding;
+    let links = branding
+        .bookmarks
+        .iter()
+        .map(|b| b.url.as_str())
+        .chain(branding.home_page.as_deref());
+    let mut added: Vec<String> = Vec::new();
+    let wanted = links
+        .filter_map(site_of)
+        .chain(ALWAYS_ALLOWED_DOMAINS.iter().map(|d| (*d).to_owned()));
+    for site in wanted {
+        let seen = settings
+            .network
+            .allowed_domains
+            .iter()
+            .chain(&added)
+            .any(|entry| *entry == site || covers(entry, &site));
+        if !seen {
+            added.push(site);
+        }
+    }
+    added
 }
 
 /// Codeforces and `VJudge` number their contests with digits only.
@@ -181,6 +234,7 @@ impl Profile {
     pub fn template() -> Self {
         let mut settings = Settings::default();
         // Nothing is prefilled that the admin has not chosen: no judge, no team, no recording.
+        settings.contest.platform = Platform::Other;
         settings.team.clear();
         settings.site.clear();
         settings.recording.mode = RecordingMode::Off;
@@ -243,11 +297,6 @@ impl Profile {
         if settings.site.trim().is_empty() {
             DEFAULT_SITE.clone_into(&mut settings.site);
         }
-        for domain in ALWAYS_ALLOWED_DOMAINS {
-            if !settings.network.allowed_domains.iter().any(|d| d == domain) {
-                settings.network.allowed_domains.push(domain.to_owned());
-            }
-        }
         if let Some(url) = contest_url(settings.contest.platform, &settings.contest.contest_id) {
             // The contest itself comes first, so contestants find it before the reference sites.
             // One the admin already has, under any title, is left as it is, and one the admin
@@ -262,9 +311,10 @@ impl Profile {
                     },
                 );
             }
-            // A bookmark to a site the stick does not allow would open nothing.
-            allow_platform_site(&mut settings);
         }
+        // A bookmark to a site the stick does not allow would open nothing.
+        let added = added_sites(&settings);
+        settings.network.allowed_domains.extend(added);
         settings
     }
 

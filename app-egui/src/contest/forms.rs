@@ -78,7 +78,6 @@ fn limit(text: &mut String, characters: usize) {
 /// values: switching the mode back brings them back as they were.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RecordingField {
-    Mode,
     StartDelay,
     SnapshotInterval,
     Upload,
@@ -88,15 +87,11 @@ enum RecordingField {
 fn recording_fields(mode: RecordingMode) -> Vec<RecordingField> {
     use RecordingField as F;
     match mode {
-        RecordingMode::Off => vec![F::Mode],
-        RecordingMode::Snapshots => vec![
-            F::Mode,
-            F::StartDelay,
-            F::SnapshotInterval,
-            F::Upload,
-            F::Retention,
-        ],
-        _ => vec![F::Mode, F::StartDelay, F::Upload, F::Retention],
+        RecordingMode::Off => vec![],
+        RecordingMode::Snapshots => {
+            vec![F::StartDelay, F::SnapshotInterval, F::Upload, F::Retention]
+        }
+        _ => vec![F::StartDelay, F::Upload, F::Retention],
     }
 }
 
@@ -109,12 +104,12 @@ fn mode_name(mode: RecordingMode) -> &'static str {
     }
 }
 
-fn mode_label(mode: RecordingMode) -> &'static str {
+fn mode_text(mode: RecordingMode) -> &'static str {
     match mode {
-        RecordingMode::Off => "Off: no recording",
-        RecordingMode::Snapshots => "Snapshots: a picture every few seconds",
-        RecordingMode::Low => "Low: video at 1 frame a second, half size",
-        RecordingMode::Standard => "Standard: video at 2 frames a second, full size",
+        RecordingMode::Off => "Nothing is recorded.",
+        RecordingMode::Snapshots => "A picture every few seconds.",
+        RecordingMode::Low => "Video, 1 frame a second, half size.",
+        RecordingMode::Standard => "Video, 2 frames a second, full size.",
     }
 }
 
@@ -425,7 +420,7 @@ fn name_for_readers(ui: &Ui, response: &egui::Response, name: &str) {
 pub fn connectivity(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
     widgets::card(ui, |ui| {
         widgets::title(ui, "Allowed sites");
-        let hint = "One domain per line, e.g. kilonova.ro. Always allowed, so judges can load their anti-bot check: challenges.cloudflare.com, .hcaptcha.com.";
+        let hint = "One domain per line, e.g. kilonova.ro.";
         field(ui, "Sites", Some(hint), None, |ui, id| {
             let sites = Input::new(&mut typed.domains)
                 .multiline(4)
@@ -435,6 +430,16 @@ pub fn connectivity(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
                 settings.network.allowed_domains = parse_domains(&typed.domains);
             }
         });
+        // What a stick gets on top of the list: the sites of the bookmarks, and the ones judges
+        // need for their anti-bot check. Shown so the admin sees the whole list.
+        let added = ck_admin_core::added_sites(settings);
+        if !added.is_empty() {
+            widgets::hint(
+                ui,
+                "Also allowed, from the bookmarks and for judges' anti-bot checks:",
+            );
+            widgets::hint(ui, &added.join("   "));
+        }
     });
     widgets::card(ui, |ui| {
         widgets::title(ui, "Wi-Fi");
@@ -459,22 +464,56 @@ pub fn connectivity(ui: &mut Ui, settings: &mut Settings, typed: &mut Typed) {
 pub fn recording_page(ui: &mut Ui, settings: &mut Settings) {
     widgets::card(ui, |ui| {
         widgets::title(ui, "Screen recording");
-        recording(ui, settings);
+        mode_cards(ui, &mut settings.recording.mode);
+        if settings.recording.mode == RecordingMode::Off {
+            widgets::hint(ui, "Nothing is recorded, so there is nothing else to set.");
+        }
     });
+    // The mode cards never move: what a mode adds appears in its own card below them.
+    if !recording_fields(settings.recording.mode).is_empty() {
+        widgets::card(ui, |ui| {
+            widgets::title(ui, "Recording settings");
+            recording(ui, settings);
+        });
+    }
+}
+
+/// The four modes as equal cards in a row, two rows or one column, the same whatever is chosen.
+fn mode_cards(ui: &mut Ui, mode: &mut RecordingMode) {
+    let gap = 10.0;
+    let across = ui.available_width() + gap;
+    let columns: u8 = if across >= 760.0 {
+        4
+    } else if across >= 400.0 {
+        2
+    } else {
+        1
+    };
+    let width = (across / f32::from(columns) - gap).floor();
+    for row in RecordingMode::ALL.chunks(usize::from(columns)) {
+        let height = row
+            .iter()
+            .map(|&m| widgets::choice_height(ui, mode_name(m), mode_text(m), width))
+            .fold(0.0, f32::max);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for &candidate in row {
+                let chosen = *mode == candidate;
+                let name = mode_name(candidate);
+                if widgets::choice_sized(ui, chosen, name, mode_text(candidate), width, height)
+                    .clicked()
+                {
+                    *mode = candidate;
+                }
+            }
+        });
+    }
 }
 
 fn recording(ui: &mut Ui, settings: &mut Settings) {
     let recording = &mut settings.recording;
     let fields = recording_fields(recording.mode);
     grid(ui, &fields, |ui, shown| match shown {
-        RecordingField::Mode => {
-            let options = RecordingMode::ALL.map(|mode| (mode, mode_name(mode)));
-            let hint = mode_label(recording.mode);
-            field(ui, "Mode", Some(hint), None, |ui, id| {
-                widgets::select(ui, "recording-mode", &mut recording.mode, &options)
-                    .labelled_by(id);
-            });
-        }
         RecordingField::StartDelay => {
             let held = recording.start_delay_s.to_string();
             let hint = "Keeps boot and login fast.";
@@ -526,11 +565,11 @@ mod tests {
 
     #[test]
     fn only_the_recording_settings_of_the_mode_are_shown() {
-        assert_eq!(recording_fields(RecordingMode::Off).len(), 1);
+        assert!(recording_fields(RecordingMode::Off).is_empty());
         let snapshot = RecordingField::SnapshotInterval;
         assert!(recording_fields(RecordingMode::Snapshots).contains(&snapshot));
         let low = recording_fields(RecordingMode::Low);
-        assert!(low.len() == 4 && !low.contains(&snapshot));
+        assert!(low.len() == 3 && !low.contains(&snapshot));
     }
 
     #[test]

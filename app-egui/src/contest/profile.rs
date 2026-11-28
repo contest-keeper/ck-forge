@@ -47,6 +47,20 @@ pub struct Screen {
     status: String,
     failure: String,
     wallpaper_failure: String,
+    /// What is typed in the search box over the saved profiles, and how many rows are shown.
+    search: String,
+    rows_shown: usize,
+    /// The profile whose details are open in the pop-up.
+    preview: Option<Preview>,
+}
+
+/// Rows of saved profiles shown at first, and added by each "Show more".
+const PAGE: usize = 8;
+
+/// A saved profile's settings in words, for the pop-up.
+struct Preview {
+    entry: Entry,
+    lines: Vec<(&'static str, String)>,
 }
 
 /// What is wrong with a profile and what is odd about it.
@@ -135,8 +149,59 @@ fn merged(local: &[Local], hub: Option<&[ProfileSummary]>) -> Vec<Entry> {
     entries
 }
 
+/// The settings of a profile that matter when choosing one, in words.
+fn summary(profile: &Profile) -> Vec<(&'static str, String)> {
+    let s = &profile.settings;
+    let or_dash = |text: &str| {
+        if text.trim().is_empty() {
+            "\u{2014}".to_owned()
+        } else {
+            text.trim().to_owned()
+        }
+    };
+    let yes = |on: bool| if on { "Blocked" } else { "Allowed" }.to_owned();
+    let bookmarks: Vec<&str> = s
+        .branding
+        .bookmarks
+        .iter()
+        .map(|b| b.title.as_str())
+        .collect();
+    vec![
+        ("Contest", or_dash(&s.contest.name)),
+        ("Platform", format!("{:?}", s.contest.platform)),
+        ("Contest ID", or_dash(&s.contest.contest_id)),
+        (
+            "Ends",
+            s.contest
+                .end
+                .map_or_else(|| "\u{2014}".to_owned(), |end| end.to_string()),
+        ),
+        ("Team", or_dash(&s.team)),
+        ("Site", or_dash(&s.site)),
+        (
+            "Wi-Fi",
+            s.wifi
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), |w| w.ssid.clone()),
+        ),
+        ("Screen recording", format!("{:?}", s.recording.mode)),
+        ("Allowed sites", s.network.allowed_domains.len().to_string()),
+        ("Bookmarks", or_dash(&bookmarks.join(", "))),
+        ("Bluetooth", yes(s.block_bluetooth)),
+        ("Other USB storage", yes(s.block_usb_storage)),
+        (
+            "Stick key",
+            profile.stick_key_window.as_ref().map_or_else(
+                || "works until retired".to_owned(),
+                |w| format!("{} to {}", w.valid_from, w.valid_until),
+            ),
+        ),
+    ]
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RowAction {
+    Preview,
     Open,
     AskDelete,
     ConfirmDelete,
@@ -172,6 +237,9 @@ fn profile_row(ui: &mut Ui, entry: &Entry, open: bool, confirming: bool) -> Opti
             if Btn::new(label).small().show(ui).clicked() {
                 action = Some(RowAction::Open);
             }
+        }
+        if Btn::new("Preview").small().show(ui).clicked() {
+            action = Some(RowAction::Preview);
         }
         if Btn::new("Delete\u{2026}").small().show(ui).clicked() {
             action = Some(RowAction::AskDelete);
@@ -373,6 +441,120 @@ impl Screen {
     }
 
     /// The saved profiles, from this computer and, when signed in, from the Hub, one row each.
+    /// Reads the saved profile for the pop-up. One that is only on the Hub is not downloaded for a
+    /// look: it says so, and Open downloads it.
+    fn open_preview(&mut self, entry: Entry) {
+        let lines = match entry.file.as_deref().map(Profile::load) {
+            Some(Ok(profile)) => summary(&profile),
+            Some(Err(error)) => vec![("Problem", error.to_string())],
+            None => vec![(
+                "Where",
+                "Only on the Hub. Open it to download and see its settings.".to_owned(),
+            )],
+        };
+        self.preview = Some(Preview { entry, lines });
+    }
+
+    fn preview_dialog(&mut self, ctx: &egui::Context, state: &mut AppState) {
+        let Some(preview) = &self.preview else {
+            return;
+        };
+        let (open, dismissed) = widgets::dialog(ctx, "profile-preview", 520.0, |ui| {
+            widgets::title(ui, &preview.entry.name);
+            for (label, value) in &preview.lines {
+                ui.horizontal_top(|ui| {
+                    ui.add_sized([150.0, 0.0], egui::Label::new(*label));
+                    widgets::text(ui, value);
+                });
+            }
+            ui.horizontal(|ui| {
+                let open = Btn::new("Open").primary().show(ui).clicked();
+                let close = Btn::new("Close").show(ui).clicked();
+                (open, close)
+            })
+            .inner
+        });
+        let (open, close) = open;
+        if !(open || close || dismissed) {
+            return;
+        }
+        let Some(preview) = self.preview.take() else {
+            return;
+        };
+        if open {
+            self.confirm_delete = None;
+            match (preview.entry.file, preview.entry.hub_id) {
+                (Some(path), _) => self.open(state, path),
+                (None, Some(id)) => {
+                    self.clear_messages();
+                    match state.data() {
+                        Some(data) => self.hub.load(ctx, id, data.join("profiles")),
+                        None => "Could not find the Forge folder".clone_into(&mut self.failure),
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+    }
+
+    /// The search box, the rows that match it and the "Show more" button. Says which row's button
+    /// was pressed: its place in `entries`, whether it is the open profile, and the button.
+    fn profile_rows(
+        &mut self,
+        ui: &mut Ui,
+        state: &AppState,
+        entries: &[Entry],
+    ) -> Option<(usize, bool, RowAction)> {
+        let mut picked = None;
+        let searching = !self.search.trim().is_empty();
+        if entries.len() > PAGE {
+            let before = self.search.clone();
+            widgets::Input::new(&mut self.search)
+                .placeholder("Search profiles by name")
+                .show(ui);
+            if self.search != before {
+                self.rows_shown = PAGE;
+            }
+        }
+        let needle = self.search.trim().to_lowercase();
+        let matching: Vec<usize> = (0..entries.len())
+            .filter(|&at| needle.is_empty() || entries[at].name.to_lowercase().contains(&needle))
+            .collect();
+        let limit = self.rows_shown.max(PAGE);
+        for &at in matching.iter().take(limit) {
+            let entry = &entries[at];
+            let here = match &entry.file {
+                Some(file) => state.profile_path.as_ref() == Some(file),
+                None => {
+                    state.profile.as_ref().and_then(|p| p.hub_id.as_ref()) == entry.hub_id.as_ref()
+                }
+            };
+            let key = (entry.file.clone(), entry.hub_id.clone());
+            let confirming = self.confirm_delete.as_ref() == Some(&key);
+            let action = ui
+                .push_id(("saved", at), |ui| profile_row(ui, entry, here, confirming))
+                .inner;
+            if let Some(action) = action {
+                picked = Some((at, here, action));
+            }
+        }
+        if matching.is_empty() {
+            widgets::hint(ui, "No profile has that name.");
+        } else if matching.len() > limit {
+            widgets::hint(ui, &format!("Showing {limit} of {}.", matching.len()));
+            if Btn::new(&format!("Show {} more", PAGE.min(matching.len() - limit)))
+                .small()
+                .show(ui)
+                .clicked()
+            {
+                self.rows_shown = limit + PAGE;
+            }
+        } else if searching {
+            widgets::hint(ui, &format!("{} found.", matching.len()));
+        }
+        picked
+    }
+
     fn profiles_card(&mut self, ui: &mut Ui, state: &mut AppState) {
         let entries = merged(&self.local, self.hub_profiles.as_deref());
         if entries.is_empty() {
@@ -381,25 +563,10 @@ impl Screen {
         }
         let mut picked = None;
         widgets::card(ui, |ui| {
-            widgets::title(ui, "Saved profiles");
-            for (at, entry) in entries.iter().enumerate() {
-                let here = match &entry.file {
-                    Some(file) => state.profile_path.as_ref() == Some(file),
-                    None => {
-                        state.profile.as_ref().and_then(|p| p.hub_id.as_ref())
-                            == entry.hub_id.as_ref()
-                    }
-                };
-                let key = (entry.file.clone(), entry.hub_id.clone());
-                let confirming = self.confirm_delete.as_ref() == Some(&key);
-                let action = ui
-                    .push_id(("saved", at), |ui| profile_row(ui, entry, here, confirming))
-                    .inner;
-                if let Some(action) = action {
-                    picked = Some((at, here, action));
-                }
-            }
+            widgets::title(ui, &format!("Saved profiles ({})", entries.len()));
+            picked = self.profile_rows(ui, state, &entries);
         });
+        self.preview_dialog(ui.ctx(), state);
         let Some((at, here, action)) = picked else {
             return;
         };
@@ -408,6 +575,7 @@ impl Screen {
         };
         let key = (entry.file.clone(), entry.hub_id.clone());
         match action {
+            RowAction::Preview => self.open_preview(entry),
             RowAction::AskDelete => self.confirm_delete = Some(key),
             RowAction::CancelDelete => self.confirm_delete = None,
             RowAction::ConfirmDelete => {
@@ -652,6 +820,21 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_preview_says_what_a_new_profile_leaves_empty() {
+        let lines = summary(&Profile::template());
+        let get = |label: &str| {
+            lines
+                .iter()
+                .find(|(l, _)| *l == label)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("Team"), Some("\u{2014}"));
+        assert_eq!(get("Screen recording"), Some("Off"));
+        assert_eq!(get("Platform"), Some("Other"));
+        assert_eq!(get("Wi-Fi"), Some("none"));
+    }
 
     fn picture(path: &Path, shade: u8) {
         image::RgbImage::from_pixel(4, 4, image::Rgb([shade; 3]))
