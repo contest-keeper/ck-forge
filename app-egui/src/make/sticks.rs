@@ -2,10 +2,13 @@
 //! Hub knows (`ConfirmRetire.svelte`), and retiring keys afterwards (`RetireOldKeys.svelte`).
 
 use std::collections::BTreeSet;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
-use ck_admin_core::{HUB_URL, HubStick, list_sticks, retire_stick_credential, vault};
+use ck_admin_core::{HUB_URL, HubSession, HubStick, list_sticks, retire_stick_credential, vault};
 use eframe::egui::{Context, Frame, Margin, ScrollArea, Stroke, Ui, vec2};
 
 use crate::make::format::stick_name;
@@ -24,9 +27,12 @@ pub enum Choice {
 enum Event {
     /// The list, and the account generation it was asked in.
     Sticks(u64, Result<Vec<HubStick>, String>),
+    /// The answer to a click here: it ends `working`.
     Retired(u64, String, Result<(), String>),
+    /// One more key of the replaced sticks is retired; the batch goes on.
+    OldRetired(u64, String),
     /// The keys of the replaced sticks were tried: the ones that are still active, and why.
-    OldDone(u64, Vec<String>),
+    OldDone(Vec<String>),
 }
 
 pub struct Screen {
@@ -44,6 +50,9 @@ pub struct Screen {
     working: Option<String>,
     /// The keys of the replaced sticks are being retired after a write.
     retiring_old: bool,
+    /// Set when the account changes: a running batch sends no further key, even when the same
+    /// account signs in again.
+    stop: Arc<AtomicBool>,
     /// The stick whose retiring waits for a second click: it cannot be undone.
     pub(super) asking: Option<String>,
     failure: String,
@@ -65,6 +74,7 @@ impl Default for Screen {
             account: 0,
             working: None,
             retiring_old: false,
+            stop: Arc::default(),
             asking: None,
             failure: String::new(),
             old_failure: String::new(),
@@ -92,13 +102,35 @@ fn list_sticks_on_hub() -> Result<Vec<HubStick>, String> {
     list_sticks(HUB_URL, &session).map_err(hub_error)
 }
 
-fn retire_on_hub(id: &str) -> Result<(), String> {
+fn saved_session() -> Result<HubSession, String> {
     // A test must never reach the credential vault or retire a key, whatever it clicks.
     if cfg!(test) {
         return Err("no Hub in tests".to_owned());
     }
-    let session = vault::load().ok_or_else(|| "sign in to the Hub first".to_owned())?;
-    retire_stick_credential(HUB_URL, &session, id).map_err(hub_error)
+    vault::load().ok_or_else(|| "sign in to the Hub first".to_owned())
+}
+
+fn retire_on_hub(session: &Result<HubSession, String>, id: &str) -> Result<(), String> {
+    let session = session.as_ref().map_err(Clone::clone)?;
+    retire_stick_credential(HUB_URL, session, id).map_err(hub_error)
+}
+
+/// A panic must still become an answer: without one the window stays busy and cannot be closed.
+fn answered(request: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    catch_unwind(AssertUnwindSafe(request))
+        .unwrap_or_else(|_| Err("Forge failed, so it is unknown whether the key is retired".into()))
+}
+
+/// The session a batch may use: only the one of the account that started the write.
+fn session_of(
+    session: Result<HubSession, String>,
+    account: Option<&str>,
+) -> Result<HubSession, String> {
+    let session = session?;
+    if Some(session.email.as_str()) != account {
+        return Err("another account is signed in than the one that started the write".to_owned());
+    }
+    Ok(session)
 }
 
 /// Retires the keys one by one; a key that fails is told, and the others still go.
@@ -129,7 +161,13 @@ impl Screen {
 
     /// Called only when a write ended with everything written and read back: remembers the sticks
     /// it replaced and, when the admin asked for it, retires their keys.
-    pub fn after_write(&mut self, previous: Vec<HubStick>, retire: bool, ctx: &Context) {
+    pub fn after_write(
+        &mut self,
+        previous: Vec<HubStick>,
+        retire: bool,
+        started_by: Option<&str>,
+        ctx: &Context,
+    ) {
         self.retired.clear();
         self.others = None;
         self.old_failure.clear();
@@ -142,12 +180,27 @@ impl Screen {
         let account = self.account;
         let sender = self.sender.clone();
         let ctx = ctx.clone();
+        let started_by = started_by.map(str::to_owned);
+        let stop = Arc::clone(&self.stop);
         thread::spawn(move || {
-            let failed = retire_each(&sticks, retire_on_hub, |id| {
-                // The window may be gone by now; then nobody needs the answer.
-                let _ = sender.send(Event::Retired(account, id.to_owned(), Ok(())));
-            });
-            let _ = sender.send(Event::OldDone(account, failed));
+            let failed = retire_each(
+                &sticks,
+                |id| {
+                    answered(|| {
+                        if stop.load(Ordering::Relaxed) {
+                            return Err("not tried, the signed-in account changed".to_owned());
+                        }
+                        // The vault knows of a sign-out before this page is told.
+                        let session = session_of(saved_session(), started_by.as_deref());
+                        retire_on_hub(&session, id)
+                    })
+                },
+                |id| {
+                    // The window may be gone by now; then nobody needs the answer.
+                    let _ = sender.send(Event::OldRetired(account, id.to_owned()));
+                },
+            );
+            let _ = sender.send(Event::OldDone(failed));
             ctx.request_repaint();
         });
     }
@@ -162,13 +215,13 @@ impl Screen {
     /// about keys that are still active stays.
     pub fn forget(&mut self) {
         self.account += 1;
+        self.stop.store(true, Ordering::Relaxed);
+        self.stop = Arc::default();
         self.loading = false;
         self.previous.clear();
         self.retired.clear();
         self.others = None;
         self.other.clear();
-        self.working = None;
-        self.retiring_old = false;
         self.asking = None;
         self.failure.clear();
     }
@@ -177,7 +230,7 @@ impl Screen {
     pub fn receive(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Sticks(account, _) | Event::Retired(account, _, _)
+                Event::Sticks(account, _) | Event::OldRetired(account, _)
                     if account != self.account => {}
                 Event::Sticks(_, result) => {
                     self.loading = false;
@@ -186,28 +239,26 @@ impl Screen {
                         Err(why) => self.failure = why,
                     }
                 }
-                Event::Retired(_, id, result) => {
+                Event::OldRetired(_, id) => self.mark_retired(id),
+                Event::Retired(account, id, result) => {
+                    // The thread has ended, whichever account its answer is for.
                     self.working = None;
-                    match result {
-                        Ok(()) => {
-                            if self.other == id {
-                                self.other.clear();
-                            }
-                            self.retired.insert(id);
+                    if account == self.account {
+                        match result {
+                            Ok(()) => self.mark_retired(id),
+                            Err(why) => self.failure = why,
                         }
-                        Err(why) => self.failure = why,
                     }
                 }
-                Event::OldDone(account, failed) => {
-                    // Failed keys stay reported even after an account change so active keys are not lost.
-                    if account == self.account {
-                        self.retiring_old = false;
-                    }
+                // Taken whatever the account: the thread has ended, and a key that is still active
+                // must stay reported.
+                Event::OldDone(failed) => {
+                    self.retiring_old = false;
                     if !failed.is_empty() {
                         let keys = failed.join("\n");
                         if self.old_failure.is_empty() {
                             self.old_failure = format!(
-                                "The new sticks are written, but these old keys are still active:\n{keys}"
+                                "The new sticks are written, but these old keys may still be active:\n{keys}"
                             );
                         } else {
                             self.old_failure.push('\n');
@@ -217,6 +268,13 @@ impl Screen {
                 }
             }
         }
+    }
+
+    fn mark_retired(&mut self, id: String) {
+        if self.other == id {
+            self.other.clear();
+        }
+        self.retired.insert(id);
     }
 
     fn refresh(&mut self, ctx: Context) {
@@ -238,7 +296,7 @@ impl Screen {
         let account = self.account;
         let sender = self.sender.clone();
         thread::spawn(move || {
-            let result = retire_on_hub(&id);
+            let result = answered(|| retire_on_hub(&saved_session(), &id));
             let _ = sender.send(Event::Retired(account, id, result));
             ctx.request_repaint();
         });
@@ -568,7 +626,7 @@ mod tests {
     #[test]
     fn keeping_the_old_keys_retires_nothing() {
         let mut screen = Screen::default();
-        screen.after_write(vec![stick("a")], false, &Context::default());
+        screen.after_write(vec![stick("a")], false, None, &Context::default());
         assert!(!screen.busy());
         assert_eq!(screen.previous.len(), 1);
     }
@@ -637,34 +695,47 @@ mod tests {
             ..Screen::default()
         };
         let stale_retired = Event::Retired(screen.account, "b".to_owned(), Ok(()));
-        let stale_done = Event::OldDone(screen.account, vec!["a: down".to_owned()]);
+        let progress = Event::OldRetired(screen.account, "c".to_owned());
+        let done = Event::OldDone(vec!["a: down".to_owned()]);
+        let running = Arc::clone(&screen.stop);
         screen.forget();
+        // The running batch is told to stop; the next one is not.
+        assert!(running.load(Ordering::Relaxed) && !screen.stop.load(Ordering::Relaxed));
         assert!(screen.retired.is_empty());
-        assert!(screen.working.is_none());
-        assert!(!screen.retiring_old);
+        // Both threads still run, so closing and writing stay refused.
+        assert!(screen.working.is_some() && screen.retiring_old());
         assert!(screen.asking.is_none());
         assert_eq!(screen.failure, "");
 
-        screen.retiring_old = true;
+        assert!(screen.sender.send(progress).is_ok());
+        assert!(screen.sender.send(done).is_ok());
+        screen.receive();
+        // The batch ended; the retirement started by a click still runs.
+        assert!(screen.busy() && !screen.retiring_old());
         assert!(screen.sender.send(stale_retired).is_ok());
-        assert!(screen.sender.send(stale_done).is_ok());
         screen.receive();
         assert!(screen.retired.is_empty());
-        assert!(screen.retiring_old);
+        assert!(!screen.busy());
         assert!(screen.old_failure.contains("a: down"));
-        assert!(
-            screen
-                .sender
-                .send(Event::OldDone(
-                    screen.account,
-                    vec!["b: timeout".to_owned()]
-                ))
-                .is_ok()
-        );
+        let later = Event::OldDone(vec!["b: timeout".to_owned()]);
+        assert!(screen.sender.send(later).is_ok());
         screen.receive();
-        assert!(!screen.retiring_old);
         assert!(screen.old_failure.contains("a: down"));
         assert!(screen.old_failure.contains("b: timeout"));
+    }
+
+    #[test]
+    fn a_batch_uses_only_the_session_of_the_account_that_started_the_write() {
+        let session = || Ok(HubSession::restore("secret".to_owned(), "a@b.c".to_owned()));
+        assert!(session_of(session(), Some("a@b.c")).is_ok());
+        assert!(session_of(session(), Some("d@e.f")).is_err());
+        assert!(session_of(session(), None).is_err());
+    }
+
+    #[test]
+    fn a_request_that_panics_still_answers() {
+        assert!(answered(|| panic!("boom")).is_err());
+        assert!(answered(|| Ok(())).is_ok());
     }
 
     #[test]

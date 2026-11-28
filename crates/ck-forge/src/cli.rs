@@ -40,7 +40,7 @@ pub(crate) enum Command {
 
 #[derive(Subcommand)]
 pub(crate) enum HubCommand {
-    /// Sign in through the browser; the session is kept in the system credential store
+    /// Sign in through the browser; on Windows and macOS the session is kept in the system credential store
     SignIn,
     /// Sign out and forget the saved session
     SignOut,
@@ -207,13 +207,14 @@ pub(crate) enum ImageCommand {
         #[arg(long)]
         out: PathBuf,
         /// The release's ck-os-patch.tar.gz. Without it the image is a plain desktop, not Keeper OS.
-        /// Applying it needs WSL on Windows
+        /// Applying it needs WSL, so this works on Windows only
         #[arg(long)]
         patch: Option<PathBuf>,
         /// Where downloads are kept (default: $LOCALAPPDATA/ck-forge/cache, $HOME/Library/Caches/ck-forge on macOS, or ./ck-forge-cache)
         #[arg(long)]
         cache: Option<PathBuf>,
-        /// The QEMU folder (default: searched on PATH, or C:\Program Files\qemu on Windows)
+        /// The QEMU folder (default: C:\Program Files\qemu, or Homebrew's folder on macOS; else PATH,
+        /// where the firmware is not found)
         #[arg(long)]
         qemu: Option<PathBuf>,
         /// QEMU acceleration: whpx on Windows, kvm on Linux, tcg works everywhere but is slow
