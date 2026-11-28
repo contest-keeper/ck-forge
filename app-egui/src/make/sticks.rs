@@ -3,6 +3,8 @@
 
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
@@ -48,6 +50,9 @@ pub struct Screen {
     working: Option<String>,
     /// The keys of the replaced sticks are being retired after a write.
     retiring_old: bool,
+    /// Set when the account changes: a running batch sends no further key, even when the same
+    /// account signs in again.
+    stop: Arc<AtomicBool>,
     /// The stick whose retiring waits for a second click: it cannot be undone.
     pub(super) asking: Option<String>,
     failure: String,
@@ -69,6 +74,7 @@ impl Default for Screen {
             account: 0,
             working: None,
             retiring_old: false,
+            stop: Arc::default(),
             asking: None,
             failure: String::new(),
             old_failure: String::new(),
@@ -106,7 +112,7 @@ fn saved_session() -> Result<HubSession, String> {
 
 fn retire_on_hub(session: &Result<HubSession, String>, id: &str) -> Result<(), String> {
     let session = session.as_ref().map_err(Clone::clone)?;
-    answered(|| retire_stick_credential(HUB_URL, session, id).map_err(hub_error))
+    retire_stick_credential(HUB_URL, session, id).map_err(hub_error)
 }
 
 /// A panic must still become an answer: without one the window stays busy and cannot be closed.
@@ -175,13 +181,19 @@ impl Screen {
         let sender = self.sender.clone();
         let ctx = ctx.clone();
         let started_by = started_by.map(str::to_owned);
+        let stop = Arc::clone(&self.stop);
         thread::spawn(move || {
             let failed = retire_each(
                 &sticks,
-                // Asked before each key: a sign-out or another admin stops the rest at once.
                 |id| {
-                    let session = session_of(saved_session(), started_by.as_deref());
-                    retire_on_hub(&session, id)
+                    answered(|| {
+                        if stop.load(Ordering::Relaxed) {
+                            return Err("not tried, the signed-in account changed".to_owned());
+                        }
+                        // The vault knows of a sign-out before this page is told.
+                        let session = session_of(saved_session(), started_by.as_deref());
+                        retire_on_hub(&session, id)
+                    })
                 },
                 |id| {
                     // The window may be gone by now; then nobody needs the answer.
@@ -203,6 +215,8 @@ impl Screen {
     /// about keys that are still active stays.
     pub fn forget(&mut self) {
         self.account += 1;
+        self.stop.store(true, Ordering::Relaxed);
+        self.stop = Arc::default();
         self.loading = false;
         self.previous.clear();
         self.retired.clear();
@@ -282,7 +296,7 @@ impl Screen {
         let account = self.account;
         let sender = self.sender.clone();
         thread::spawn(move || {
-            let result = retire_on_hub(&saved_session(), &id);
+            let result = answered(|| retire_on_hub(&saved_session(), &id));
             let _ = sender.send(Event::Retired(account, id, result));
             ctx.request_repaint();
         });
@@ -683,7 +697,10 @@ mod tests {
         let stale_retired = Event::Retired(screen.account, "b".to_owned(), Ok(()));
         let progress = Event::OldRetired(screen.account, "c".to_owned());
         let done = Event::OldDone(vec!["a: down".to_owned()]);
+        let running = Arc::clone(&screen.stop);
         screen.forget();
+        // The running batch is told to stop; the next one is not.
+        assert!(running.load(Ordering::Relaxed) && !screen.stop.load(Ordering::Relaxed));
         assert!(screen.retired.is_empty());
         // Both threads still run, so closing and writing stay refused.
         assert!(screen.working.is_some() && screen.retiring_old());
